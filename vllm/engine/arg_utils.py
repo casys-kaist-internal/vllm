@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig)
+                         SchedulerConfig, SpeculativeConfig)
 
 
 @dataclass
@@ -179,3 +179,196 @@ class AsyncEngineArgs(EngineArgs):
                             action='store_true',
                             help='disable logging requests')
         return parser
+
+
+@dataclass
+class SpeculativeEngineArgs:
+    """Arguments for vLLM engine."""
+    target_model: str
+    draft_model: str
+    window_size: int = 8
+    tokenizer: Optional[str] = None
+    tokenizer_mode: str = 'auto'
+    trust_remote_code: bool = False
+    target_download_dir: Optional[str] = None
+    draft_download_dir: Optional[str] = None
+    use_np_weights: bool = False
+    use_dummy_weights: bool = False
+    dtype: str = 'auto'
+    seed: int = 0  # target 이랑 draft 랑 나눠야하나?
+    worker_use_ray: bool = False
+    target_pipeline_parallel_size: int = 1
+    target_tensor_parallel_size: int = 1
+    draft_data_parallel_size: int = 1
+    draft_tensor_parallel_size: int = 1
+    block_size: int = 16
+    swap_space: int = 4  # GiB
+    gpu_memory_utilization: float = 0.90
+    max_num_batched_tokens: int = 2560
+    max_num_seqs: int = 256
+    disable_log_stats: bool = False
+
+    def __post_init__(self):
+        if self.tokenizer is None:  # 이해안감
+            self.tokenizer = self.target_model  # ???
+        self.max_num_seqs = min(self.max_num_seqs, self.max_num_batched_tokens)
+
+    @staticmethod
+    def add_cli_args(
+            parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        """Shared CLI arguments for vLLM engine."""
+        # Model arguments
+        parser.add_argument(
+            '--target-model',
+            type=str,
+            default='facebook/opt-125m',
+            help='name or path of the huggingface model to use')
+        parser.add_argument(
+            '--draft-model',
+            type=str,
+            default='facebook/opt-125m',
+            help='name or path of the huggingface model to use')
+        parser.add_argument('--window-size',
+                            type=int,
+                            default=SpeculativeEngineArgs.window_size,
+                            help='number of auto-regressive draft model run')
+        parser.add_argument(
+            '--tokenizer',
+            type=str,
+            default=SpeculativeEngineArgs.tokenizer,
+            help='name or path of the huggingface tokenizer to use')
+        parser.add_argument('--tokenizer-mode',
+                            type=str,
+                            default=SpeculativeEngineArgs.tokenizer_mode,
+                            choices=['auto', 'slow'],
+                            help='tokenizer mode. "auto" will use the fast '
+                            'tokenizer if available, and "slow" will '
+                            'always use the slow tokenizer.')
+        parser.add_argument('--trust-remote-code',
+                            action='store_true',
+                            help='trust remote code from huggingface')
+        parser.add_argument('--target-download-dir',
+                            type=str,
+                            default=SpeculativeEngineArgs.target_download_dir,
+                            help='directory to download and load the weights, '
+                            'default to the default cache dir of '
+                            'huggingface')
+        parser.add_argument('--draft-download-dir',
+                            type=str,
+                            default=SpeculativeEngineArgs.draft_download_dir,
+                            help='directory to download and load the weights, '
+                            'default to the default cache dir of '
+                            'huggingface')
+        parser.add_argument('--use-np-weights',
+                            action='store_true',
+                            help='save a numpy copy of model weights for '
+                            'faster loading. This can increase the disk '
+                            'usage by up to 2x.')
+        parser.add_argument('--use-dummy-weights',
+                            action='store_true',
+                            help='use dummy values for model weights')
+        # TODO(woosuk): Support FP32.
+        parser.add_argument(
+            '--dtype',
+            type=str,
+            default=EngineArgs.dtype,
+            choices=['auto', 'half', 'bfloat16', 'float'],
+            help='data type for model weights and activations. '
+            'The "auto" option will use FP16 precision '
+            'for FP32 and FP16 models, and BF16 precision '
+            'for BF16 models.')
+        # Parallel arguments
+        parser.add_argument('--worker-use-ray',
+                            action='store_true',
+                            help='use Ray for distributed serving, will be '
+                            'automatically set when using more than 1 GPU')
+        parser.add_argument('--target-pipeline-parallel-size',
+                            '-target-pp',
+                            type=int,
+                            default=SpeculativeEngineArgs.target_pipeline_parallel_size,
+                            help='number of pipeline stages')
+        parser.add_argument('--target-tensor-parallel-size',
+                            '-target-tp',
+                            type=int,
+                            default=SpeculativeEngineArgs.target_tensor_parallel_size,
+                            help='number of tensor parallel replicas')
+        parser.add_argument('--draft-tensor-parallel-size',
+                            '-draft-tp',
+                            type=int,
+                            default=SpeculativeEngineArgs.draft_tensor_parallel_size,
+                            help='number of tensor parallel replicas')
+        parser.add_argument('--draft-data-parallel-size',
+                            '-draft-dp',
+                            type=int,
+                            default=SpeculativeEngineArgs.draft_data_parallel_size,
+                            help='number of data parallel replicas')
+        # KV cache arguments
+        parser.add_argument('--block-size',
+                            type=int,
+                            default=SpeculativeEngineArgs.block_size,
+                            choices=[8, 16, 32],
+                            help='token block size')
+        # TODO(woosuk): Support fine-grained seeds (e.g., seed per request).
+        parser.add_argument('--seed',
+                            type=int,
+                            default=SpeculativeEngineArgs.seed,
+                            help='random seed')
+        parser.add_argument('--swap-space',
+                            type=int,
+                            default=SpeculativeEngineArgs.swap_space,
+                            help='CPU swap space size (GiB) per GPU')
+        parser.add_argument('--gpu-memory-utilization',
+                            type=float,
+                            default=SpeculativeEngineArgs.gpu_memory_utilization,
+                            help='the percentage of GPU memory to be used for'
+                            'the model executor')
+        parser.add_argument('--max-num-batched-tokens',
+                            type=int,
+                            default=SpeculativeEngineArgs.max_num_batched_tokens,
+                            help='maximum number of batched tokens per '
+                            'iteration')
+        parser.add_argument('--max-num-seqs',
+                            type=int,
+                            default=SpeculativeEngineArgs.max_num_seqs,
+                            help='maximum number of sequences per iteration')
+        parser.add_argument('--disable-log-stats',
+                            action='store_true',
+                            help='disable logging statistics')
+        return parser
+
+    @classmethod
+    def from_cli_args(cls, args: argparse.Namespace) -> 'SpeculativeEngineArgs':
+        # Get the list of attributes of this dataclass.
+        attrs = [attr.name for attr in dataclasses.fields(cls)]
+        # Set the attributes from the parsed arguments.
+        engine_args = cls(**{attr: getattr(args, attr) for attr in attrs})
+        return engine_args
+
+    def create_engine_configs(
+        self,
+    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, ParallelConfig, SchedulerConfig, SpeculativeConfig]:
+        # Initialize the configs.
+        target_model_config = ModelConfig(self.target_model, self.tokenizer,
+                                          self.tokenizer_mode, self.trust_remote_code,
+                                          self.target_download_dir, self.use_np_weights,
+                                          self.use_dummy_weights, self.dtype,
+                                          self.seed)
+        draft_model_config = ModelConfig(self.draft_model, self.tokenizer,
+                                         self.tokenizer_mode, self.trust_remote_code,
+                                         self.draft_download_dir, self.use_np_weights,
+                                         self.use_dummy_weights, self.dtype,
+                                         self.seed)
+        cache_config = CacheConfig(self.block_size,
+                                   self.gpu_memory_utilization,
+                                   self.swap_space)
+        target_parallel_config = ParallelConfig(self.target_pipeline_parallel_size,
+                                                self.target_tensor_parallel_size,
+                                                self.worker_use_ray)
+        draft_parallel_config = ParallelConfig(1,
+                                               self.draft_tensor_parallel_size,
+                                               self.worker_use_ray)
+        scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
+                                           self.max_num_seqs,
+                                           target_model_config.get_max_model_len())
+        speculative_config = SpeculativeConfig(self.window_size)
+        return target_model_config, draft_model_config, cache_config, target_parallel_config, draft_parallel_config, scheduler_config, speculative_config

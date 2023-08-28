@@ -217,6 +217,8 @@ class ParallelConfig:
             self.worker_use_ray = True
         self._verify_args()
 
+        self.data_parallel_size = 1  # FIXME
+
     def _verify_args(self) -> None:
         if self.pipeline_parallel_size > 1:
             raise NotImplementedError(
@@ -295,3 +297,8 @@ def _get_and_verify_dtype(
                 f"of at least 8.0. Your {gpu_name} GPU has compute capability "
                 f"{compute_capability[0]}.{compute_capability[1]}.")
     return torch_dtype
+
+
+class SpeculativeConfig:
+    def __init__(self, window_size: int) -> None:
+        self.window_size = window_size

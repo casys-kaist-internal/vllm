@@ -270,7 +270,65 @@ class Scheduler:
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
 
+    def speculative_schedule(self) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
+        # Schedule sequence groups.
+        # This function call changes the internal states of the scheduler
+        # such as self.running, self.swapped, and self.waiting.
+        scheduler_outputs = self._schedule()
+
+        # Create input data structures.
+        seq_group_metadata_list: List[SequenceGroupMetadata] = []
+        for seq_group in scheduler_outputs.scheduled_seq_groups:
+            seq_data: Dict[int, List[SequenceData]] = {}
+            block_tables: Dict[int, List[int]] = {}
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                seq_id = seq.seq_id
+                seq_data[seq_id] = seq.data
+                block_tables[seq_id] = self.block_manager.get_block_table(seq)
+
+            seq_group_metadata = SequenceGroupMetadata(
+                request_id=seq_group.request_id,
+                is_prompt=scheduler_outputs.prompt_run,
+                seq_data=seq_data,
+                sampling_params=seq_group.sampling_params,
+                block_tables=block_tables,
+            )
+            seq_group_metadata_list.append(seq_group_metadata)
+        return seq_group_metadata_list, scheduler_outputs
+
     def update(
+        self,
+        seq_outputs: Dict[int, SequenceOutputs],
+    ) -> List[SequenceGroup]:
+        scheduled: List[SequenceGroup] = []
+        for seq_group in self.running:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                if seq.seq_id in seq_outputs:
+                    scheduled.append(seq_group)
+                    break
+
+        # Update the scheduled sequences and free blocks.
+        for seq_group in scheduled:
+            # Process beam search results before processing the new tokens.
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                output = seq_outputs[seq.seq_id]
+                if seq.seq_id != output.parent_seq_id:
+                    # The sequence is a fork of the parent sequence (beam
+                    # search). Free the current sequence.
+                    self.block_manager.free(seq)
+                    # Fork the parent sequence.
+                    parent_seq = seq_group.find(output.parent_seq_id)
+                    parent_seq.fork(seq)
+                    self.block_manager.fork(parent_seq, seq)
+
+            # Process the new tokens.
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                # Append a new token to the sequence.
+                output = seq_outputs[seq.seq_id]
+                seq.append_token_id(output.output_token, output.logprobs)
+        return scheduled
+
+    def speculative_update(
         self,
         seq_outputs: Dict[int, SequenceOutputs],
     ) -> List[SequenceGroup]:
