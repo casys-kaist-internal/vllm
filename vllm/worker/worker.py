@@ -345,6 +345,9 @@ class Worker:
                 input_metadata=input_metadata,
                 cache_events=cache_events,
             )
+            # input += new output
+            
+            input_tokens = 
         return output
 
 

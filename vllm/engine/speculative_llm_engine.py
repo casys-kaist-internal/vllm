@@ -353,8 +353,8 @@ class SpeculativeLLMEngine:
             window_size=self.speculative_config.window_size
         )
 
-        seq_groups = self.scheduler.speculative_update(draft_output)
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule()
+        # seq_groups = self.scheduler.speculative_update(draft_output)
+        # seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule()
 
         # Execute the target model 1 time
         target_output = self._run_target_workers(
@@ -366,9 +366,10 @@ class SpeculativeLLMEngine:
         )
 
         # Verify draft with target output
+        final_output = XXX
 
         # Update the scheduler with the model outputs.
-        seq_groups = self.scheduler.speculative_update(output)
+        seq_groups = self.scheduler.speculative_update(final_output)
 
         # Decode the sequences.
         self._decode_sequences(seq_groups)
