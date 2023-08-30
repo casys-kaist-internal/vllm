@@ -333,7 +333,7 @@ class SpeculativeLLMEngine:
     def speculative_step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule(
-            self.speculative_config.window_size)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+            self.speculative_config.window_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -362,7 +362,11 @@ class SpeculativeLLMEngine:
             self._decode_sequences(seq_groups)
 
             for seq_group_metadata in seq_group_metadata_list:
-                seq_group_metadata.prompt_run = False
+                seq_group_metadata.is_prompt = False
+
+            scheduler_outputs.blocks_to_swap_in = None
+            scheduler_outputs.blocks_to_swap_out = None
+            scheduler_outputs.blocks_to_copy = None
 
         # Execute the target model 1 time
         output = self._run_target_workers(
