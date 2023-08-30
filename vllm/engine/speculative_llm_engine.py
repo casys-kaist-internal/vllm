@@ -331,7 +331,10 @@ class SpeculativeLLMEngine:
         return self.scheduler.has_unfinished_seqs()
 
     def speculative_step(self) -> List[RequestOutput]:
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule()
+        # Execute the draft model for K (window) times
+        seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule(
+            self.speculative_config.window_size)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
                 # Nothing to do.
@@ -343,21 +346,26 @@ class SpeculativeLLMEngine:
                 for seq_group in scheduler_outputs.ignored_seq_groups
             ]
 
-        # Execute the draft model for K (window) times
-        draft_output = self._run_draft_workers(
-            "execute_draft_model",
-            seq_group_metadata_list=seq_group_metadata_list,
-            blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-            blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-            blocks_to_copy=scheduler_outputs.blocks_to_copy,
-            window_size=self.speculative_config.window_size
-        )
+        for _ in range(self.speculative_config.window_size):
+            output = self._run_draft_workers(
+                "execute_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
 
-        # seq_groups = self.scheduler.speculative_update(draft_output)
-        # seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule()
+            # Update the scheduler with the model outputs.
+            seq_groups = self.scheduler.speculative_update(output)
+
+            # Decode the sequences.
+            self._decode_sequences(seq_groups)
+
+            for seq_group_metadata in seq_group_metadata_list:
+                seq_group_metadata.prompt_run = False
 
         # Execute the target model 1 time
-        target_output = self._run_target_workers(
+        output = self._run_target_workers(
             "execute_model",
             seq_group_metadata_list=seq_group_metadata_list,
             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -365,14 +373,8 @@ class SpeculativeLLMEngine:
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
 
-        # Verify draft with target output
-        final_output = XXX
+        # Verify and rollback
 
-        # Update the scheduler with the model outputs.
-        seq_groups = self.scheduler.speculative_update(final_output)
-
-        # Decode the sequences.
-        self._decode_sequences(seq_groups)
         # Stop the sequences that meet the stopping criteria.
         self._stop_sequences(seq_groups)
         # Free the finished sequence groups.
