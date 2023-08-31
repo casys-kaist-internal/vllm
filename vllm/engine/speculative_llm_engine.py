@@ -370,7 +370,7 @@ class SpeculativeLLMEngine:
 
         # Execute the target model 1 time
         output = self._run_target_workers(
-            "execute_model",
+            "execute_target_model",
             seq_group_metadata_list=seq_group_metadata_list,
             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,

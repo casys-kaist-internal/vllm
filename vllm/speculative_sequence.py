@@ -41,7 +41,7 @@ class SequenceStatus(enum.Enum):
         return finish_reason
 
 
-class SequenceData:
+class SpeculativeSequenceData:
     """Data associated with a sequence.
 
 
@@ -61,10 +61,24 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
+        self.draft_token_ids: List[int] = []
+        self.draft_cumulative_logprobs: List[int] = []  # FIXME(sangjin)
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
+
+    def append_draft_token_id(self, token_id: int, logprob: float) -> None:
+        self.draft_token_ids.append(token_id)
+        self.draft_cumulative_logprobs.append(logprob)
+
+    def accept_draft_tokens(self, accept_cnt: int) -> None:
+        for i in range(accept_cnt):
+            self.append_token_id(
+                self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
+
+        self.draft_token_ids.clear()
+        self.draft_cumulative_logprobs.clear()
 
     def get_len(self) -> int:
         return len(self.output_token_ids) + len(self.prompt_token_ids)
@@ -80,11 +94,16 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
+    def get_draft_token_ids(self) -> List[int]:
+        return self.draft_token_ids
+
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob})")
+                f"cumulative_logprob={self.cumulative_logprob}), "
+                f"draft_token_ids={self.draft_token_ids}, "
+                f"draft_cumulative_logprobs={self.draft_cumulative_logprobs}")
 
 
 class Sequence:
@@ -109,7 +128,7 @@ class Sequence:
         self.prompt = prompt
         self.block_size = block_size
 
-        self.data = SequenceData(prompt_token_ids)
+        self.data = SpeculativeSequenceData(prompt_token_ids)
         self.output_logprobs: List[Dict[int, float]] = []
         self.output_tokens: List[str] = []
         self.output_text = ""
@@ -265,7 +284,7 @@ class SequenceGroupMetadata:
         self,
         request_id: str,
         is_prompt: bool,
-        seq_data: Dict[int, SequenceData],
+        seq_data: Dict[int, SpeculativeSequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
     ) -> None:
