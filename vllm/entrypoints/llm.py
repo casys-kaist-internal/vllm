@@ -26,7 +26,7 @@ class SpeculativeDecoder:
         target_model: str,
         draft_model: str,
         k: int = 5, # window size
-        n: int = 1024, #max_output_token
+        t: int = 1024, #max_output_toke
     ) -> None:
         self.draft_model = LLM(model = draft_model)
         self.target_model = LLM(model = target_model)
@@ -49,7 +49,21 @@ class SpeculativeDecoder:
                     prompt_draft = x_draft.prompt
                     generated_text_draft = x_draft.outputs[0].text
                     target_prompt = prompt_draft+generated_text_draft
-        
+                    x_targets = self.target_model.generate(target_prompt, sampling_params)
+                    x_target = x.targets.prompt + x_targets.outputs[0].text
+                    all_accepted = True
+                    for _ in range(self.k):
+                        i = query.output_token- 1
+                        j = target_prompt[i + 1]
+                        if np.random.random() < min(1, x_target[i][j]/target_prompt[i][j]):
+                            query.prompt.append(j)
+                            query.output_token += 1
+                        else:
+                            all_accepted = False
+                            break
+                    if all_accepted:
+                        query.prompt += x.target[-1]
+        return self.querys
 
 class LLM:
     """An LLM for generating texts from given prompts and sampling parameters.
