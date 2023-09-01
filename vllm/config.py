@@ -299,6 +299,6 @@ def _get_and_verify_dtype(
     return torch_dtype
 
 
-class SpeculativeConfig:
+class SpSConfig:
     def __init__(self, window_size: int) -> None:
         self.window_size = window_size

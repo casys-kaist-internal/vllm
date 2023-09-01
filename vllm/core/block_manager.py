@@ -88,7 +88,7 @@ class BlockSpaceManager:
         return (num_free_gpu_blocks - num_required_blocks >=
                 self.watermark_blocks)
 
-    def can_speculative_allocate(self, seq_group: SequenceGroup, window_size: int) -> bool:
+    def can_sps_allocate(self, seq_group: SequenceGroup, window_size: int) -> bool:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
         seq = seq_group.get_seqs()[0]
@@ -116,7 +116,7 @@ class BlockSpaceManager:
         for seq in seq_group.get_seqs():
             self.block_tables[seq.seq_id] = block_table.copy()
 
-    def speculative_allocate(self, seq_group: SequenceGroup, window_size: int) -> None:
+    def sps_allocate(self, seq_group: SequenceGroup, window_size: int) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
         seq = seq_group.get_seqs()[0]

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from vllm import SpeculativeLLM, SamplingParams
+from vllm import SpSLLM, SamplingParams
 
 
 def main(args: argparse.Namespace):
@@ -15,7 +15,7 @@ def main(args: argparse.Namespace):
     # Process all the requests in a single batch if possible.
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
-    llm = SpeculativeLLM(
+    llm = SpSLLM(
         target_model=args.target_model,
         draft_model=args.draft_model,
         window_size=args.window_size,

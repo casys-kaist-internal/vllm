@@ -1,17 +1,17 @@
 import time
 import copy
 from functools import partial
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Dict
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig, SpeculativeConfig)
+                         SchedulerConfig, SpSConfig)
 from vllm.core.scheduler import Scheduler
-from vllm.engine.arg_utils import SpeculativeEngineArgs
+from vllm.engine.arg_utils import SpSEngineArgs
 from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -28,7 +28,7 @@ logger = init_logger(__name__)
 _LOGGING_INTERVAL_SEC = 5
 
 
-class SpeculativeLLMEngine:
+class SpSLLMEngine:
     """An LLM engine that receives requests and generates texts.
 
     This is the main class for the vLLM engine. It receives requests
@@ -65,7 +65,7 @@ class SpeculativeLLMEngine:
         target_parallel_config: ParallelConfig,
         draft_parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
-        speculative_config: SpeculativeConfig,
+        sps_config: SpSConfig,
         distributed_init_method: str,
         placement_group: Optional["PlacementGroup"],
         log_stats: bool,
@@ -93,7 +93,7 @@ class SpeculativeLLMEngine:
         self.target_parallel_config = target_parallel_config
         self.draft_parallel_config = draft_parallel_config
         self.scheduler_config = scheduler_config
-        self.speculative_config = speculative_config
+        self.sps_config = sps_config
         self.log_stats = log_stats
         self._verify_args()
 
@@ -249,7 +249,7 @@ class SpeculativeLLMEngine:
             "init_cache_engine", cache_config=self.cache_config)
 
     @classmethod
-    def from_engine_args(cls, engine_args: SpeculativeEngineArgs) -> "SpeculativeLLMEngine":
+    def from_engine_args(cls, engine_args: SpSEngineArgs) -> "SpSLLMEngine":
         """Creates an LLM engine from the engine arguments."""
         # Create the engine configs.
         engine_configs = engine_args.create_engine_configs()
@@ -330,10 +330,10 @@ class SpeculativeLLMEngine:
         """Returns True if there are unfinished requests."""
         return self.scheduler.has_unfinished_seqs()
 
-    def speculative_step(self) -> List[RequestOutput]:
+    def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.speculative_schedule(
-            self.speculative_config.window_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+        seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
+            self.sps_config.window_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -346,90 +346,68 @@ class SpeculativeLLMEngine:
                 for seq_group in scheduler_outputs.ignored_seq_groups
             ]
 
-        for _ in range(self.speculative_config.window_size):
-            output = self._run_draft_workers(
+        # For prompt just sample with auto-regressive target model
+        if scheduler_outputs.prompt_run:
+            output = self._run_target_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
-
             # Update the scheduler with the model outputs.
-            seq_groups = self.scheduler.speculative_update(output)
+            seq_groups = self.scheduler.update(output)
 
             # Decode the sequences.
             self._decode_sequences(seq_groups)
 
-            for seq_group_metadata in seq_group_metadata_list:
-                seq_group_metadata.is_prompt = False
+        else:
+            draft_output_list: List[Dict[int, SequenceOutputs]] = []
 
-            scheduler_outputs.blocks_to_swap_in = None
-            scheduler_outputs.blocks_to_swap_out = None
-            scheduler_outputs.blocks_to_copy = None
+            for _ in range(self.sps_config.window_size):
+                draft_outputs = self._run_draft_workers(
+                    "execute_model",
+                    seq_group_metadata_list=seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
 
-        # Execute the target model 1 time
-        output = self._run_target_workers(
-            "execute_target_model",
-            seq_group_metadata_list=seq_group_metadata_list,
-            blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-            blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-            blocks_to_copy=scheduler_outputs.blocks_to_copy,
-        )
+                draft_output_list.append(draft_outputs)
 
-        # Verify and rollback
+                # Update the scheduler with the model outputs.
+                seq_groups = self.scheduler.update(draft_outputs)
 
-        # Stop the sequences that meet the stopping criteria.
-        self._stop_sequences(seq_groups)
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
+                # Decode the sequences.
+                self._decode_sequences(seq_groups)
 
-        # Create the outputs.
-        request_outputs: List[RequestOutput] = []
-        for seq_group in seq_groups + scheduler_outputs.ignored_seq_groups:
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
+                scheduler_outputs.blocks_to_swap_in = None
+                scheduler_outputs.blocks_to_swap_out = None
+                scheduler_outputs.blocks_to_copy = None
 
-        if self.log_stats:
-            # Log the system stats.
-            self._log_system_stats(scheduler_outputs.prompt_run,
-                                   scheduler_outputs.num_batched_tokens)
-        return request_outputs
+            # Execute the target model 1 time
+            target_outputs = self._run_target_workers(
+                "execute_target_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
 
-    def step(self) -> List[RequestOutput]:
-        """Performs one decoding iteration and returns newly generated results.
+            # Verify and rollback
+            for i in range(self.sps_config.window_size):
+                # sample r from uniform distribution
 
-        This function performs one decoding iteration of the engine. It first
-        schedules the sequences to be executed in the next iteration and the
-        token blocks to be swapped in/out/copy. Then, it executes the model
-        and updates the scheduler with the model outputs. Finally, it decodes
-        the sequences and returns the newly generated results.
-        """
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-        if scheduler_outputs.is_empty():
-            if not scheduler_outputs.ignored_seq_groups:
-                # Nothing to do.
-                return []
-            # If there are ignored seq groups, we need to return them as the
-            # request outputs.
-            return [
-                RequestOutput.from_seq_group(seq_group)
-                for seq_group in scheduler_outputs.ignored_seq_groups
-            ]
+                draft_outputs = draft_output_list[i]
+                for seq_id, draft_seq_outputs in draft_outputs:
+                    target_seq_outputs = target_outputs[seq_id]
 
-        # Execute the model.
-        output = self._run_workers(
-            "execute_model",
-            seq_group_metadata_list=seq_group_metadata_list,
-            blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-            blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-            blocks_to_copy=scheduler_outputs.blocks_to_copy,
-        )
-        # Update the scheduler with the model outputs.
-        seq_groups = self.scheduler.update(output)
+                    draft_seq_outputs.logprobs
+                    target_seq_outputs.logprobs
 
-        # Decode the sequences.
-        self._decode_sequences(seq_groups)
+            # Update the scheduler with the model outputs.
+            seq_groups = self.scheduler.update(output)
+
         # Stop the sequences that meet the stopping criteria.
         self._stop_sequences(seq_groups)
         # Free the finished sequence groups.

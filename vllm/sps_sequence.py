@@ -41,7 +41,7 @@ class SequenceStatus(enum.Enum):
         return finish_reason
 
 
-class SpeculativeSequenceData:
+class SequenceData:
     """Data associated with a sequence.
 
 
@@ -87,7 +87,7 @@ class SpeculativeSequenceData:
         return len(self.output_token_ids)
 
     def get_token_ids(self) -> List[int]:
-        return self.prompt_token_ids + self.output_token_ids
+        return self.prompt_token_ids + self.output_token_ids + self.draft_token_ids
 
     def get_last_token_id(self) -> int:
         if not self.output_token_ids:
@@ -128,7 +128,7 @@ class Sequence:
         self.prompt = prompt
         self.block_size = block_size
 
-        self.data = SpeculativeSequenceData(prompt_token_ids)
+        self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: List[Dict[int, float]] = []
         self.output_tokens: List[str] = []
         self.output_text = ""
@@ -284,7 +284,7 @@ class SequenceGroupMetadata:
         self,
         request_id: str,
         is_prompt: bool,
-        seq_data: Dict[int, SpeculativeSequenceData],
+        seq_data: Dict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
     ) -> None:

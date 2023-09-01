@@ -3,14 +3,14 @@ from typing import List, Optional, Union
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
-from vllm.engine.arg_utils import SpeculativeEngineArgs
-from vllm.engine.speculative_llm_engine import SpeculativeLLMEngine
+from vllm.engine.arg_utils import SpSEngineArgs
+from vllm.engine.sps_llm_engine import SpSLLMEngine
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.utils import Counter
 
 
-class SpeculativeLLM:
+class SpSLLM:
     """An LLM for generating texts from given prompts and sampling parameters.
 
     This class includes a tokenizer, a language model (possibly distributed
@@ -55,7 +55,7 @@ class SpeculativeLLM:
     ) -> None:
         if "disable_log_stats" not in kwargs:
             kwargs["disable_log_stats"] = True
-        engine_args = SpeculativeEngineArgs(
+        engine_args = SpSEngineArgs(
             target_model=target_model,
             draft_model=draft_model,
             window_size=window_size,
@@ -67,7 +67,7 @@ class SpeculativeLLM:
             seed=seed,
             **kwargs,
         )
-        self.llm_engine = SpeculativeLLMEngine.from_engine_args(engine_args)
+        self.llm_engine = SpSLLMEngine.from_engine_args(engine_args)
         self.request_counter = Counter()
 
     def get_tokenizer(
@@ -151,7 +151,7 @@ class SpeculativeLLM:
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
-            step_outputs = self.llm_engine.speculative_step()
+            step_outputs = self.llm_engine.step()
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

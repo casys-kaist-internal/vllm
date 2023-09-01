@@ -7,11 +7,11 @@ import torch.distributed
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
-from vllm.model_executor import get_model, InputMetadata, set_random_seed
+from vllm.model_executor import get_model, InputMetadata, SpSInputMetadata, set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel)
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import SequenceData, SequenceGroupMetadata, SequenceOutputs
+from vllm.sps_sequence import SequenceData, SequenceGroupMetadata, SequenceOutputs
 from vllm.worker.cache_engine import CacheEngine
 from vllm.utils import get_gpu_memory
 
@@ -253,7 +253,7 @@ class Worker:
         )
         return tokens_tensor, positions_tensor, input_metadata
 
-    def _prepare_target_inputs(  # FIXME(sangjin)
+    def _prepare_target_inputs(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
@@ -261,12 +261,11 @@ class Worker:
         input_tokens: List[int] = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
+        prompt_lens: List[int] = []
 
         # Add draft tokens.
         draft_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
-            assert seq_group_metadata.is_target
-
             seq_ids = list(seq_group_metadata.seq_data.keys())
             sampling_params = seq_group_metadata.sampling_params
             seq_groups.append((seq_ids, sampling_params))
@@ -275,21 +274,19 @@ class Worker:
             seq_id = seq_ids[0]
 
             seq_data = seq_group_metadata.seq_data[seq_id]
-            draft_tokens = seq_data.get_draft_token_ids()
+            draft_tokens = seq_data.get_token_ids()
             draft_len = len(draft_tokens)
             draft_lens.append(draft_len)
 
             input_tokens.extend(draft_tokens)
             # NOTE(woosuk): Here we assume that the first token in the prompt
             # is always the first token in the sequence.
-            input_positions.extend(
-                range(len(draft_tokens) + seq_data.get_len()))  # FIXME(sangjin)
+            input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
 
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.extend(
-                    [0] * len(draft_tokens) + seq_data.get_len())
+                slot_mapping.extend([0] * len(draft_tokens))
                 continue
 
             # Compute the slot mapping.
@@ -326,10 +323,11 @@ class Worker:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
-        input_metadata = InputMetadata(
+        input_metadata = SpSInputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=draft_lens,
+            prompt_lens=prompt_lens,
+            draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,

@@ -6,9 +6,9 @@ from vllm.config import CacheConfig, SchedulerConfig
 from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
-                           SequenceGroupMetadata, SequenceOutputs,
-                           SequenceStatus)
+from vllm.sps_sequence import (Sequence, SpSSequenceData, SequenceData, SequenceGroup,
+                               SequenceGroupMetadata, SequenceOutputs,
+                               SequenceStatus)
 
 logger = init_logger(__name__)
 
@@ -270,7 +270,7 @@ class Scheduler:
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
 
-    def _speculative_schedule(self, window_size) -> SchedulerOutputs:
+    def _sps_schedule(self, window_size) -> SchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
         blocks_to_swap_in: Dict[int, int] = {}
         blocks_to_swap_out: Dict[int, int] = {}
@@ -305,11 +305,11 @@ class Scheduler:
                     break
 
                 # If the sequence group cannot be allocated, stop.
-                if not self.block_manager.can_speculative_allocate(seq_group, window_size):
+                if not self.block_manager.can_allocate(seq_group):
                     break
 
                 # If the number of batched tokens exceeds the limit, stop.
-                if (num_batched_tokens + num_prompt_tokens + window_size >
+                if (num_batched_tokens + num_prompt_tokens >
                         self.scheduler_config.max_num_batched_tokens):
                     break
 
@@ -325,10 +325,9 @@ class Scheduler:
                     break
 
                 seq_group = self.waiting.pop(0)
-                self._speculative_allocate(seq_group, window_size)
+                self._allocate(seq_group)
                 self.running.append(seq_group)
-                # FIXME(sangjin)
-                num_batched_tokens += (num_prompt_tokens + window_size)
+                num_batched_tokens += num_prompt_tokens
                 scheduled.append(seq_group)
 
             if scheduled:
@@ -413,16 +412,19 @@ class Scheduler:
         )
         return scheduler_outputs
 
-    def speculative_schedule(self, window_size) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
+    def sps_schedule(
+            self,
+            window_size: int
+    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
-        scheduler_outputs = self._speculative_schedule(window_size)
+        scheduler_outputs = self._sps_schedule(window_size)
 
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
-            seq_data: Dict[int, List[SequenceData]] = {}
+            seq_data: Dict[int, List[SpSSequenceData]] = {}
             block_tables: Dict[int, List[int]] = {}
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
@@ -471,38 +473,6 @@ class Scheduler:
                 seq.append_token_id(output.output_token, output.logprobs)
         return scheduled
 
-    def speculative_update(
-        self,
-        seq_outputs: Dict[int, SequenceOutputs],
-    ) -> List[SequenceGroup]:
-        scheduled: List[SequenceGroup] = []
-        for seq_group in self.running:
-            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                if seq.seq_id in seq_outputs:
-                    scheduled.append(seq_group)
-                    break
-
-        # Update the scheduled sequences and free blocks.
-        for seq_group in scheduled:
-            # Process beam search results before processing the new tokens.
-            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                output = seq_outputs[seq.seq_id]
-                if seq.seq_id != output.parent_seq_id:
-                    # The sequence is a fork of the parent sequence (beam
-                    # search). Free the current sequence.
-                    self.block_manager.free(seq)
-                    # Fork the parent sequence.
-                    parent_seq = seq_group.find(output.parent_seq_id)
-                    parent_seq.fork(seq)
-                    self.block_manager.fork(parent_seq, seq)
-
-            # Process the new tokens.
-            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                # Append a new token to the sequence.
-                output = seq_outputs[seq.seq_id]
-                seq.append_token_id(output.output_token, output.logprobs)
-        return scheduled
-
     def free_seq(self, seq: Sequence, finish_status: SequenceStatus) -> None:
         seq.status = finish_status
         self.block_manager.free(seq)
@@ -518,8 +488,8 @@ class Scheduler:
         for seq in seq_group.get_seqs():
             seq.status = SequenceStatus.RUNNING
 
-    def _speculative_allocate(self, seq_group: SequenceGroup, window_size: int) -> None:
-        self.block_manager.speculative_allocate(seq_group, window_size)
+    def _sps_allocate(self, seq_group: SequenceGroup, window_size: int) -> None:
+        self.block_manager.sps_allocate(seq_group, window_size)
         for seq in seq_group.get_seqs():
             seq.status = SequenceStatus.RUNNING
 
