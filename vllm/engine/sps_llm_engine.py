@@ -366,7 +366,7 @@ class SpSLLMEngine:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
 
             for _ in range(self.sps_config.window_size):
-                draft_outputs = self._run_draft_workers(
+                draft_output = self._run_draft_workers(
                     "execute_model",
                     seq_group_metadata_list=seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -374,10 +374,10 @@ class SpSLLMEngine:
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
 
-                draft_output_list.append(draft_outputs)
+                draft_output_list.append(draft_output)
 
                 # Update the scheduler with the model outputs.
-                seq_groups = self.scheduler.update(draft_outputs)
+                seq_groups = self.scheduler.update(draft_output)
 
                 # Decode the sequences.
                 self._decode_sequences(seq_groups)
@@ -387,7 +387,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_copy = None
 
             # Execute the target model 1 time
-            target_outputs = self._run_target_workers(
+            target_output = self._run_target_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -397,12 +397,11 @@ class SpSLLMEngine:
 
             # Verify and rollback
             accepted_cnt = 0
-            for i in range(self.sps_config.window_size):
-                draft_outputs = draft_output_list[i]
-                for seq_id, draft_seq_outputs in draft_outputs:
-                    token_id = draft_seq_outputs.output_token
-                    draft_prob = draft_seq_outputs.prob[token_id]
-                    target_prob = target_outputs[seq_id].prob[token_id]
+            for i, draft_output in enumerate(draft_output_list):
+                for seq_id, draft_seq_output in draft_output:
+                    token_id = draft_seq_output.output_token
+                    draft_prob = draft_seq_output.prob[token_id]
+                    target_prob = target_output[seq_id].prob[i][token_id]
 
                     r = torch.rand(1, device=draft_prob.device)
 
@@ -411,8 +410,8 @@ class SpSLLMEngine:
                         accepted_cnt += 1
                     else:
                         # reject
-                        resample_output = modified_rejection_sample(target_outputs[seq_id].prob,
-                                                                    draft_seq_outputs.prob)
+                        resample_output = modified_rejection_sample(target_output[seq_id].prob[i],
+                                                                    draft_seq_output.prob)
                         break
 
                     if accepted_cnt != self.sps_config.window_size:
