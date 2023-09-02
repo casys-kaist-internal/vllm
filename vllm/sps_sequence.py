@@ -63,7 +63,7 @@ class SequenceData:
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
-        self.draft_cumulative_logprobs: List[int] = []  # FIXME(sangjin)
+        self.draft_cumulative_logprobs: List[float] = []
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -171,6 +171,21 @@ class Sequence:
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
+
+    def append_draft_token_id(
+        self,
+        token_id: int,
+        logprobs: Dict[int, float],
+    ) -> None:
+        assert token_id in logprobs
+        self._append_tokens_to_blocks([token_id])
+        self.output_logprobs.append(logprobs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id])
+
+    def accept_draft_tokens(self, accept_cnt: int, reject_cnt: int) -> None:
+        self.data.accept_draft_tokens(accept_cnt)
+        self.output_logprobs = self.output_logprobs[:-reject_cnt]
+        # how to rollback logical blocks?
 
     def get_len(self) -> int:
         return self.data.get_len()

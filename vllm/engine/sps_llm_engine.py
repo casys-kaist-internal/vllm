@@ -411,14 +411,19 @@ class SpSLLMEngine:
                         accepted_cnt += 1
                     else:
                         # reject
+                        resample_output = modified_rejection_sample(target_outputs[seq_id].prob,
+                                                                    draft_seq_outputs.prob)
                         break
 
-            if accepted_cnt != self.sps_config.window_size:
-                # rollback
-                pass
-            else:
-                # all accepted so sample additional token
-                pass
+                    if accepted_cnt != self.sps_config.window_size:
+                        # rollback
+                        # find sequence
+                        seq.accept_draft_tokens(accepted_cnt)
+                    else:
+                        # all accepted so sample additional token
+                        next_output = XXX
+                        seq.append_token_id(
+                            next_output.output_token, next_output.logprobs)
 
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.update(output)
