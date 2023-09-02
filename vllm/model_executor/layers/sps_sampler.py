@@ -9,7 +9,7 @@ from vllm.model_executor.input_metadata import SpSInputMetadata
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     gather_from_tensor_model_parallel_region)
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import SequenceOutputs
+from vllm.sps_sequence import SequenceOutputs
 
 _SAMPLING_EPS = 1e-5
 
@@ -41,8 +41,8 @@ class SpSSampler(nn.Module):
         embedding_bias: Optional[torch.Tensor] = None,
     ) -> Dict[int, SequenceOutputs]:
         # Get the hidden states that we use for sampling.
-        hidden_states = _prune_hidden_states(hidden_states, input_metadata)
 
+        hidden_states = _prune_hidden_states(hidden_states, input_metadata)
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())
         if embedding_bias is not None:
@@ -402,7 +402,8 @@ def _sample(
                 output_logprobs[next_token_id] = logprob[next_token_id].item()
                 seq_outputs[seq_id] = SequenceOutputs(seq_id, seq_id,
                                                       next_token_id,
-                                                      output_logprobs)
+                                                      output_logprobs,
+                                                      prob)
         else:
             # Generate the next tokens for generation tokens.
             prob = probs[idx:idx + len(seq_ids)]
@@ -435,6 +436,7 @@ def _sample(
                     parent_seq_id,
                     next_token_id,
                     output_logprobs,
+                    prob  # FIXME (sangjin) 이거 아닐수도
                 )
 
     return seq_outputs

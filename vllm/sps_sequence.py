@@ -1,6 +1,7 @@
 """Sequence and its related classes."""
 import copy
 import enum
+import torch
 from typing import Dict, List, Optional, Union
 
 from vllm.block import LogicalTokenBlock
@@ -314,11 +315,13 @@ class SequenceOutputs:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        prob: torch.Tensor,
     ) -> None:
         self.seq_id = seq_id
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.prob = prob
 
     def __repr__(self) -> str:
         return (f"SequenceOutputs(seq_id={self.seq_id}, "

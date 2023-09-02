@@ -1,5 +1,6 @@
 import time
 import copy
+import torch
 from functools import partial
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Dict
 
@@ -395,15 +396,29 @@ class SpSLLMEngine:
             )
 
             # Verify and rollback
+            accepted_cnt = 0
             for i in range(self.sps_config.window_size):
-                # sample r from uniform distribution
-
                 draft_outputs = draft_output_list[i]
                 for seq_id, draft_seq_outputs in draft_outputs:
-                    target_seq_outputs = target_outputs[seq_id]
+                    token_id = draft_seq_outputs.output_token
+                    draft_prob = draft_seq_outputs.prob[token_id]
+                    target_prob = target_outputs[seq_id].prob[token_id]
 
-                    draft_seq_outputs.logprobs
-                    target_seq_outputs.logprobs
+                    r = torch.rand(1, device=draft_prob.device)
+
+                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
+                        # accept
+                        accepted_cnt += 1
+                    else:
+                        # reject
+                        break
+
+            if accepted_cnt != self.sps_config.window_size:
+                # rollback
+                pass
+            else:
+                # all accepted so sample additional token
+                pass
 
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.update(output)
