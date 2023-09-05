@@ -1,6 +1,5 @@
 import time
 import copy
-import torch
 from functools import partial
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Dict
 
@@ -12,7 +11,7 @@ from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
+from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -117,7 +116,7 @@ class SpSLLMEngine:
         self._init_cache()
 
         # Create the scheduler.
-        self.scheduler = Scheduler(scheduler_config, cache_config)
+        self.scheduler = Scheduler(scheduler_config, cache_config, sps_config)
 
         # Logging.
         self.last_logging_time = 0.0
@@ -301,7 +300,8 @@ class SpSLLMEngine:
         seqs: List[Sequence] = []
         for _ in range(sampling_params.best_of):
             seq_id = next(self.seq_counter)
-            seq = Sequence(seq_id, prompt, prompt_token_ids, block_size)
+            seq = Sequence(seq_id, prompt, prompt_token_ids,
+                           block_size, self.sps_config.draft_size)
             seqs.append(seq)
 
         # Create the sequence group.
@@ -334,7 +334,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
-            self.sps_config.window_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+            self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -365,7 +365,7 @@ class SpSLLMEngine:
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
 
-            for _ in range(self.sps_config.window_size):
+            for _ in range(self.sps_config.draft_size):
                 draft_output = self._run_draft_workers(
                     "execute_model",
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -377,7 +377,7 @@ class SpSLLMEngine:
                 draft_output_list.append(draft_output)
 
                 # Update the scheduler with the model outputs.
-                seq_groups = self.scheduler.update(draft_output)
+                seq_groups = self.scheduler.draft_update(draft_output)
 
                 # Decode the sequences.
                 self._decode_sequences(seq_groups)
@@ -395,37 +395,9 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            # Verify and rollback
-            accepted_cnt = 0
-            for i, draft_output in enumerate(draft_output_list):
-                for seq_id, draft_seq_output in draft_output:
-                    token_id = draft_seq_output.output_token
-                    draft_prob = draft_seq_output.prob[token_id]
-                    target_prob = target_output[seq_id].prob[i][token_id]
-
-                    r = torch.rand(1, device=draft_prob.device)
-
-                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
-                        # accept
-                        accepted_cnt += 1
-                    else:
-                        # reject
-                        resample_output = modified_rejection_sample(target_output[seq_id].prob[i],
-                                                                    draft_seq_output.prob)
-                        break
-
-                    if accepted_cnt != self.sps_config.window_size:
-                        # rollback
-                        # find sequence
-                        seq.accept_draft_tokens(accepted_cnt)
-                    else:
-                        # all accepted so sample additional token
-                        next_output = XXX
-                        seq.append_token_id(
-                            next_output.output_token, next_output.logprobs)
-
             # Update the scheduler with the model outputs.
-            seq_groups = self.scheduler.update(output)
+            seq_groups = self.scheduler.target_update(
+                draft_output_list, target_output)
 
         # Stop the sequences that meet the stopping criteria.
         self._stop_sequences(seq_groups)

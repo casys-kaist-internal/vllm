@@ -186,7 +186,7 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-    window_size: int = 8
+    draft_size: int = 8
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -230,7 +230,7 @@ class SpSEngineArgs:
             help='name or path of the huggingface model to use')
         parser.add_argument('--window-size',
                             type=int,
-                            default=SpSEngineArgs.window_size,
+                            default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
         parser.add_argument(
             '--tokenizer',
@@ -370,5 +370,5 @@ class SpSEngineArgs:
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.get_max_model_len())
-        sps_config = SpSConfig(self.window_size)
+        sps_config = SpSConfig(self.draft_size)
         return target_model_config, draft_model_config, cache_config, target_parallel_config, draft_parallel_config, scheduler_config, sps_config

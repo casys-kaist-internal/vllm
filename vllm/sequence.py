@@ -179,16 +179,16 @@ class Sequence:
         child_seq.output_logprobs = copy.deepcopy(self.output_logprobs)
         child_seq.data = copy.deepcopy(self.data)
 
-    def get_num_additional_blocks(self, window_size) -> int:
+    def get_num_additional_blocks(self, draft_size) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
 
-        if window_size <= num_empty_slots:
+        if draft_size <= num_empty_slots:
             return 0
 
         num_additional_blocks = (
-            window_size - num_empty_slots) // self.block_size
-        if (window_size - num_empty_slots) == num_additional_blocks * self.block_size:
+            draft_size - num_empty_slots) // self.block_size
+        if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
             return num_additional_blocks
         else:
             return num_additional_blocks + 1

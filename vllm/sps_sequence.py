@@ -88,7 +88,7 @@ class SequenceData:
         return len(self.output_token_ids)
 
     def get_token_ids(self) -> List[int]:
-        return self.prompt_token_ids + self.output_token_ids + self.draft_token_ids
+        return self.prompt_token_ids + self.output_token_ids + self.draft_token_ids  # FIXME
 
     def get_last_token_id(self) -> int:
         if not self.output_token_ids:
@@ -124,10 +124,12 @@ class Sequence:
         prompt: str,
         prompt_token_ids: List[int],
         block_size: int,
+        draft_size: int,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
         self.block_size = block_size
+        self.draft_size = draft_size
 
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: List[Dict[int, float]] = []
@@ -192,10 +194,12 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id])
 
-    def accept_draft_tokens(self, accept_cnt: int, reject_cnt: int) -> None:
+    def accept_draft_tokens(self, accept_cnt: int) -> None:
+        assert accept_cnt <= self.draft_size
+
+        reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        # how to rollback logical blocks?
         self._remove_tokens_from_blocks(reject_cnt)
 
     def get_len(self) -> int:
@@ -225,16 +229,16 @@ class Sequence:
         child_seq.output_logprobs = copy.deepcopy(self.output_logprobs)
         child_seq.data = copy.deepcopy(self.data)
 
-    def get_num_additional_blocks(self, window_size) -> int:
+    def get_num_additional_blocks(self, draft_size) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
 
-        if window_size <= num_empty_slots:
+        if draft_size <= num_empty_slots:
             return 0
 
         num_additional_blocks = (
-            window_size - num_empty_slots) // self.block_size
-        if (window_size - num_empty_slots) == num_additional_blocks * self.block_size:
+            draft_size - num_empty_slots) // self.block_size
+        if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
             return num_additional_blocks
         else:
             return num_additional_blocks + 1

@@ -44,7 +44,7 @@ class SpSLLM:
         self,
         target_model: str,
         draft_model: str,
-        window_size: int,
+        draft_size: int,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,
@@ -58,7 +58,7 @@ class SpSLLM:
         engine_args = SpSEngineArgs(
             target_model=target_model,
             draft_model=draft_model,
-            window_size=window_size,
+            draft_size=draft_size,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
             trust_remote_code=trust_remote_code,

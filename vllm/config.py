@@ -300,5 +300,5 @@ def _get_and_verify_dtype(
 
 
 class SpSConfig:
-    def __init__(self, window_size: int) -> None:
-        self.window_size = window_size
+    def __init__(self, draft_size: int) -> None:
+        self.draft_size = draft_size

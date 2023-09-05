@@ -18,7 +18,7 @@ def main(args: argparse.Namespace):
     llm = SpSLLM(
         target_model=args.target_model,
         draft_model=args.draft_model,
-        window_size=args.window_size,
+        draft_size=args.draft_size,
         tokenizer=args.tokenizer,
         target_tensor_parallel_size=args.target_tensor_parallel_size,
         max_num_seqs=args.batch_size,

@@ -42,6 +42,7 @@ class SpSSampler(nn.Module):
     ) -> Dict[int, SequenceOutputs]:
         # Get the hidden states that we use for sampling.
 
+        # FIXME(sangjin): prune logic
         hidden_states = _prune_hidden_states(hidden_states, input_metadata)
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())
@@ -440,3 +441,27 @@ def _sample(
                 )
 
     return seq_outputs
+
+
+def modified_rejection_sample(
+    target_prob: torch.Tensor,
+    draft_prob: torch.Tensor,
+    sampling_params: SamplingParams
+) -> SequenceOutputs:
+    x = target_prob - draft_prob
+    x_max = torch.where(x > 0, x, torch.zeros_like(x))
+    x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
+    resample_prob = x_max / x_max_sum
+
+    # naive greedy sampling
+    if sampling_params.temperature < _SAMPLING_EPS:
+        resample_token_id = torch.argmax(resample_prob)
+
+    else:
+        resample_token_id = torch.multinomial(resample_prob,
+                                              num_samples=1,
+                                              replacement=True)
+
+    resample_output_logprobs = torch.log(resample_prob)
+
+    return resample_token_id, resample_output_logprobs[resample_token_id]

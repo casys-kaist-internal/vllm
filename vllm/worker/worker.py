@@ -274,6 +274,7 @@ class Worker:
             seq_id = seq_ids[0]
 
             seq_data = seq_group_metadata.seq_data[seq_id]
+            # FIXME(sangjin): initially we dont use kv cache
             draft_tokens = seq_data.get_token_ids()
             draft_len = len(draft_tokens)
             draft_lens.append(draft_len)
@@ -326,7 +327,7 @@ class Worker:
         input_metadata = SpSInputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=prompt_lens,
+            prompt_lens=draft_lens,  # FIXME (sangjin)
             draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,

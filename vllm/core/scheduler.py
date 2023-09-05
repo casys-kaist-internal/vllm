@@ -1,14 +1,16 @@
 import enum
 import time
+import torch
 from typing import Dict, List, Optional, Tuple
 
-from vllm.config import CacheConfig, SchedulerConfig
+from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sps_sequence import (Sequence, SpSSequenceData, SequenceData, SequenceGroup,
+from vllm.sps_sequence import (Sequence, SequenceData, SequenceData, SequenceGroup,
                                SequenceGroupMetadata, SequenceOutputs,
                                SequenceStatus)
+from vllm.model_executor.layers.sps_sampler import modified_rejection_sample
 
 logger = init_logger(__name__)
 
@@ -60,9 +62,11 @@ class Scheduler:
         self,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
+        sps_config: SpSConfig
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
+        self.sps_config = sps_config
 
         # Instantiate the scheduling policy.
         self.policy = PolicyFactory.get_policy(policy_name="fcfs")
@@ -270,7 +274,7 @@ class Scheduler:
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
 
-    def _sps_schedule(self, window_size) -> SchedulerOutputs:
+    def _sps_schedule(self, draft_size) -> SchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
         blocks_to_swap_in: Dict[int, int] = {}
         blocks_to_swap_out: Dict[int, int] = {}
@@ -294,7 +298,7 @@ class Scheduler:
                 prompt_limit = min(
                     self.scheduler_config.max_model_len,
                     self.scheduler_config.max_num_batched_tokens)
-                if num_prompt_tokens + window_size > prompt_limit:
+                if num_prompt_tokens + draft_size > prompt_limit:
                     logger.warning(
                         f"Input prompt ({num_prompt_tokens} tokens) is too long"
                         f" and exceeds limit of {prompt_limit}")
@@ -353,7 +357,7 @@ class Scheduler:
         preempted: List[SequenceGroup] = []
         while self.running:
             seq_group = self.running.pop(0)
-            while not self.block_manager.can_append_slots(seq_group, window_size):
+            while not self.block_manager.can_append_slots(seq_group, draft_size):
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = self.running.pop(-1)
@@ -367,7 +371,7 @@ class Scheduler:
                     break
             else:
                 # Append new slots to the sequence group.
-                self._append_slots(seq_group, window_size, blocks_to_copy)
+                self._append_slots(seq_group, draft_size, blocks_to_copy)
                 running.append(seq_group)
         self.running = running
 
@@ -394,7 +398,7 @@ class Scheduler:
 
             seq_group = self.swapped.pop(0)
             self._swap_in(seq_group, blocks_to_swap_in)
-            self._append_slots(seq_group, window_size, blocks_to_copy)
+            self._append_slots(seq_group, draft_size, blocks_to_copy)
             self.running.append(seq_group)
 
         num_batched_tokens = sum(
@@ -414,17 +418,17 @@ class Scheduler:
 
     def sps_schedule(
             self,
-            window_size: int
+            draft_size: int
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
-        scheduler_outputs = self._sps_schedule(window_size)
+        scheduler_outputs = self._sps_schedule(draft_size)
 
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
-            seq_data: Dict[int, List[SpSSequenceData]] = {}
+            seq_data: Dict[int, List[SequenceData]] = {}
             block_tables: Dict[int, List[int]] = {}
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
@@ -473,6 +477,85 @@ class Scheduler:
                 seq.append_token_id(output.output_token, output.logprobs)
         return scheduled
 
+    def draft_update(
+        self,
+        seq_outputs: Dict[int, SequenceOutputs],
+    ) -> List[SequenceGroup]:
+        scheduled: List[SequenceGroup] = []
+        for seq_group in self.running:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                if seq.seq_id in seq_outputs:
+                    scheduled.append(seq_group)
+                    break
+
+        # Update the scheduled sequences and free blocks.
+        for seq_group in scheduled:
+            # Process beam search results before processing the new tokens.
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                output = seq_outputs[seq.seq_id]
+                if seq.seq_id != output.parent_seq_id:
+                    # The sequence is a fork of the parent sequence (beam
+                    # search). Free the current sequence.
+                    self.block_manager.free(seq)
+                    # Fork the parent sequence.
+                    parent_seq = seq_group.find(output.parent_seq_id)
+                    parent_seq.fork(seq)
+                    self.block_manager.fork(parent_seq, seq)
+
+            # Process the new tokens.
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                # Append a new token to the sequence.
+                output = seq_outputs[seq.seq_id]
+                seq.append_draft_token_id(output.output_token, output.logprobs)
+
+        return scheduled
+
+    def target_update(
+        self,
+        draft_output_list: List[Dict[int, SequenceOutputs]],
+        target_output: Dict[int, SequenceOutputs]
+    ) -> List[SequenceGroup]:
+        scheduled: List[SequenceGroup] = []
+        for seq_group in self.running:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                if seq.seq_id in target_output:
+                    scheduled.append(seq_group)
+                    break
+
+        # Verify and rollback
+        for seq_group in scheduled:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                accepted_cnt = 0
+                for i, draft_output in enumerate(draft_output_list):
+                    draft_seq_output = draft_output[seq.seq_id]
+                    token_id = draft_seq_output.output_token
+                    draft_prob = draft_seq_output.prob[token_id]
+                    target_prob = target_output[seq.seq_id].prob[i][token_id]
+
+                    r = torch.rand(1, device=draft_prob.device)
+
+                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
+                        # accept
+                        accepted_cnt += 1
+                    else:
+                        # reject
+                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].prob[i],
+                                                                                         draft_seq_output.prob, seq_group.sampling_params)
+                        break
+
+                if accepted_cnt != self.sps_config.draft_size:
+                    # rollback
+                    seq.accept_draft_tokens(accepted_cnt)
+                    seq.append_token_id(resample_token_id, resample_logprobs)
+                    self.block_manager.remove_slots(seq)
+
+                else:
+                    # all accepted so sample additional token
+                    seq.append_token_id(
+                        target_output[seq.seq_id].next_token_id, target_output[seq.seq_id].output_logprobs)
+
+        return scheduled
+
     def free_seq(self, seq: Sequence, finish_status: SequenceStatus) -> None:
         seq.status = finish_status
         self.block_manager.free(seq)
@@ -488,8 +571,8 @@ class Scheduler:
         for seq in seq_group.get_seqs():
             seq.status = SequenceStatus.RUNNING
 
-    def _sps_allocate(self, seq_group: SequenceGroup, window_size: int) -> None:
-        self.block_manager.sps_allocate(seq_group, window_size)
+    def _sps_allocate(self, seq_group: SequenceGroup, draft_size: int) -> None:
+        self.block_manager.sps_allocate(seq_group, draft_size)
         for seq in seq_group.get_seqs():
             seq.status = SequenceStatus.RUNNING
 
@@ -510,11 +593,11 @@ class Scheduler:
     def _append_slots(
         self,
         seq_group: SequenceGroup,
-        window_size: int,
+        draft_size: int,
         blocks_to_copy: Dict[int, List[int]],
     ) -> None:
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-            ret = self.block_manager.append_slots(seq, window_size)
+            ret = self.block_manager.append_slots(seq, draft_size)
             if ret is not None:
                 src_block, dst_block = ret
                 if src_block in blocks_to_copy:
