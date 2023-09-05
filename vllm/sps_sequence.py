@@ -162,6 +162,16 @@ class Sequence:
                                                num_empty_slots])
             cursor += num_empty_slots
 
+    def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
+        assert len(self.logical_token_blocks) > 0
+
+        for _ in range(remove_cnt):
+            last_block = self.logical_token_blocks[-1]
+            last_block.remove_token()
+
+            if last_block.is_empty():
+                self.logical_token_blocks.pop()
+
     def append_token_id(
         self,
         token_id: int,
@@ -186,6 +196,7 @@ class Sequence:
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         # how to rollback logical blocks?
+        self._remove_tokens_from_blocks(reject_cnt)
 
     def get_len(self) -> int:
         return self.data.get_len()
