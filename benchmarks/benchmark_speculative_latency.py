@@ -70,7 +70,7 @@ if __name__ == '__main__':
                         default='facebook/opt-125m')
     parser.add_argument('--draft-model', type=str,
                         default='facebook/opt-125m')
-    parser.add_argument('--window-size', type=int, default=8)
+    parser.add_argument('--draft-size', type=int, default=8)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--target-tensor-parallel-size',
                         '-target-tp', type=int, default=1)

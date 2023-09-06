@@ -7,9 +7,9 @@ from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sps_sequence import (Sequence, SequenceData, SequenceData, SequenceGroup,
-                               SequenceGroupMetadata, SequenceOutputs,
-                               SequenceStatus)
+from vllm.sequence import (Sequence, SequenceData, SequenceData, SequenceGroup,
+                           SequenceGroupMetadata, SequenceOutputs,
+                           SequenceStatus)
 from vllm.model_executor.layers.sps_sampler import modified_rejection_sample
 
 logger = init_logger(__name__)
@@ -62,7 +62,7 @@ class Scheduler:
         self,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
-        sps_config: SpSConfig
+        sps_config: SpSConfig = None
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config

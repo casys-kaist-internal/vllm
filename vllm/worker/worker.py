@@ -7,11 +7,11 @@ import torch.distributed
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
-from vllm.model_executor import get_model, InputMetadata, SpSInputMetadata, set_random_seed
+from vllm.model_executor import get_model, InputMetadata, InputMetadata, set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel)
 from vllm.sampling_params import SamplingParams
-from vllm.sps_sequence import SequenceData, SequenceGroupMetadata, SequenceOutputs
+from vllm.sequence import SequenceData, SequenceGroupMetadata, SequenceOutputs
 from vllm.worker.cache_engine import CacheEngine
 from vllm.utils import get_gpu_memory
 
@@ -150,6 +150,8 @@ class Worker:
         input_positions: List[int] = []
         slot_mapping: List[int] = []
 
+        draft_lens: List[int] = []  # working on
+
         # Add prompt tokens.
         prompt_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
@@ -246,11 +248,13 @@ class Worker:
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=prompt_lens,
+            draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
         )
+
         return tokens_tensor, positions_tensor, input_metadata
 
     def _prepare_target_inputs(
@@ -324,7 +328,7 @@ class Worker:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
-        input_metadata = SpSInputMetadata(
+        input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=draft_lens,  # FIXME (sangjin)

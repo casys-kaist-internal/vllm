@@ -84,7 +84,7 @@ class SpSLLMEngine:
             f"use_np_weights={target_model_config.use_np_weights}, "
             f"target_tensor_parallel_size={target_parallel_config.tensor_parallel_size}, "
             f"draft_tensor_parallel_size={draft_parallel_config.tensor_parallel_size}, "
-            f"seed={target_parallel_config.seed})")
+            f"seed={target_model_config.seed})")
         # TODO(woosuk): Print more configs in debug mode.
 
         self.target_model_config = target_model_config
@@ -255,6 +255,7 @@ class SpSLLMEngine:
         engine_configs = engine_args.create_engine_configs()
         # (target_parallel_config, draft_parallel_config)
         parallel_config = engine_configs[3]
+        print(parallel_config)
         # Initialize the cluster.
         distributed_init_method, placement_group = initialize_cluster(
             parallel_config)  # 나중에 고쳐야할 수 있음. draft initialize_cluster는 필요한가

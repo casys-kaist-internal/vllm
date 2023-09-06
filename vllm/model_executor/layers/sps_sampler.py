@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from vllm.model_executor.input_metadata import SpSInputMetadata
+from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     gather_from_tensor_model_parallel_region)
 from vllm.sampling_params import SamplingParams
@@ -37,7 +37,7 @@ class SpSSampler(nn.Module):
         self,
         embedding: torch.Tensor,
         hidden_states: torch.Tensor,
-        input_metadata: SpSInputMetadata,
+        input_metadata: InputMetadata,
         embedding_bias: Optional[torch.Tensor] = None,
     ) -> Dict[int, SequenceOutputs]:
         # Get the hidden states that we use for sampling.
@@ -92,7 +92,7 @@ class SpSSampler(nn.Module):
 
 def _prune_hidden_states(
     hidden_states: torch.Tensor,
-    input_metadata: SpSInputMetadata,
+    input_metadata: InputMetadata,
 ) -> torch.Tensor:
     start_idx = 0
     last_token_indicies: List[int] = []
@@ -108,7 +108,7 @@ def _prune_hidden_states(
 
 
 def _get_penalties(
-        input_metadata: SpSInputMetadata) -> Tuple[List[float], List[float]]:
+        input_metadata: InputMetadata) -> Tuple[List[float], List[float]]:
     # Collect the presence and frequency penalties.
     presence_penalties: List[float] = []
     frequency_penalties: List[float] = []
@@ -127,7 +127,7 @@ def _get_penalties(
     return presence_penalties, frequency_penalties
 
 
-def _get_output_tokens(input_metadata: SpSInputMetadata) -> List[List[int]]:
+def _get_output_tokens(input_metadata: InputMetadata) -> List[List[int]]:
     output_tokens: List[List[int]] = []
     for i, seq_group in enumerate(input_metadata.seq_groups):
         seq_ids, _ = seq_group
@@ -193,7 +193,7 @@ def _apply_penalties(
     return logits
 
 
-def _get_temperatures(input_metadata: SpSInputMetadata) -> List[float]:
+def _get_temperatures(input_metadata: InputMetadata) -> List[float]:
     # Collect the temperatures for the logits.
     temperatures: List[float] = []
     for i, seq_group in enumerate(input_metadata.seq_groups):
@@ -215,7 +215,7 @@ def _get_temperatures(input_metadata: SpSInputMetadata) -> List[float]:
 
 
 def _get_top_p_top_k(
-    input_metadata: SpSInputMetadata,
+    input_metadata: InputMetadata,
     vocab_size: int,
 ) -> Tuple[List[float], List[int]]:
     top_ps: List[float] = []
@@ -376,7 +376,7 @@ def _sample_from_generation_tokens(
 def _sample(
     probs: torch.Tensor,
     logprobs: torch.Tensor,
-    input_metadata: SpSInputMetadata,
+    input_metadata: InputMetadata,
 ) -> Dict[int, SequenceOutputs]:
     seq_outputs: Dict[int, SequenceOutputs] = {}
 
