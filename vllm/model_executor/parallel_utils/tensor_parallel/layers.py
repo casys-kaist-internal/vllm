@@ -11,10 +11,10 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.parameter import Parameter
 
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+#     get_tensor_model_parallel_rank,
+#     get_tensor_model_parallel_world_size,
+# )
 from .mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_tensor_model_parallel_region,
@@ -32,10 +32,10 @@ _MODEL_PARALLEL_ATTRIBUTE_DEFAULTS = {'tensor_model_parallel': False,
                                       'partition_dim': -1,
                                       'partition_stride': 1}
 
-def param_is_not_tensor_parallel_duplicate(param):
-    return (hasattr(param, 'tensor_model_parallel') and
-            param.tensor_model_parallel) or (
-                get_tensor_model_parallel_rank() == 0)
+# def param_is_not_tensor_parallel_duplicate(param):
+#     return (hasattr(param, 'tensor_model_parallel') and
+#             param.tensor_model_parallel) or (
+#                 get_tensor_model_parallel_rank() == 0)
 
 
 def set_tensor_model_parallel_attributes(tensor, is_parallel, dim, stride):
@@ -82,7 +82,8 @@ def _initialize_affine_weight_cpu(weight, output_size, input_size,
                                   per_partition_size, partition_dim,
                                   init_method, stride=1,
                                   return_master_weight=False,
-                                  *, params_dtype=None):
+                                  *, params_dtype=None,
+                                  parallel_state):
     """Initialize affine weight for model parallel.
 
     Build the master weight on all processes and scatter
@@ -107,8 +108,8 @@ def _initialize_affine_weight_cpu(weight, output_size, input_size,
     per_partition_per_stride_size = divide(per_partition_size, stride)
     weight_list = torch.split(master_weight, per_partition_per_stride_size,
                               dim=partition_dim)
-    rank = get_tensor_model_parallel_rank()
-    world_size = get_tensor_model_parallel_world_size()
+    rank = parallel_state.get_tensor_model_parallel_rank()
+    world_size = parallel_state.get_tensor_model_parallel_world_size()
     my_weight_list = weight_list[rank::world_size]
 
     with torch.no_grad():
@@ -136,9 +137,10 @@ class VocabParallelEmbedding(torch.nn.Module):
 
     def __init__(self, num_embeddings: int, embedding_dim: int, *,
                  init_method=init.xavier_normal_,
-                 params_dtype: torch.dtype=None,
-                 use_cpu_initialization: bool=False,
-                 perform_initialization: bool=True):
+                 params_dtype: torch.dtype = None,
+                 use_cpu_initialization: bool = False,
+                 perform_initialization: bool = True,
+                 parallel_state: ParallelState):
         super(VocabParallelEmbedding, self).__init__()
         # Keep the input dimensions.
         self.num_embeddings = num_embeddings
@@ -153,11 +155,12 @@ class VocabParallelEmbedding(torch.nn.Module):
         self.scale_grad_by_freq = False
         self.sparse = False
         self._weight = None
-        self.tensor_model_parallel_size = get_tensor_model_parallel_world_size()
+        self.parallel_state = parallel_state
+        self.tensor_model_parallel_size = parallel_state.get_tensor_model_parallel_world_size()
         # Divide the weight matrix along the vocaburaly dimension.
         self.vocab_start_index, self.vocab_end_index = \
             VocabUtility.vocab_range_from_global_vocab_size(
-                self.num_embeddings, get_tensor_model_parallel_rank(),
+                self.num_embeddings, parallel_state.get_tensor_model_parallel_rank(),
                 self.tensor_model_parallel_size)
         self.num_embeddings_per_partition = self.vocab_end_index - \
             self.vocab_start_index
@@ -171,7 +174,7 @@ class VocabParallelEmbedding(torch.nn.Module):
                 _initialize_affine_weight_cpu(
                     self.weight, self.num_embeddings, self.embedding_dim,
                     self.num_embeddings_per_partition, 0, init_method,
-                    params_dtype=params_dtype)
+                    params_dtype=params_dtype, parallel_state=parallel_state)
         else:
             self.weight = Parameter(torch.empty(
                 self.num_embeddings_per_partition, self.embedding_dim,
@@ -199,7 +202,8 @@ class VocabParallelEmbedding(torch.nn.Module):
         if self.tensor_model_parallel_size > 1:
             output_parallel[input_mask, :] = 0.0
         # Reduce across all the model parallel GPUs.
-        output = reduce_from_tensor_model_parallel_region(output_parallel)
+        output = reduce_from_tensor_model_parallel_region(
+            output_parallel, self.parallel_state)
         return output
 
 
@@ -239,6 +243,7 @@ class ColumnParallelLinear(torch.nn.Module):
                  params_dtype=None,
                  use_cpu_initialization=False,
                  perform_initialization=True,
+                 parallel_state: ParallelState  # SJCHOI
                  ):
         super(ColumnParallelLinear, self).__init__()
 
@@ -247,7 +252,7 @@ class ColumnParallelLinear(torch.nn.Module):
         self.output_size = output_size
         self.gather_output = gather_output
         # Divide the weight matrix along the last dimension.
-        self.world_size = get_tensor_model_parallel_world_size()
+        self.world_size = parallel_state.get_tensor_model_parallel_world_size()
         self.output_size_per_partition = divide(output_size, self.world_size)
         self.skip_bias_add = skip_bias_add
 
@@ -266,7 +271,8 @@ class ColumnParallelLinear(torch.nn.Module):
                 self.master_weight = _initialize_affine_weight_cpu(
                     self.weight, self.output_size, self.input_size,
                     self.output_size_per_partition, 0, init_method,
-                    stride=stride, return_master_weight=keep_master_weight_for_test)
+                    stride=stride, return_master_weight=keep_master_weight_for_test,
+                    parallel_state=parallel_state)
         else:
             self.weight = Parameter(torch.empty(
                 self.output_size_per_partition, self.input_size,
@@ -290,7 +296,6 @@ class ColumnParallelLinear(torch.nn.Module):
                 self.bias.zero_()
         else:
             self.register_parameter('bias', None)
-
 
     def forward(self, input_):
         """Forward of ColumnParallelLinear
@@ -361,6 +366,7 @@ class RowParallelLinear(torch.nn.Module):
                  use_cpu_initialization=False,
                  perform_initialization=True,
                  reduce_results=True,
+                 parallel_state: ParallelState  # SJCHOI
                  ):
         super(RowParallelLinear, self).__init__()
 
@@ -373,7 +379,7 @@ class RowParallelLinear(torch.nn.Module):
             params_dtype = torch.get_default_dtype()
 
         # Divide the weight matrix along the last dimension.
-        self.world_size = get_tensor_model_parallel_world_size()
+        self.world_size = parallel_state.get_tensor_model_parallel_world_size()
         self.input_size_per_partition = divide(input_size, self.world_size)
         self.skip_bias_add = skip_bias_add
 
@@ -394,7 +400,7 @@ class RowParallelLinear(torch.nn.Module):
                     self.weight, self.output_size, self.input_size,
                     self.input_size_per_partition, 1, init_method,
                     stride=stride, return_master_weight=keep_master_weight_for_test,
-                    params_dtype=params_dtype)
+                    params_dtype=params_dtype, parallel_state=parallel_state)
         else:
             self.weight = Parameter(torch.empty(
                 self.output_size, self.input_size_per_partition,

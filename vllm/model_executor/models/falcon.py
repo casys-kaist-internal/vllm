@@ -33,8 +33,8 @@ from vllm.model_executor.layers.attention import (PagedAttention,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
                                               load_tensor_parallel_weights)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+# get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     VocabParallelEmbedding, ColumnParallelLinear, RowParallelLinear,
     reduce_from_tensor_model_parallel_region)
@@ -83,11 +83,11 @@ def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
 
 class FalconAttention(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig, parallel_state: ParallelState):
         super().__init__()
 
         self.hidden_size = config.hidden_size
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
 
         self.total_num_heads = config.num_attention_heads
         assert self.total_num_heads % tp_size == 0
@@ -110,6 +110,7 @@ class FalconAttention(nn.Module):
                 gather_output=False,
                 perform_initialization=False,
                 skip_bias_add=True,
+                parallel_state=parallel_state
             )
         elif self.multi_query:
             self.total_num_kv_heads = 1
@@ -121,6 +122,7 @@ class FalconAttention(nn.Module):
                 gather_output=False,
                 perform_initialization=False,
                 skip_bias_add=True,
+                parallel_state=parallel_state
             )
             self.key_value = FalconLinear(self.hidden_size,
                                           2 * self.head_dim,
@@ -136,6 +138,7 @@ class FalconAttention(nn.Module):
                 gather_output=False,
                 perform_initialization=False,
                 skip_bias_add=True,
+                parallel_state=parallel_state
             )
 
         self.q_size = self.num_heads * self.head_dim
@@ -152,7 +155,8 @@ class FalconAttention(nn.Module):
             input_is_parallel=True,
             perform_initialization=False,
             skip_bias_add=True,
-            reduce_results=self.reduce_row_parallel_results)
+            reduce_results=self.reduce_row_parallel_results,
+            parallel_state=parallel_state)
 
         self.use_rotary = config.rotary
         self.use_alibi = config.alibi
@@ -167,7 +171,7 @@ class FalconAttention(nn.Module):
                                                rotary_dim=self.head_dim,
                                                num_kv_heads=self.num_kv_heads)
         elif self.use_alibi:
-            tp_rank = get_tensor_model_parallel_rank()
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
             head_start = tp_rank * self.num_heads
             head_end = (tp_rank + 1) * self.num_heads
             alibi_slopes = (_get_alibi_slopes(self.total_num_heads) *
@@ -217,7 +221,7 @@ class FalconAttention(nn.Module):
 
 class FalconMLP(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
 
@@ -226,7 +230,8 @@ class FalconMLP(nn.Module):
                                                   bias=config.bias,
                                                   gather_output=False,
                                                   perform_initialization=False,
-                                                  skip_bias_add=True)
+                                                  skip_bias_add=True,
+                                                  parallel_state=parallel_state)
         self.act = nn.GELU()
         self.reduce_row_parallel_results = not (config.new_decoder_architecture
                                                 or config.parallel_attn)
@@ -237,7 +242,8 @@ class FalconMLP(nn.Module):
             input_is_parallel=True,
             perform_initialization=False,
             skip_bias_add=True,
-            reduce_results=self.reduce_row_parallel_results)
+            reduce_results=self.reduce_row_parallel_results,
+            parallel_state=parallel_state)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # NOTE(zhuohan): Following huggingface, we do not fuse bias add here.
@@ -251,12 +257,13 @@ class FalconMLP(nn.Module):
 
 class FalconDecoderLayer(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.self_attention = FalconAttention(config)
-        self.mlp = FalconMLP(config)
+        self.self_attention = FalconAttention(
+            config, parallel_state=parallel_state)
+        self.mlp = FalconMLP(config, parallel_state=parallel_state)
         self.config = config
 
         if config.new_decoder_architecture:
@@ -332,7 +339,7 @@ class FalconDecoderLayer(nn.Module):
 
 class FalconModel(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -341,11 +348,11 @@ class FalconModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, self.embed_dim, perform_initialization=False)
+            config.vocab_size, self.embed_dim, perform_initialization=False, parallel_state=parallel_state)
 
         # Transformer blocks
         self.h = nn.ModuleList([
-            FalconDecoderLayer(config) for _ in range(config.num_hidden_layers)
+            FalconDecoderLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)
         ])
 
         # Final Layer Norm
@@ -379,16 +386,18 @@ class FalconModel(nn.Module):
 
 class FalconForCausalLM(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
-        self.transformer = FalconModel(config)
+        self.transformer = FalconModel(config, parallel_state=parallel_state)
         self.lm_head = ColumnParallelLinear(config.hidden_size,
                                             config.vocab_size,
                                             bias=False,
                                             gather_output=False,
-                                            perform_initialization=False)
-        self.sampler = Sampler(config.vocab_size)
+                                            perform_initialization=False,
+                                            parallel_state=parallel_state)
+        self.sampler = Sampler(config.vocab_size, parallel_state)
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -420,8 +429,8 @@ class FalconForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tp_size = (get_tensor_model_parallel_world_size())
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = (self.parallel_state.get_tensor_model_parallel_world_size())
+        tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
 
         hidden_size = self.config.hidden_size
         total_num_heads = self.config.num_attention_heads

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from vllm.model_executor.input_metadata import InputMetadata
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     gather_from_tensor_model_parallel_region)
 from vllm.sampling_params import SamplingParams
@@ -29,9 +30,10 @@ class Sampler(nn.Module):
     parameters (e.g., sampling method, temperature, top-p, top-k, etc.).
     """
 
-    def __init__(self, vocab_size: int) -> None:
+    def __init__(self, vocab_size: int, parallel_state: ParallelState) -> None:
         super().__init__()
         self.vocab_size = vocab_size
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -47,7 +49,8 @@ class Sampler(nn.Module):
         logits = torch.matmul(hidden_states, embedding.t())
         if embedding_bias is not None:
             logits += embedding_bias
-        logits = gather_from_tensor_model_parallel_region(logits)
+        logits = gather_from_tensor_model_parallel_region(
+            logits, self.parallel_state)
         # Remove paddings in vocab (if any).
         logits = logits[:, :self.vocab_size]
 

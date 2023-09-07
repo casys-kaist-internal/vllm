@@ -91,7 +91,7 @@ def initialize_model_parallel(
     data_parallel_size: int = world_size // (tensor_model_parallel_size *
                                              pipeline_model_parallel_size)
 
-    num_tensor_model_parallel_groups: int  = world_size // tensor_model_parallel_size
+    num_tensor_model_parallel_groups: int = world_size // tensor_model_parallel_size
     num_pipeline_model_parallel_groups: int = world_size // pipeline_model_parallel_size
     num_data_parallel_groups: int = world_size // data_parallel_size
 
@@ -178,7 +178,7 @@ def initialize_model_parallel(
                                        ranks[-1]]
                 if ranks[pipeline_model_parallel_split_rank] not in position_embedding_ranks:
                     position_embedding_ranks = [ranks[0],
-                                       ranks[pipeline_model_parallel_split_rank]]
+                                                ranks[pipeline_model_parallel_split_rank]]
         else:
             embedding_ranks = ranks
             position_embedding_ranks = ranks
@@ -195,11 +195,12 @@ def initialize_model_parallel(
         if rank in ranks:
             _POSITION_EMBEDDING_GLOBAL_RANKS = position_embedding_ranks
 
+
 def model_parallel_is_initialized():
     """Check if model and data parallel groups are initialized."""
     if _TENSOR_MODEL_PARALLEL_GROUP is None or \
-        _PIPELINE_MODEL_PARALLEL_GROUP is None or \
-        _DATA_PARALLEL_GROUP is None:
+            _PIPELINE_MODEL_PARALLEL_GROUP is None or \
+            _DATA_PARALLEL_GROUP is None:
         return False
     return True
 
@@ -308,12 +309,11 @@ def get_pipeline_model_parallel_rank():
     return torch.distributed.get_rank(group=get_pipeline_model_parallel_group())
 
 
-
 def is_pipeline_first_stage(ignore_virtual=False):
     """Return True if in the first pipeline model-parallel stage, False otherwise."""
     if not ignore_virtual:
         if get_virtual_pipeline_model_parallel_world_size() is not None and \
-            get_virtual_pipeline_model_parallel_rank() != 0:
+                get_virtual_pipeline_model_parallel_rank() != 0:
             return False
     return get_pipeline_model_parallel_rank() == 0
 
@@ -390,7 +390,7 @@ def is_pipeline_stage_at_split():
     decoder."""
     rank = get_pipeline_model_parallel_rank()
     return is_pipeline_stage_before_split(rank) and \
-            is_pipeline_stage_after_split(rank+1)
+        is_pipeline_stage_after_split(rank+1)
 
 
 def get_virtual_pipeline_model_parallel_rank():
@@ -470,6 +470,7 @@ def get_data_parallel_world_size():
 def get_data_parallel_rank():
     """Return my rank for the data parallel group."""
     return torch.distributed.get_rank(group=get_data_parallel_group())
+
 
 def destroy_model_parallel():
     """Set the groups to none."""

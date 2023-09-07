@@ -33,8 +33,8 @@ from vllm.model_executor.layers.attention import PagedAttention
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
                                               load_tensor_parallel_weights)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+# get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     VocabParallelEmbedding, ColumnParallelLinear, RowParallelLinear)
 from vllm.sequence import SequenceOutputs
@@ -62,11 +62,12 @@ class OPTAttention(nn.Module):
         embed_dim: int,
         num_heads: int,
         bias: bool = True,
+        parallel_state: ParallelState = None
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
         tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         total_num_heads = num_heads
         assert num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
@@ -77,12 +78,14 @@ class OPTAttention(nn.Module):
                                              3 * embed_dim,
                                              bias=bias,
                                              gather_output=False,
-                                             perform_initialization=False)
+                                             perform_initialization=False,
+                                             parallel_state=parallel_state)
         self.out_proj = RowParallelLinear(embed_dim,
                                           embed_dim,
                                           bias=bias,
                                           input_is_parallel=True,
-                                          perform_initialization=False)
+                                          perform_initialization=False,
+                                          parallel_state=parallel_state)
         self.attn = PagedAttention(self.num_heads,
                                    self.head_dim,
                                    scale=self.scaling)
@@ -105,7 +108,7 @@ class OPTAttention(nn.Module):
 
 class OPTDecoderLayer(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -113,6 +116,7 @@ class OPTDecoderLayer(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=config.num_attention_heads,
             bias=config.enable_bias,
+            parallel_state=parallel_state
         )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.activation_fn = get_act_fn(config.activation_function)
@@ -124,12 +128,14 @@ class OPTDecoderLayer(nn.Module):
                                         config.ffn_dim,
                                         bias=config.enable_bias,
                                         gather_output=False,
-                                        perform_initialization=False)
+                                        perform_initialization=False,
+                                        parallel_state=parallel_state)
         self.fc2 = RowParallelLinear(config.ffn_dim,
                                      self.embed_dim,
                                      bias=config.enable_bias,
                                      input_is_parallel=True,
-                                     perform_initialization=False)
+                                     perform_initialization=False,
+                                     parallel_state=parallel_state)
         self.final_layer_norm = nn.LayerNorm(
             self.embed_dim,
             elementwise_affine=config.layer_norm_elementwise_affine)
@@ -172,7 +178,7 @@ class OPTDecoderLayer(nn.Module):
 
 class OPTDecoder(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -182,7 +188,8 @@ class OPTDecoder(nn.Module):
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.word_embed_proj_dim,
-            perform_initialization=False)
+            perform_initialization=False,
+            parallel_state=parallel_state)
         # Positional embeddings are replicated (not sharded).
         self.embed_positions = OPTLearnedPositionalEmbedding(
             config.max_position_embeddings, config.hidden_size)
@@ -214,7 +221,7 @@ class OPTDecoder(nn.Module):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList(
-            [OPTDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+            [OPTDecoderLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
 
     def forward(
         self,
@@ -248,9 +255,9 @@ class OPTDecoder(nn.Module):
 
 class OPTModel(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig, parallel_state: ParallelState):
         super().__init__()
-        self.decoder = OPTDecoder(config)
+        self.decoder = OPTDecoder(config, parallel_state=parallel_state)
 
     def forward(
         self,
@@ -266,14 +273,15 @@ class OPTModel(nn.Module):
 
 class OPTForCausalLM(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, parallel_state: ParallelState):
         super().__init__()
         self.config = config
-        self.model = OPTModel(config)
+        self.model = OPTModel(config, parallel_state=parallel_state)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.model.decoder.embed_tokens.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(config.vocab_size, parallel_state)
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -298,7 +306,7 @@ class OPTForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tensor_model_parallel_rank = get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
@@ -311,7 +319,7 @@ class OPTForCausalLM(nn.Module):
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
-                ["q_proj", "k_proj", "v_proj"]):
+                    ["q_proj", "k_proj", "v_proj"]):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]

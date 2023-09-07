@@ -12,8 +12,8 @@ from vllm.model_executor.layers.attention import PagedAttentionWithALiBi
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
                                               load_tensor_parallel_weights)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+# get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     VocabParallelEmbedding, ColumnParallelLinear, RowParallelLinear)
 from vllm.sequence import SequenceOutputs
@@ -37,7 +37,7 @@ def _get_alibi_slopes(
 
 class MPTAttention(nn.Module):
 
-    def __init__(self, config: MPTConfig):
+    def __init__(self, config: MPTConfig, parallel_state: ParallelState):
         super().__init__()
         self.d_model = config.d_model
         self.total_num_heads = config.n_heads
@@ -53,6 +53,7 @@ class MPTAttention(nn.Module):
             bias=not config.no_bias,
             gather_output=False,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         if self.qk_ln:
             self.q_ln = nn.LayerNorm(self.d_model)
@@ -63,14 +64,15 @@ class MPTAttention(nn.Module):
             bias=not config.no_bias,
             input_is_parallel=True,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
 
-        tp_world_size = get_tensor_model_parallel_world_size()
+        tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         assert self.total_num_heads % tp_world_size == 0
         self.num_heads = self.total_num_heads // tp_world_size
 
         # Create the alibi slopes and slice them.
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
         head_start = tp_rank * self.num_heads
         head_end = (tp_rank + 1) * self.num_heads
         alibi_slopes = _get_alibi_slopes(self.total_num_heads,
@@ -107,7 +109,7 @@ class MPTAttention(nn.Module):
 
 class MPTMLP(nn.Module):
 
-    def __init__(self, config: MPTConfig):
+    def __init__(self, config: MPTConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.d_model
         expansion_ratio = config.expansion_ratio
@@ -116,13 +118,15 @@ class MPTMLP(nn.Module):
                                             intermediate_size,
                                             bias=not config.no_bias,
                                             gather_output=False,
-                                            perform_initialization=False)
+                                            perform_initialization=False,
+                                            parallel_state=parallel_state)
         self.act = get_act_fn("gelu")
         self.down_proj = RowParallelLinear(intermediate_size,
                                            hidden_size,
                                            bias=not config.no_bias,
                                            input_is_parallel=True,
-                                           perform_initialization=False)
+                                           perform_initialization=False,
+                                           parallel_state=parallel_state)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, _ = self.up_proj(x)
@@ -133,13 +137,13 @@ class MPTMLP(nn.Module):
 
 class MPTBlock(nn.Module):
 
-    def __init__(self, config: MPTConfig):
+    def __init__(self, config: MPTConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.d_model
         self.norm_1 = nn.LayerNorm(hidden_size)
-        self.attn = MPTAttention(config)
+        self.attn = MPTAttention(config, parallel_state=parallel_state)
         self.norm_2 = nn.LayerNorm(hidden_size)
-        self.ffn = MPTMLP(config)
+        self.ffn = MPTMLP(config, parallel_state=parallel_state)
 
     def forward(
         self,
@@ -166,16 +170,17 @@ class MPTBlock(nn.Module):
 
 class MPTModel(nn.Module):
 
-    def __init__(self, config: MPTConfig):
+    def __init__(self, config: MPTConfig, parallel_state: ParallelState):
         super().__init__()
         assert config.embedding_fraction == 1.0
         assert config.norm_type == "low_precision_layernorm"
 
         self.wte = VocabParallelEmbedding(config.vocab_size,
                                           config.d_model,
-                                          perform_initialization=False)
+                                          perform_initialization=False,
+                                          parallel_state=parallel_state)
         self.blocks = nn.ModuleList(
-            [MPTBlock(config) for _ in range(config.n_layers)])
+            [MPTBlock(config, parallel_state=parallel_state) for _ in range(config.n_layers)])
         self.norm_f = nn.LayerNorm(config.d_model)
         if config.no_bias:
             for module in self.modules():
@@ -212,16 +217,17 @@ class MPTModel(nn.Module):
 
 class MPTForCausalLM(nn.Module):
 
-    def __init__(self, config: MPTConfig):
+    def __init__(self, config: MPTConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
         assert config.tie_word_embeddings
 
-        self.transformer = MPTModel(config)
+        self.transformer = MPTModel(config, parallel_state=parallel_state)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.wte.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(config.vocab_size, parallel_state)
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -244,8 +250,8 @@ class MPTForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tp_world_size = get_tensor_model_parallel_world_size()
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):

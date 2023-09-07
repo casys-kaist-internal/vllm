@@ -22,10 +22,10 @@ from vllm.model_executor.weight_utils import (
     hf_model_weights_iterator,
     load_tensor_parallel_weights,
 )
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+#     get_tensor_model_parallel_rank,
+#     get_tensor_model_parallel_world_size,
+# )
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     VocabParallelEmbedding,
     ColumnParallelLinear,
@@ -44,6 +44,7 @@ class QWenMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str = "silu",
+        parallel_state: ParallelState = None
     ):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(
@@ -52,6 +53,7 @@ class QWenMLP(nn.Module):
             bias=False,
             gather_output=False,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         self.c_proj = RowParallelLinear(
             intermediate_size,
@@ -59,6 +61,7 @@ class QWenMLP(nn.Module):
             bias=False,
             input_is_parallel=True,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -75,10 +78,10 @@ class QWenMLP(nn.Module):
 class QWenAttention(nn.Module):
 
     def __init__(self, hidden_size: int, num_heads: int,
-                 max_position_embeddings: int):
+                 max_position_embeddings: int, parallel_state: ParallelState):
         super().__init__()
         self.hidden_size = hidden_size
-        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
+        tensor_model_parallel_world_size = parallel_state.get_tensor_model_parallel_world_size(
         )
         self.total_num_heads = num_heads
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
@@ -93,6 +96,7 @@ class QWenAttention(nn.Module):
             bias=True,
             gather_output=False,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         self.c_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
@@ -100,6 +104,7 @@ class QWenAttention(nn.Module):
             bias=False,
             input_is_parallel=True,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         self.scaling = self.head_dim**-0.5
         self.attn = PagedAttentionWithRoPE(
@@ -131,16 +136,17 @@ class QWenAttention(nn.Module):
 
 class QWenBlock(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig, parallel_state: ParallelState):
         super().__init__()
         self.ln_1 = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
         self.attn = QWenAttention(config.n_embd, config.num_attention_heads,
-                                  config.max_position_embeddings)
+                                  config.max_position_embeddings, parallel_state=parallel_state)
 
         self.ln_2 = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
-        self.mlp = QWenMLP(config.n_embd, config.ffn_hidden_size // 2)
+        self.mlp = QWenMLP(config.n_embd, config.ffn_hidden_size //
+                           2, parallel_state=parallel_state)
 
     def forward(
         self,
@@ -172,7 +178,7 @@ class QWenBlock(nn.Module):
 
 class QWenModel(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
         self.vocab_size = config.vocab_size
@@ -180,9 +186,10 @@ class QWenModel(nn.Module):
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.wte = VocabParallelEmbedding(vocab_size,
                                           config.n_embd,
-                                          perform_initialization=False)
+                                          perform_initialization=False,
+                                          parallel_state=parallel_state)
         self.h = nn.ModuleList(
-            [QWenBlock(config) for _ in range(config.num_hidden_layers)])
+            [QWenBlock(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
         self.ln_f = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -213,10 +220,10 @@ class QWenModel(nn.Module):
 
 class QWenLMHeadModel(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
-        self.transformer = QWenModel(config)
+        self.transformer = QWenModel(config, parallel_state=parallel_state)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.lm_head = ColumnParallelLinear(
             config.n_embd,
@@ -224,8 +231,10 @@ class QWenLMHeadModel(nn.Module):
             bias=False,
             gather_output=False,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(config.vocab_size, parallel_state)
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -250,8 +259,8 @@ class QWenLMHeadModel(nn.Module):
         cache_dir: Optional[str] = None,
         use_np_cache: bool = False,
     ):
-        tp_world_size = get_tensor_model_parallel_world_size()
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(

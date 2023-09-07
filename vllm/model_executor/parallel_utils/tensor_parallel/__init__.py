@@ -5,7 +5,7 @@ from .layers import (
     set_tensor_model_parallel_attributes,
     set_defaults_if_not_set_tensor_model_parallel_attributes,
     copy_tensor_model_parallel_attributes,
-    param_is_not_tensor_parallel_duplicate,
+    # param_is_not_tensor_parallel_duplicate,
 )
 
 from .mappings import (
@@ -27,14 +27,14 @@ from .utils import (
 )
 
 __all__ = [
-    #layers.py
+    # layers.py
     "ColumnParallelLinear",
     "RowParallelLinear",
     "VocabParallelEmbedding",
     "set_tensor_model_parallel_attributes",
     "set_defaults_if_not_set_tensor_model_parallel_attributes",
     "copy_tensor_model_parallel_attributes",
-    "param_is_not_tensor_parallel_duplicate",
+    # "param_is_not_tensor_parallel_duplicate",
     # mappings.py
     "copy_to_tensor_model_parallel_region",
     "gather_from_tensor_model_parallel_region",

@@ -11,9 +11,9 @@ import torch
 from torch import _C
 from torch.cuda import _lazy_call, device as device_ctx_manager
 
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank,
-)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+#     get_tensor_model_parallel_rank,
+# )
 
 # Default name for the model parallel rng tracker.
 _MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
@@ -50,7 +50,6 @@ def _set_cuda_rng_state(new_state, device=-1):
             default_generator.set_state(new_state)
 
     _lazy_call(cb)
-
 
 
 class CudaRNGStatesTracker:
@@ -133,7 +132,7 @@ def get_cuda_rng_tracker():
     return _CUDA_RNG_STATE_TRACKER
 
 
-def model_parallel_cuda_manual_seed(seed):
+def model_parallel_cuda_manual_seed(seed, parallel_state: ParallelState):
     """Initialize model parallel cuda seed.
 
     This function should be called after the model parallel is
@@ -152,7 +151,8 @@ def model_parallel_cuda_manual_seed(seed):
     """
     # 2718 is just for fun and any POSITIVE value will work.
     offset = seed + 2718
-    tensor_model_parallel_seed = offset + get_tensor_model_parallel_rank()
+    tensor_model_parallel_seed = offset + \
+        parallel_state.get_tensor_model_parallel_rank()
     # Data parallel gets the original seed.
     data_parallel_seed = seed
 

@@ -33,8 +33,8 @@ from vllm.model_executor.layers.attention import PagedAttentionWithALiBi
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
                                               load_tensor_parallel_weights)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+# get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     VocabParallelEmbedding, ColumnParallelLinear, RowParallelLinear)
 from vllm.sequence import SequenceOutputs
@@ -69,14 +69,14 @@ def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
 
 class BloomAttention(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.total_num_heads = config.n_head
         self.head_dim = self.hidden_size // self.total_num_heads
         assert self.head_dim * self.total_num_heads == self.hidden_size
 
-        tp_world_size = get_tensor_model_parallel_world_size()
+        tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         assert self.total_num_heads % tp_world_size == 0
         self.num_heads = self.total_num_heads // tp_world_size
 
@@ -86,6 +86,7 @@ class BloomAttention(nn.Module):
             bias=True,
             gather_output=False,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
         self.dense = RowParallelLinear(
             self.hidden_size,
@@ -93,10 +94,11 @@ class BloomAttention(nn.Module):
             bias=True,
             input_is_parallel=True,
             perform_initialization=False,
+            parallel_state=parallel_state
         )
 
         # Create the alibi slopes and slice them.
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
         head_start = tp_rank * self.num_heads
         head_end = (tp_rank + 1) * self.num_heads
         alibi_slopes = _get_alibi_slopes(self.total_num_heads)
@@ -126,18 +128,20 @@ class BloomAttention(nn.Module):
 
 class BloomMLP(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
         self.dense_h_to_4h = ColumnParallelLinear(hidden_size,
                                                   4 * hidden_size,
                                                   gather_output=False,
-                                                  perform_initialization=False)
+                                                  perform_initialization=False,
+                                                  parallel_state=parallel_state)
         self.act = get_act_fn("gelu")
         self.dense_4h_to_h = RowParallelLinear(4 * hidden_size,
                                                hidden_size,
                                                input_is_parallel=True,
-                                               perform_initialization=False)
+                                               perform_initialization=False,
+                                               parallel_state=parallel_state)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, _ = self.dense_h_to_4h(x)
@@ -148,16 +152,17 @@ class BloomMLP(nn.Module):
 
 class BloomBlock(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
 
         self.input_layernorm = nn.LayerNorm(hidden_size,
                                             eps=config.layer_norm_epsilon)
-        self.self_attention = BloomAttention(config)
+        self.self_attention = BloomAttention(
+            config, parallel_state=parallel_state)
         self.post_attention_layernorm = nn.LayerNorm(
             hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = BloomMLP(config)
+        self.mlp = BloomMLP(config, parallel_state=parallel_state)
         self.apply_residual_connection_post_layernorm = (
             config.apply_residual_connection_post_layernorm)
 
@@ -202,19 +207,19 @@ class BloomBlock(nn.Module):
 
 class BloomModel(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         self.embed_dim = config.hidden_size
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, self.embed_dim, perform_initialization=False)
+            config.vocab_size, self.embed_dim, perform_initialization=False, parallel_state=parallel_state)
         self.word_embeddings_layernorm = nn.LayerNorm(
             self.embed_dim, eps=config.layer_norm_epsilon)
 
         # Transformer blocks
         self.h = nn.ModuleList(
-            [BloomBlock(config) for _ in range(config.num_hidden_layers)])
+            [BloomBlock(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
 
         # Final Layer Norm
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
@@ -248,14 +253,15 @@ class BloomModel(nn.Module):
 
 class BloomForCausalLM(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         self.config = config
-        self.transformer = BloomModel(config)
+        self.transformer = BloomModel(config, parallel_state=parallel_state)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.word_embeddings.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(config.vocab_size, parallel_state)
+        self.parallel_state = parallel_state
 
     def forward(
         self,
@@ -280,7 +286,7 @@ class BloomForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):

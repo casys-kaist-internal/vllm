@@ -8,6 +8,7 @@ from transformers import PretrainedConfig
 from vllm.config import ModelConfig
 from vllm.model_executor.models import *  # pylint: disable=wildcard-import
 from vllm.model_executor.weight_utils import initialize_dummy_weights
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 
 # TODO(woosuk): Lazy-load the model classes.
 _MODEL_REGISTRY = {
@@ -40,13 +41,13 @@ def _get_model_architecture(config: PretrainedConfig) -> Type[nn.Module]:
         f"Supported architectures: {list(_MODEL_REGISTRY.keys())}")
 
 
-def get_model(model_config: ModelConfig) -> nn.Module:
+def get_model(model_config: ModelConfig, parallel_state: ParallelState) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
     torch.set_default_dtype(model_config.dtype)
 
     # Create a model instance.
     # The weights will be initialized as empty tensors.
-    model = model_class(model_config.hf_config)
+    model = model_class(model_config.hf_config, parallel_state)
     if model_config.use_dummy_weights:
         model = model.cuda()
         # NOTE(woosuk): For accurate performance evaluation, we assign

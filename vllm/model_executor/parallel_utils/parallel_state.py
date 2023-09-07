@@ -34,6 +34,7 @@ class ParallelState:
         # These values enable us to change the mpu sizes on the fly.
         self.mpu_tensor_model_parallel_world_size = None
         self.mpu_pipeline_model_parallel_world_size = None
+        self.mpu_tensor_model_parallel_rank = None
         self.mpu_pipeline_model_parallel_rank = None
 
         # A list of ranks that have a copy of the embedding.
@@ -99,7 +100,7 @@ class ParallelState:
 
         num_tensor_model_parallel_groups: int = world_size // tensor_model_parallel_size
         num_pipeline_model_parallel_groups: int = world_size // pipeline_model_parallel_size
-        num_data_parallel_groups: int = world_size // data_parallel_size
+        num_data_parallel_groups: int = world_size // data_parallel_size  # ???
 
         if virtual_pipeline_model_parallel_size is not None:
             if not pipeline_model_parallel_size > 2:
