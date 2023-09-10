@@ -541,8 +541,8 @@ class SpSWorker(Worker):
         if not seq_group_metadata_list:
             return {}
 
-        for seq in seq_group_metadata_list:
-            if not seq.is_prompt:
+        for seq_group_metadata in seq_group_metadata_list:
+            if not seq_group_metadata.is_prompt:
                 raise Exception("All inputs expected to be prompt-like!")
 
         # Check if all inputs are prompts

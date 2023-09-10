@@ -139,7 +139,21 @@ class PagedAttention(nn.Module):
             value_cache: shape = [num_blocks, num_kv_heads, head_size,
                 block_size]
             input_metadata: metadata for paged attention.
+
+            
+        output shape torch.Size([1, 12, 64])  # expected to be [K, 12, 64]
+        query shape torch.Size([1, 12, 64])   # expected to be [K, 12, 64]
+        key_cache shape torch.Size([36655, 12, 8, 16, 8]) # 36655 is total # of GPU blocks
+        value_cache shape torch.Size([36655, 12, 64, 16])
+    
         """
+        print("output_shape", output.shape)
+        print("query_shape", query.shape)
+        print("key_cache shape", key_cache.shape)
+        print("value_cache shape", value_cache.shape)
+
+        print("input_metadata.block_tables", input_metadata.block_tables.shape)
+
         block_size = value_cache.shape[3]
         attention_ops.single_query_cached_kv_attention(
             output,
@@ -153,6 +167,41 @@ class PagedAttention(nn.Module):
             block_size,
             input_metadata.max_context_len,
             None,  # alibi_slopes
+        )
+
+    def multiple_query_cached_kv_attention(
+        self,
+        output: torch.Tensor,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        input_metadata: InputMetadata,
+    ) -> None:
+        """PagedAttention with ALiBi bias for the generation tokens.
+
+        Args:
+            output: shape = [num_generation_tokens, num_heads, head_size]
+            query: shape = [num_generation_tokens, num_heads, head_size]
+            key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
+                block_size, x]
+            value_cache: shape = [num_blocks, num_kv_heads, head_size,
+                block_size]
+            input_metadata: metadata for paged attention.
+        """
+
+        block_size = value_cache.shape[3]
+        attention_ops.single_query_cached_kv_attention(
+            output,
+            query,
+            key_cache,
+            value_cache,
+            self.head_mapping,
+            self.scale,
+            input_metadata.block_tables,
+            input_metadata.context_lens,
+            block_size,
+            input_metadata.max_context_len,
+            self.alibi_slopes,
         )
 
     def forward(

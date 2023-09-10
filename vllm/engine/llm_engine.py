@@ -809,6 +809,9 @@ class SpSLLMEngine(LLMEngine):
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
 
+
+        self._sps_verify_seqs(seq_group_metadata_list,seq_groups)
+
         ## SPS Sequence Here ##
 
         # For each stopped sequence,
@@ -913,7 +916,7 @@ class SpSLLMEngine(LLMEngine):
         for seq_group in seq_groups:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 pass
-
+        print("Targeteee")
         output = self._run_workers(
             "execute_target_model",
             seq_group_metadata_list=seq_group_metadata_list,
