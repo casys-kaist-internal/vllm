@@ -336,7 +336,7 @@ class SpSLLMEngine:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
             self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
-
+        #(f"draft_size : {self.sps_config.draft_size}")
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
                 # Nothing to do.
@@ -362,6 +362,7 @@ class SpSLLMEngine:
 
             # Decode the sequences.
             self._decode_sequences(seq_groups)
+            print("prompt run complete")
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
@@ -374,7 +375,7 @@ class SpSLLMEngine:
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
-
+                #print("draft_out len : ",len(draft_output))
                 draft_output_list.append(draft_output)
 
                 # Update the scheduler with the model outputs.
@@ -382,7 +383,6 @@ class SpSLLMEngine:
 
                 # Decode the sequences.
                 self._decode_sequences(seq_groups)
-
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None

@@ -309,7 +309,7 @@ class Scheduler:
                     break
 
                 # If the sequence group cannot be allocated, stop.
-                if not self.block_manager.can_allocate(seq_group):
+                if not self.block_manager.can_sps_allocate(seq_group, draft_size):
                     break
 
                 # If the number of batched tokens exceeds the limit, stop.
@@ -329,7 +329,7 @@ class Scheduler:
                     break
 
                 seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
+                self._sps_allocate(seq_group, draft_size)
                 self.running.append(seq_group)
                 num_batched_tokens += num_prompt_tokens
                 scheduled.append(seq_group)

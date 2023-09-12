@@ -297,7 +297,11 @@ class Worker:
 
             # Compute the slot mapping.
             block_table = seq_group_metadata.block_tables[seq_id]
+            #print(f"range i : {len(draft_tokens) + seq_data.get_len()}")
+            #print(f"seq_len : {seq_data.get_len()}, draft token len : {len(draft_tokens)}")
             for i in range(len(draft_tokens) + seq_data.get_len()):
+                #print(f"i : {i}, block size : {self.block_size}, table_len : {len(block_table)}")
+
                 block_number = block_table[i // self.block_size]
                 block_offset = i % self.block_size
                 slot = block_number * self.block_size + block_offset
