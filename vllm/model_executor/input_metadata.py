@@ -14,6 +14,7 @@ class InputMetadata:
         seq_groups: List of (seq_ids, sampling_params).
         seq_data: Seq_id -> SequenceData.
         prompt_lens: Lengths of prompts.
+        draft_lens: Lengths of drafts.
         slot_mapping: The address to write the new KV to of each token.
         context_lens: the length of attention context for each generation token.
         max_context_len: The maximum context length.
@@ -25,6 +26,7 @@ class InputMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]],
         seq_data: Dict[int, SequenceData],
         prompt_lens: List[int],
+        draft_lens: List[int],
         slot_mapping: torch.Tensor,
         context_lens: torch.Tensor,
         max_context_len: int,
@@ -33,6 +35,7 @@ class InputMetadata:
         self.seq_groups = seq_groups
         self.seq_data = seq_data
         self.prompt_lens = prompt_lens
+        self.draft_lens = draft_lens
         self.slot_mapping = slot_mapping
         self.context_lens = context_lens
         self.max_context_len = max_context_len
@@ -40,6 +43,8 @@ class InputMetadata:
 
         self.num_prompts = len(prompt_lens)
         self.num_prompt_tokens = sum(prompt_lens)
+        self.num_drafts = len(draft_lens)
+        self.num_draft_tokens = sum(draft_lens)
         self.num_generation_tokens = context_lens.shape[0]
         self.num_valid_tokens = slot_mapping.shape[0]
         if block_tables.numel() > 0:
@@ -59,7 +64,9 @@ class InputMetadata:
                 f'num_prompt_tokens={self.num_prompt_tokens}, '
                 f'num_prompts={self.num_prompts}, '
                 f'prompt_lens={self.prompt_lens}, '
+                f'draft_lens={self.draft_lens}, '
                 f'num_generation_tokens={self.num_generation_tokens}, '
+                f'num_draft_tokens={self.num_draft_tokens}, '
                 f'context_lens={self.context_lens}, '
                 f'max_context_len={self.max_context_len}), '
                 f'max_num_blocks_per_seq={self.max_num_blocks_per_seq}, '

@@ -147,12 +147,6 @@ class PagedAttention(nn.Module):
         value_cache shape torch.Size([36655, 12, 64, 16])
     
         """
-        print("output_shape", output.shape)
-        print("query_shape", query.shape)
-        print("key_cache shape", key_cache.shape)
-        print("value_cache shape", value_cache.shape)
-
-        print("input_metadata.block_tables", input_metadata.block_tables.shape)
 
         block_size = value_cache.shape[3]
         attention_ops.single_query_cached_kv_attention(
@@ -180,8 +174,8 @@ class PagedAttention(nn.Module):
         """PagedAttention with ALiBi bias for the generation tokens.
 
         Args:
-            output: shape = [num_generation_tokens, num_heads, head_size]
-            query: shape = [num_generation_tokens, num_heads, head_size]
+            output: shape = [num_draft_tokens, num_heads, head_size]
+            query: shape = [num_draft_tokens, num_heads, head_size]
             key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
                 block_size, x]
             value_cache: shape = [num_blocks, num_kv_heads, head_size,
@@ -189,20 +183,30 @@ class PagedAttention(nn.Module):
             input_metadata: metadata for paged attention.
         """
 
-        block_size = value_cache.shape[3]
-        attention_ops.single_query_cached_kv_attention(
-            output,
-            query,
-            key_cache,
-            value_cache,
-            self.head_mapping,
-            self.scale,
-            input_metadata.block_tables,
-            input_metadata.context_lens,
-            block_size,
-            input_metadata.max_context_len,
-            self.alibi_slopes,
-        )
+        print("output_shape", output.shape)
+        print("query_shape", query.shape)
+        print("key_cache shape", key_cache.shape)
+        print("value_cache shape", value_cache.shape)
+
+        print("input_metadata.block_tables",
+              input_metadata.block_tables.shape[0])  # [1, 32] <- 점점 늘어님?
+        # [num_seqs, (max_num_blocks)]
+
+        draft_lens = input_metadata.draft_lens
+
+        print("block_table shape", input_metadata.block_tables.shape)
+        print("slot_mapping shape", input_metadata.slot_mapping.shape)
+
+        start = 0
+        for draft_len in draft_lens:
+
+            draft_query = query[start:start + draft_len]
+
+            # For each token, find equivalent block in key_cache
+
+            start += draft_len
+            pass
+        print("TEST")
 
     def forward(
         self,
@@ -253,6 +257,17 @@ class PagedAttention(nn.Module):
                 query[:num_prompt_tokens],
                 key[:num_prompt_tokens],
                 value[:num_prompt_tokens],
+                input_metadata,
+            )
+
+        num_draft_tokens = input_metadata.num_draft_tokens
+        if num_draft_tokens > 0:
+            # FIXME: (hyunjae) Apply Attention-bias and run in one-go
+            self.multiple_query_cached_kv_attention(
+                output[:num_draft_tokens],
+                query[:num_draft_tokens],
+                key[:num_draft_tokens],
+                value[:num_draft_tokens],
                 input_metadata,
             )
 

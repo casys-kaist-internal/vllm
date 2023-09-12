@@ -1,7 +1,7 @@
 import time
 import copy
 from functools import partial
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Dict
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
@@ -11,7 +11,7 @@ from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceGroupMetadata
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceGroupMetadata, SequenceData
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -796,6 +796,16 @@ class SpSLLMEngine(LLMEngine):
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
 
+        # TEST: Execute target model for finished sequence
+        # 지금은 input 전체를 draft취급 하자
+        output = self._run_workers(
+            "execute_target_model",
+            seq_group_metadata_list=seq_group_metadata_list,
+            blocks_to_swap_in={},
+            blocks_to_swap_out={},
+            blocks_to_copy={},
+        )
+
         # Scenarios for SpS
         # Update the scheduler with the model outputs.
         seq_groups = self.scheduler.update(output)
@@ -809,8 +819,7 @@ class SpSLLMEngine(LLMEngine):
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
 
-
-        self._sps_verify_seqs(seq_group_metadata_list,seq_groups)
+        # self._sps_verify_seqs(seq_group_metadata_list,seq_groups)
 
         ## SPS Sequence Here ##
 
@@ -905,22 +914,6 @@ class SpSLLMEngine(LLMEngine):
                     f"GPU KV cache usage: {gpu_cache_usage * 100:.1f}%, "
                     f"CPU KV cache usage: {cpu_cache_usage * 100:.1f}%")
         self.last_logging_time = now
-
-    def _sps_verify_seqs(self,
-                         seq_group_metadata_list: List[SequenceGroupMetadata],
-                         seq_groups: List[SequenceGroup]) -> None:
-        """
-        Verification runs here!
-        Large model is run parallely for models.
-        """
-        for seq_group in seq_groups:
-            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                pass
-        print("Targeteee")
-        output = self._run_workers(
-            "execute_target_model",
-            seq_group_metadata_list=seq_group_metadata_list,
-        )
 
     # NOTE: Nothing to change
     def _decode_sequences(self, seq_groups: List[SequenceGroup]) -> None:

@@ -246,6 +246,93 @@ class Worker:
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=prompt_lens,
+            draft_lens=[],
+            slot_mapping=slot_mapping_tensor,
+            context_lens=context_lens_tensor,
+            max_context_len=max_context_len,
+            block_tables=block_tables_tensor,
+        )
+        return tokens_tensor, positions_tensor, input_metadata
+
+    def _prepare_target_inputs(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+        seq_groups: List[Tuple[List[int], SamplingParams]] = []
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
+        prompt_lens: List[int] = []
+
+        # Add draft tokens.
+        draft_lens: List[int] = []
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            sampling_params = seq_group_metadata.sampling_params
+            seq_groups.append((seq_ids, sampling_params))
+
+            # Use any sequence in the group.
+            seq_id = seq_ids[0]
+
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            # FIXME(sangjin): initially we dont use kv cache
+            draft_tokens = seq_data.get_token_ids()
+            draft_len = len(draft_tokens)
+            draft_lens.append(draft_len)
+
+            input_tokens.extend(draft_tokens)
+            # NOTE(woosuk): Here we assume that the first token in the prompt
+            # is always the first token in the sequence.
+            input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
+
+            if seq_group_metadata.block_tables is None:
+                # During memory profiling, the block tables are not initialized
+                # yet. In this case, we just use a dummy slot mapping.
+                slot_mapping.extend([0] * len(draft_tokens))
+                continue
+
+            # Compute the slot mapping.
+            block_table = seq_group_metadata.block_tables[seq_id]
+            print(block_table, seq_ids, len(draft_tokens), seq_data.get_len())
+
+            # FIXME: Is this correct? ie: Target model should only have draft tokens
+            for i in range(len(draft_tokens)):
+                block_number = block_table[i // self.block_size]
+                block_offset = i % self.block_size
+                slot = block_number * self.block_size + block_offset
+                slot_mapping.append(slot)
+
+        # Add generation tokens.
+        max_context_len = 0
+        max_num_blocks_per_seq = 0
+        context_lens: List[int] = []
+        generation_block_tables: List[List[int]] = []
+
+        # Optimization: Pad the input length to be a multiple of 8.
+        # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
+        input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
+        input_positions = _pad_to_alignment(input_positions, multiple_of=8)
+
+        # Convert to tensors.
+        tokens_tensor = torch.cuda.LongTensor(input_tokens)
+        positions_tensor = torch.cuda.LongTensor(input_positions)
+        slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+        context_lens_tensor = torch.cuda.IntTensor(context_lens)
+        padded_block_tables = [
+            _pad_to_max(block_table, max_num_blocks_per_seq)
+            for block_table in generation_block_tables
+        ]
+        block_tables_tensor = torch.cuda.IntTensor(padded_block_tables)
+
+        seq_data: Dict[int, SequenceData] = {}
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_data.update(seq_group_metadata.seq_data)
+
+        input_metadata = InputMetadata(
+            seq_groups=seq_groups,
+            seq_data=seq_data,
+            prompt_lens=draft_lens,  # FIXME (sangjin)
+            draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
@@ -531,40 +618,50 @@ class SpSWorker(Worker):
     # NOTE: We expect all elements to be prompt!
     @torch.inference_mode()
     def execute_target_model(
-            self,
-            seq_group_metadata_list: List[
-                SequenceGroupMetadata],  # TODO: Cache this outside
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        blocks_to_swap_in: Dict[int, int],
+        blocks_to_swap_out: Dict[int, int],
+        blocks_to_copy: Dict[int, List[int]],
     ) -> Dict[int, SequenceOutputs]:
         # Issue cache operations.
+        issued_cache_op = False
+        if blocks_to_swap_in:
+            self.cache_engine.swap_in(blocks_to_swap_in)
+            issued_cache_op = True
+        if blocks_to_swap_out:
+            self.cache_engine.swap_out(blocks_to_swap_out)
+            issued_cache_op = True
+        if blocks_to_copy:
+            self.cache_engine.copy(blocks_to_copy)
+            issued_cache_op = True
+
+        if issued_cache_op:
+            cache_events = self.cache_events
+        else:
+            cache_events = None
 
         # If there is no input, we don't need to execute the model.
         if not seq_group_metadata_list:
+            if cache_events is not None:
+                for event in cache_events:
+                    event.wait()
             return {}
 
-        for seq_group_metadata in seq_group_metadata_list:
-            if not seq_group_metadata.is_prompt:
-                raise Exception("All inputs expected to be prompt-like!")
+        # for seq_group_metadata in seq_group_metadata_list:
+        #     if not seq_group_metadata.is_prompt:
+        #         raise Exception("All inputs expected to be prompt-like!")
 
-        # Check if all inputs are prompts
-
-        # Prepare input tensors.
-        # For now, naive implementation states
-        # TODO:
-        input_tokens, input_positions, input_metadata = self._prepare_inputs(
+        input_tokens, input_positions, input_metadata = self._prepare_target_inputs(
             seq_group_metadata_list)
 
-        # TODO: seq_group_metadata_list 에서 정지된 Token들을 받아와
-        # TODO: Token Re-Use 기법 필요해
-
-        # Execute the model.
-
-        # NOTE: Prompt마다 [:N], [:N+1] .. [:N+K] 이런 방식으로 output 생성을 해야함
+        print("Running Target Model")
 
         output = self.target_model(
             input_ids=input_tokens,
             positions=input_positions,
             kv_caches=self.gpu_cache,
             input_metadata=input_metadata,
-            cache_events=None,
+            cache_events=None,  # FIXME(hyunjae)
         )
         return output
