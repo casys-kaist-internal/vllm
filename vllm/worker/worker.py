@@ -219,6 +219,15 @@ class Worker:
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq,
                                              len(block_table))
                 context_lens.append(context_len)
+                                
+                print("#### prepare_input ####")
+                print("seq_id:", seq_id)
+                print("Position:", position)
+                print("Block Size:", self.block_size)
+                print("Index:", position // self.block_size)
+                print("Block Table Length:", len(block_table))
+                print("block_table_length:", len(block_table))
+                print("block_table:", block_table)
 
                 block_number = block_table[position // self.block_size]
                 block_offset = position % self.block_size
@@ -294,10 +303,20 @@ class Worker:
                 # yet. In this case, we just use a dummy slot mapping.
                 slot_mapping.extend([0] * len(draft_tokens))
                 continue
-
+            
             # Compute the slot mapping.
             block_table = seq_group_metadata.block_tables[seq_id]
             for i in range(len(draft_tokens) + seq_data.get_len()):
+                print("#### prepare_target_input ####")
+                print("seq_id:", seq_id)
+                print("Position:", i)
+                print("Block Size:", self.block_size)
+                print("Index:", i // self.block_size)
+                print("Block Table Length:", len(block_table))
+                print("block_table_length:", len(block_table))
+                print("block_table:", block_table)
+                
+                
                 block_number = block_table[i // self.block_size]
                 block_offset = i % self.block_size
                 slot = block_number * self.block_size + block_offset

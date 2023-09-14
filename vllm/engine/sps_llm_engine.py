@@ -335,7 +335,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
-            self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+            self.sps_config.draft_size * 2)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -350,6 +350,8 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
+            print("Start initial decode")
+            print("")
             output = self._run_target_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -364,6 +366,8 @@ class SpSLLMEngine:
             self._decode_sequences(seq_groups)
 
         else:
+            print("Join Draft")
+            print("")
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
 
             for _ in range(self.sps_config.draft_size):
@@ -387,6 +391,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
 
+            print("Join Target")
             # Execute the target model 1 time
             target_output = self._run_target_workers(
                 "execute_target_model",
