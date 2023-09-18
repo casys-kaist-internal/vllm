@@ -192,6 +192,8 @@ class Sequence:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
+        self.data.append_token_id(token_id, logprobs[token_id]) ## output_token에 추가해 두었다가 reject 될 경우, 
+                                                                ## draft_token list를 이용하여 한번에 제거
         self.data.append_draft_token_id(token_id, logprobs[token_id])
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:

@@ -7,9 +7,11 @@ from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sequence import (Sequence, SequenceData, SequenceData, SequenceGroup,
+from vllm.sequence import (#sequence
+                            SequenceData, SequenceData,
                            SequenceGroupMetadata, SequenceOutputs,
                            SequenceStatus)
+from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
 from vllm.model_executor.layers.sps_sampler import modified_rejection_sample
 
 logger = init_logger(__name__)
@@ -507,7 +509,6 @@ class Scheduler:
                 # Append a new token to the sequence.
                 output = seq_outputs[seq.seq_id]
                 seq.append_draft_token_id(output.output_token, output.logprobs)
-
         return scheduled
 
     def target_update(

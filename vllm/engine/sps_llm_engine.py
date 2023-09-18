@@ -11,7 +11,7 @@ from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
+from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs, SequenceData
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -359,10 +359,8 @@ class SpSLLMEngine:
             )
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.update(output)
-
             # Decode the sequences.
             self._decode_sequences(seq_groups)
-            print("prompt run complete")
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
@@ -375,7 +373,6 @@ class SpSLLMEngine:
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
-                #print("draft_out len : ",len(draft_output))
                 draft_output_list.append(draft_output)
 
                 # Update the scheduler with the model outputs.
@@ -383,6 +380,18 @@ class SpSLLMEngine:
 
                 # Decode the sequences.
                 self._decode_sequences(seq_groups)
+        
+                ## update seq_group_metadata_list 
+                for seq_group_meta_data in seq_group_metadata_list:
+                    for seq_group in seq_groups:
+                        if seq_group.request_id == seq_group_meta_data:
+                            seq_data: Dict[int, List[SequenceData]] = {}
+                            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                                seq_id = seq.seq_id
+                                seq_data[seq_id] = seq.data
+                            seq_group_meta_data.seq_data = seq_data
+                            break;
+
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
