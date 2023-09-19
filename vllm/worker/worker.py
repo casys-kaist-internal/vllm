@@ -151,8 +151,6 @@ class Worker:
         input_positions: List[int] = []
         slot_mapping: List[int] = []
 
-        draft_lens: List[int] = []  # working on
-
         # Add prompt tokens.
         prompt_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
@@ -249,7 +247,84 @@ class Worker:
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=prompt_lens,
-            draft_lens=draft_lens,
+            draft_lens=[],
+            slot_mapping=slot_mapping_tensor,
+            context_lens=context_lens_tensor,
+            max_context_len=max_context_len,
+            block_tables=block_tables_tensor,
+        )
+
+        return tokens_tensor, positions_tensor, input_metadata
+
+    def _prepare_draft_inputs(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+        seq_groups: List[Tuple[List[int], SamplingParams]] = []
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
+
+        max_context_len = 0
+        max_num_blocks_per_seq = 0
+        context_lens: List[int] = []
+        generation_block_tables: List[List[int]] = []
+
+        # Add draft tokens
+        for seq_group_metadata in seq_group_metadata_list:
+            assert not seq_group_metadata.is_prompt
+
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            sampling_params = seq_group_metadata.sampling_params
+            seq_groups.append((seq_ids, sampling_params))
+
+            for seq_id in seq_ids:
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                draft_token = seq_data.get_last_draft_token_id()
+                input_tokens.append(draft_token)
+
+                context_len = seq_data.get_len() + seq_data.get_draft_len()
+                position = context_len - 1
+                input_positions.append(position)
+
+                block_table = seq_group_metadata.block_tables[seq_id]
+                generation_block_tables.append(block_table)
+
+                max_context_len = max(max_context_len, context_len)
+                max_num_blocks_per_seq = max(max_num_blocks_per_seq,
+                                             len(block_table))
+                context_lens.append(context_len)
+
+                block_number = block_table[position // self.block_size]
+                block_offset = position % self.block_size
+                slot = block_number * self.block_size + block_offset
+                slot_mapping.append(slot)
+
+        # Optimization: Pad the input length to be a multiple of 8.
+        # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
+        input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
+        input_positions = _pad_to_alignment(input_positions, multiple_of=8)
+
+        # Convert to tensors.
+        tokens_tensor = torch.cuda.LongTensor(input_tokens)
+        positions_tensor = torch.cuda.LongTensor(input_positions)
+        slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+        context_lens_tensor = torch.cuda.IntTensor(context_lens)
+        padded_block_tables = [
+            _pad_to_max(block_table, max_num_blocks_per_seq)
+            for block_table in generation_block_tables
+        ]
+        block_tables_tensor = torch.cuda.IntTensor(padded_block_tables)
+
+        seq_data: Dict[int, SequenceData] = {}
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_data.update(seq_group_metadata.seq_data)
+
+        input_metadata = InputMetadata(
+            seq_groups=seq_groups,
+            seq_data=seq_data,
+            prompt_lens=[],
+            draft_lens=[],
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
@@ -280,7 +355,7 @@ class Worker:
 
             seq_data = seq_group_metadata.seq_data[seq_id]
             # FIXME(sangjin): initially we dont use kv cache
-            draft_tokens = seq_data.get_token_ids()
+            draft_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
             draft_len = len(draft_tokens)
             draft_lens.append(draft_len)
 
@@ -297,10 +372,10 @@ class Worker:
 
             # Compute the slot mapping.
             block_table = seq_group_metadata.block_tables[seq_id]
-            #print(f"range i : {len(draft_tokens) + seq_data.get_len()}")
-            #print(f"seq_len : {seq_data.get_len()}, draft token len : {len(draft_tokens)}")
-            for i in range(len(draft_tokens) + seq_data.get_len()):
-                #print(f"i : {i}, block size : {self.block_size}, table_len : {len(block_table)}")
+            # print(f"range i : {len(draft_tokens) + seq_data.get_len()}")
+            # print(f"seq_len : {seq_data.get_len()}, draft token len : {len(draft_tokens)}")
+            for i in range(seq_data.get_len() + seq_data.get_draft_len()):
+                # print(f"i : {i}, block size : {self.block_size}, table_len : {len(block_table)}")
 
                 block_number = block_table[i // self.block_size]
                 block_offset = i % self.block_size
@@ -379,6 +454,52 @@ class Worker:
 
         # Prepare input tensors.
         input_tokens, input_positions, input_metadata = self._prepare_inputs(
+            seq_group_metadata_list)
+
+        # Execute the model.
+        output = self.model(
+            input_ids=input_tokens,
+            positions=input_positions,
+            kv_caches=self.gpu_cache,
+            input_metadata=input_metadata,
+            cache_events=cache_events,
+        )
+        return output
+
+    @torch.inference_mode()
+    def execute_draft_model(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        blocks_to_swap_in: Dict[int, int],
+        blocks_to_swap_out: Dict[int, int],
+        blocks_to_copy: Dict[int, List[int]],
+    ) -> Dict[int, SequenceOutputs]:
+        # Issue cache operations.
+        issued_cache_op = False
+        if blocks_to_swap_in:
+            self.cache_engine.swap_in(blocks_to_swap_in)
+            issued_cache_op = True
+        if blocks_to_swap_out:
+            self.cache_engine.swap_out(blocks_to_swap_out)
+            issued_cache_op = True
+        if blocks_to_copy:
+            self.cache_engine.copy(blocks_to_copy)
+            issued_cache_op = True
+
+        if issued_cache_op:
+            cache_events = self.cache_events
+        else:
+            cache_events = None
+
+        # If there is no input, we don't need to execute the model.
+        if not seq_group_metadata_list:
+            if cache_events is not None:
+                for event in cache_events:
+                    event.wait()
+            return {}
+
+        # Prepare input tensors.
+        input_tokens, input_positions, input_metadata = self._prepare_draft_inputs(
             seq_group_metadata_list)
 
         # Execute the model.

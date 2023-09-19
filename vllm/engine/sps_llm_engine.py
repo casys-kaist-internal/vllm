@@ -11,7 +11,7 @@ from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs, SequenceData
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs, SequenceData
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -336,7 +336,7 @@ class SpSLLMEngine:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
             self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
-        #(f"draft_size : {self.sps_config.draft_size}")
+        # (f"draft_size : {self.sps_config.draft_size}")
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
                 # Nothing to do.
@@ -350,6 +350,7 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
+            print("first run")
             output = self._run_target_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -364,10 +365,9 @@ class SpSLLMEngine:
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
-
             for _ in range(self.sps_config.draft_size):
                 draft_output = self._run_draft_workers(
-                    "execute_model",
+                    "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
@@ -380,21 +380,12 @@ class SpSLLMEngine:
 
                 # Decode the sequences.
                 self._decode_sequences(seq_groups)
-        
-                ## update seq_group_metadata_list 
-                for seq_group_meta_data in seq_group_metadata_list:
-                    for seq_group in seq_groups:
-                        if seq_group.request_id == seq_group_meta_data:
-                            seq_data: Dict[int, List[SequenceData]] = {}
-                            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                                seq_id = seq.seq_id
-                                seq_data[seq_id] = seq.data
-                            seq_group_meta_data.seq_data = seq_data
-                            break;
 
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
+
+            print("draft -> target")
 
             # Execute the target model 1 time
             target_output = self._run_target_workers(
@@ -404,6 +395,8 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+
+            print(target_output)
 
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.target_update(

@@ -61,6 +61,8 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
+        self.draft_token_ids: List[int] = []
+        self.draft_cumulative_logprobs: List[float] = []
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -80,11 +82,38 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
+    # draft token related methods
+    def append_draft_token_id(self, token_id: int, logprob: float) -> None:
+        self.draft_token_ids.append(token_id)
+        self.draft_cumulative_logprobs.append(logprob)
+
+    def accept_draft_tokens(self, accept_cnt: int) -> None:
+        for i in range(accept_cnt):
+            self.append_token_id(
+                self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
+
+        self.draft_token_ids.clear()
+        self.draft_cumulative_logprobs.clear()
+
+    def get_draft_len(self) -> int:
+        return len(self.draft_token_ids)
+
+    def get_draft_token_ids(self) -> List[int]:
+        return self.draft_token_ids
+
+    def get_last_draft_token_id(self) -> int:
+        if len(self.draft_token_ids) == 0:
+            return self.get_last_token_id()
+
+        return self.draft_token_ids[-1]
+
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob})")
+                f"cumulative_logprob={self.cumulative_logprob}, "
+                f"draft_token_ids={self.draft_token_ids}, "
+                f"draft_cumulative_logprobs={self.draft_cumulative_logprobs}")
 
 
 class Sequence:
@@ -104,10 +133,12 @@ class Sequence:
         prompt: str,
         prompt_token_ids: List[int],
         block_size: int,
+        draft_size: int,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
         self.block_size = block_size
+        self.draft_size = draft_size
 
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: List[Dict[int, float]] = []
@@ -142,6 +173,16 @@ class Sequence:
                                                num_empty_slots])
             cursor += num_empty_slots
 
+    def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
+        assert len(self.logical_token_blocks) > 0
+
+        for _ in range(remove_cnt):
+            last_block = self.logical_token_blocks[-1]
+            last_block.remove_token()
+
+            if last_block.is_empty():
+                self.logical_token_blocks.pop()
+
     def append_token_id(
         self,
         token_id: int,
@@ -151,6 +192,24 @@ class Sequence:
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
+
+    def append_draft_token_id(
+        self,
+        token_id: int,
+        logprobs: Dict[int, float],
+    ) -> None:
+        assert token_id in logprobs
+        self._append_tokens_to_blocks([token_id])
+        self.output_logprobs.append(logprobs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id])
+
+    def accept_draft_tokens(self, accept_cnt: int) -> None:
+        assert accept_cnt <= self.draft_size
+
+        reject_cnt = self.draft_size - accept_cnt
+        self.data.accept_draft_tokens(accept_cnt)
+        self.output_logprobs = self.output_logprobs[:-reject_cnt]
+        self._remove_tokens_from_blocks(reject_cnt)
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -182,15 +241,21 @@ class Sequence:
     def get_num_additional_blocks(self, draft_size) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
+        print(self.logical_token_blocks)
+        print("num empty slots: ", num_empty_slots)
+        print("draft_size", draft_size)
 
         if draft_size <= num_empty_slots:
+            print("C")
             return 0
 
         num_additional_blocks = (
             draft_size - num_empty_slots) // self.block_size
         if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
+            print("A")
             return num_additional_blocks
         else:
+            print("B")
             return num_additional_blocks + 1
 
     def __repr__(self) -> str:

@@ -7,11 +7,11 @@ from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sequence import (#sequence
-                            SequenceData, SequenceData,
-                           SequenceGroupMetadata, SequenceOutputs,
-                           SequenceStatus)
-from vllm.sps_sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
+from vllm.sequence import (  # sequence
+    SequenceData, SequenceData,
+    SequenceGroupMetadata, SequenceOutputs,
+    SequenceStatus)
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
 from vllm.model_executor.layers.sps_sampler import modified_rejection_sample
 
 logger = init_logger(__name__)
@@ -311,7 +311,7 @@ class Scheduler:
                     break
 
                 # If the sequence group cannot be allocated, stop.
-                if not self.block_manager.can_sps_allocate(seq_group, draft_size):
+                if not self.block_manager.can_allocate(seq_group):
                     break
 
                 # If the number of batched tokens exceeds the limit, stop.
@@ -331,7 +331,8 @@ class Scheduler:
                     break
 
                 seq_group = self.waiting.pop(0)
-                self._sps_allocate(seq_group, draft_size)
+                print("allocate")
+                self._allocate(seq_group)
                 self.running.append(seq_group)
                 num_batched_tokens += num_prompt_tokens
                 scheduled.append(seq_group)
@@ -484,6 +485,7 @@ class Scheduler:
         seq_outputs: Dict[int, SequenceOutputs],
     ) -> List[SequenceGroup]:
         scheduled: List[SequenceGroup] = []
+
         for seq_group in self.running:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 if seq.seq_id in seq_outputs:
@@ -509,6 +511,7 @@ class Scheduler:
                 # Append a new token to the sequence.
                 output = seq_outputs[seq.seq_id]
                 seq.append_draft_token_id(output.output_token, output.logprobs)
+
         return scheduled
 
     def target_update(

@@ -98,6 +98,10 @@ class SequenceData:
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
 
+    def get_last_draft_token_id(self) -> int:
+        assert not self.draft_token_ids
+        return self.draft_token_ids[-1]
+
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
@@ -192,8 +196,9 @@ class Sequence:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_token_id(token_id, logprobs[token_id]) ## output_token에 추가해 두었다가 reject 될 경우, 
-                                                                ## draft_token list를 이용하여 한번에 제거
+        # output_token에 추가해 두었다가 reject 될 경우,
+        self.data.append_token_id(token_id, logprobs[token_id])
+        # draft_token list를 이용하여 한번에 제거
         self.data.append_draft_token_id(token_id, logprobs[token_id])
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:

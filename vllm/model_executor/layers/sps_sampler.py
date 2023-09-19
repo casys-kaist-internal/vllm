@@ -9,7 +9,7 @@ from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.parallel_utils.tensor_parallel import (
     gather_from_tensor_model_parallel_region)
 from vllm.sampling_params import SamplingParams
-from vllm.sps_sequence import SequenceOutputs
+from vllm.sequence import SequenceOutputs
 
 _SAMPLING_EPS = 1e-5
 
