@@ -331,7 +331,6 @@ class Scheduler:
                     break
 
                 seq_group = self.waiting.pop(0)
-                print("allocate")
                 self._allocate(seq_group)
                 self.running.append(seq_group)
                 num_batched_tokens += num_prompt_tokens
@@ -533,8 +532,10 @@ class Scheduler:
                 for i, draft_output in enumerate(draft_output_list):
                     draft_seq_output = draft_output[seq.seq_id]
                     token_id = draft_seq_output.output_token
-                    draft_prob = draft_seq_output.prob[token_id]
-                    target_prob = target_output[seq.seq_id].prob[i][token_id]
+                    draft_prob = draft_seq_output.probs[token_id]
+                    target_prob = target_output[seq.seq_id].probs[i][token_id]
+
+                    print(draft_prob, target_prob)
 
                     r = torch.rand(1, device=draft_prob.device)
 
@@ -543,9 +544,11 @@ class Scheduler:
                         accepted_cnt += 1
                     else:
                         # reject
-                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].prob[i],
-                                                                                         draft_seq_output.prob, seq_group.sampling_params)
+                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
+                                                                                         draft_seq_output.probs, seq_group.sampling_params)
                         break
+
+                print("Accepted", accepted_cnt)
 
                 if accepted_cnt != self.sps_config.draft_size:
                     # rollback

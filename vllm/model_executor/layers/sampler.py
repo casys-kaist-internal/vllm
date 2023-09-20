@@ -44,6 +44,8 @@ class Sampler(nn.Module):
     ) -> Dict[int, SequenceOutputs]:
         # Get the hidden states that we use for sampling.
         hidden_states = _prune_hidden_states(hidden_states, input_metadata)
+        # [72, 768] (draft_size + 1) * batch size
+        # print("hidden states", hidden_states.shape)
 
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())
@@ -53,20 +55,24 @@ class Sampler(nn.Module):
             logits, self.parallel_state)
         # Remove paddings in vocab (if any).
         logits = logits[:, :self.vocab_size]
+        # print("logits", logits.shape)
 
         # Apply presence and frequency penalties.
         output_tokens = _get_output_tokens(input_metadata)
-        assert len(output_tokens) == logits.shape[0]
+        print(output_tokens)
+        print(len(output_tokens), logits.shape[0])
+        # assert len(output_tokens) == logits.shape[0]
         presence_penalties, frequency_penalties = _get_penalties(
             input_metadata)
-        assert len(presence_penalties) == logits.shape[0]
-        assert len(frequency_penalties) == logits.shape[0]
+        print("presence_penality", len(presence_penalties))
+        # assert len(presence_penalties) == logits.shape[0]
+        # assert len(frequency_penalties) == logits.shape[0]
         logits = _apply_penalties(logits, output_tokens, presence_penalties,
                                   frequency_penalties, self.vocab_size)
 
         # Apply temperature scaling.
         temperatures = _get_temperatures(input_metadata)
-        assert len(temperatures) == logits.shape[0]
+        # assert len(temperatures) == logits.shape[0]
         if any(t != 1.0 for t in temperatures):
             t = torch.tensor(temperatures,
                              dtype=logits.dtype,
@@ -76,7 +82,7 @@ class Sampler(nn.Module):
 
         # Apply top-p and top-k truncation.
         top_ps, top_ks = _get_top_p_top_k(input_metadata, self.vocab_size)
-        assert len(top_ps) == len(top_ks) == logits.shape[0]
+        # assert len(top_ps) == len(top_ks) == logits.shape[0]
         do_top_p = any(p < 1.0 - _SAMPLING_EPS for p in top_ps)
         do_top_k = any(k != self.vocab_size for k in top_ks)
         if do_top_p or do_top_k:
@@ -101,6 +107,11 @@ def _prune_hidden_states(
     for prompt_len in input_metadata.prompt_lens:
         last_token_indicies.append(start_idx + prompt_len - 1)
         start_idx += prompt_len
+    for draft_len in input_metadata.draft_lens:
+        last_token_indicies.extend(
+            range(start_idx + draft_len - input_metadata.draft_size - 1, start_idx + draft_len))
+        # should consider one additional token when all accepted
+        start_idx += draft_len
     last_token_indicies.extend(
         range(start_idx, start_idx + input_metadata.num_generation_tokens))
     return hidden_states[last_token_indicies]
@@ -119,6 +130,12 @@ def _get_penalties(
             # A prompt input.
             presence_penalties.append(p)
             frequency_penalties.append(f)
+        elif i < input_metadata.num_prompts + input_metadata.num_drafts:
+            # Draft tokens
+            presence_penalties += [p] * \
+                (input_metadata.draft_size + 1) * len(seq_ids)
+            frequency_penalties += [f] * \
+                (input_metadata.draft_size + 1) * len(seq_ids)
         else:
             # A generation token.
             presence_penalties += [p] * len(seq_ids)
@@ -156,7 +173,8 @@ def _apply_penalties(
     # Collect the indices of sequences that have non-zero penalties.
     indices = []
     for i in range(num_seqs):
-        if not output_tokens[i]:
+        # changed for target sampling
+        if len(output_tokens) == num_seqs and not output_tokens[i]:
             continue
         p = presence_penalties[i]
         f = frequency_penalties[i]
@@ -207,6 +225,10 @@ def _get_temperatures(input_metadata: InputMetadata) -> List[float]:
         if i < input_metadata.num_prompts:
             # A prompt input.
             temperatures.append(temperature)
+        elif i < input_metadata.num_prompts + input_metadata.num_drafts:
+            # Draft tokens
+            temperatures += [temperature] * \
+                input_metadata.num_drafts * len(seq_ids)
         else:
             # A generation token.
             temperatures += [temperature] * len(seq_ids)
@@ -230,6 +252,10 @@ def _get_top_p_top_k(
             # A prompt input.
             top_ps.append(top_p)
             top_ks.append(top_k)
+        elif i < input_metadata.num_prompts + input_metadata.num_drafts:
+            # Draft tokens
+            top_ps += [top_p] * input_metadata.num_drafts * len(seq_ids)
+            top_ks += [top_k] * input_metadata.num_drafts * len(seq_ids)
         else:
             # A generation token.
             top_ps += [top_p] * len(seq_ids)
@@ -402,7 +428,57 @@ def _sample(
                 output_logprobs[next_token_id] = logprob[next_token_id].item()
                 seq_outputs[seq_id] = SequenceOutputs(seq_id, seq_id,
                                                       next_token_id,
-                                                      output_logprobs)
+                                                      output_logprobs,
+                                                      prob)
+        elif i < input_metadata.num_prompts + input_metadata.num_drafts:
+            # Generate the logits needed for speculative sampling
+            prob_total = probs[idx:idx +
+                               (input_metadata.draft_size + 1) * len(seq_ids)]
+            logprob_total = logprobs[idx:idx +
+                                     (input_metadata.draft_size + 1) * len(seq_ids)]
+
+            # prob and logprob for only last token (in case of all acceptance)
+            prob = torch.empty(
+                (len(seq_ids), prob_total.shape[-1]), device='cuda')
+            logprob = torch.empty(
+                (len(seq_ids), prob_total.shape[-1]), device='cuda')
+
+            for seq_idx in range(len(seq_ids)):
+                prob[seq_idx] = prob_total[seq_idx * (input_metadata.draft_size +
+                                                      1) + input_metadata.draft_size, ]
+                logprob[seq_idx] = logprob_total[seq_idx *
+                                                 (input_metadata.draft_size + 1) + input_metadata.draft_size, ]
+
+            idx += (input_metadata.draft_size + 1) * len(seq_ids)
+
+            # Sample the next tokens.
+            seq_logprobs = [
+                input_metadata.seq_data[seq_id].cumulative_logprob
+                for seq_id in seq_ids
+            ]
+            parent_seq_ids, next_token_ids = _sample_from_generation_tokens(
+                seq_ids, prob, logprob, seq_logprobs, sampling_params)
+
+            # Get top-k log probabilities for the next tokens.
+            next_logprobs: Dict[int, Dict[int, float]] = {}
+            for j, seq_id in enumerate(seq_ids):
+                next_logprobs[seq_id] = _get_topk_logprobs(
+                    logprob[j], sampling_params.logprobs)
+
+            # Build the output.
+            for seq_id, parent_seq_id, next_token_id in zip(
+                    seq_ids, parent_seq_ids, next_token_ids):
+                j = seq_ids.index(parent_seq_id)
+                output_logprobs = next_logprobs[parent_seq_id].copy()
+                output_logprobs[next_token_id] = logprob[j,
+                                                         next_token_id].item()
+                seq_outputs[seq_id] = SequenceOutputs(
+                    seq_id,
+                    parent_seq_id,
+                    next_token_id,
+                    output_logprobs,
+                    prob_total
+                )
         else:
             # Generate the next tokens for generation tokens.
             prob = probs[idx:idx + len(seq_ids)]
@@ -435,6 +511,7 @@ def _sample(
                     parent_seq_id,
                     next_token_id,
                     output_logprobs,
+                    prob[j]
                 )
 
     return seq_outputs

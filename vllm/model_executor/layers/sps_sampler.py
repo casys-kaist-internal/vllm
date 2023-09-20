@@ -448,10 +448,14 @@ def modified_rejection_sample(
     draft_prob: torch.Tensor,
     sampling_params: SamplingParams
 ) -> SequenceOutputs:
+    print(target_prob, draft_prob)
     x = target_prob - draft_prob
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
-    x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
+    x_max_sum = torch.sum(x_max, dim=-1, keepdim=True)
     resample_prob = x_max / x_max_sum
+    resample_output_logprobs = torch.log(resample_prob)
+
+    print(resample_prob)
 
     # naive greedy sampling
     if sampling_params.temperature < _SAMPLING_EPS:
@@ -462,6 +466,4 @@ def modified_rejection_sample(
                                               num_samples=1,
                                               replacement=True)
 
-    resample_output_logprobs = torch.log(resample_prob)
-
-    return resample_token_id, resample_output_logprobs[resample_token_id]
+    return resample_token_id, resample_output_logprobs

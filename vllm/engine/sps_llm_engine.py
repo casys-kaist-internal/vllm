@@ -142,6 +142,7 @@ class SpSLLMEngine:
             self.target_model_config,
             self.target_parallel_config,
             self.scheduler_config,
+            self.sps_config,
             0,
             distributed_init_method,
         )
@@ -158,6 +159,7 @@ class SpSLLMEngine:
             self.draft_model_config,
             self.draft_parallel_config,
             self.scheduler_config,
+            self.sps_config,
             0,
             distributed_init_method,
         )
@@ -191,12 +193,14 @@ class SpSLLMEngine:
         model_config = copy.deepcopy(self.model_config)
         parallel_config = copy.deepcopy(self.parallel_config)
         scheduler_config = copy.deepcopy(self.scheduler_config)
+        sps_config = copy.deepcopy(self.sps_config)
         self._run_workers("init_worker",
                           get_all_outputs=True,
                           worker_init_fn=lambda: Worker(
                               model_config,
                               parallel_config,
                               scheduler_config,
+                              sps_config,
                               None,
                               None,
                           ))
@@ -365,6 +369,7 @@ class SpSLLMEngine:
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
+            print("-" * 20)
             for _ in range(self.sps_config.draft_size):
                 draft_output = self._run_draft_workers(
                     "execute_draft_model",
@@ -384,6 +389,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
+                print(draft_output)
 
             print("draft -> target")
 

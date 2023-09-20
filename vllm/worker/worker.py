@@ -6,8 +6,8 @@ import torch
 import torch.distributed
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig)
-from vllm.model_executor import get_model, InputMetadata, InputMetadata, set_random_seed
+                         SchedulerConfig, SpSConfig)
+from vllm.model_executor import get_model, InputMetadata, set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 
 from vllm.sampling_params import SamplingParams
@@ -29,12 +29,14 @@ class Worker:
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
+        sps_config: SpSConfig,
         rank: Optional[int] = None,
         distributed_init_method: Optional[str] = None,
     ) -> None:
         self.model_config = model_config
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
+        self.sps_config = sps_config
         self.rank = rank
         self.distributed_init_method = distributed_init_method
 
@@ -252,6 +254,7 @@ class Worker:
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
+            draft_size=self.sps_config.draft_size,
         )
 
         return tokens_tensor, positions_tensor, input_metadata
@@ -329,6 +332,7 @@ class Worker:
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
+            draft_size=self.sps_config.draft_size,
         )
 
         return tokens_tensor, positions_tensor, input_metadata
@@ -341,7 +345,6 @@ class Worker:
         input_tokens: List[int] = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
-        prompt_lens: List[int] = []
 
         # Add draft tokens.
         draft_lens: List[int] = []
@@ -356,10 +359,11 @@ class Worker:
             seq_data = seq_group_metadata.seq_data[seq_id]
             # FIXME(sangjin): initially we dont use kv cache
             draft_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
-            draft_len = len(draft_tokens)
-            draft_lens.append(draft_len)
+            draft_lens.append(len(seq_data.get_draft_token_ids()))
 
             input_tokens.extend(draft_tokens)
+            # input_tokens.extend(seq_data.get_draft_token_ids()) # If we use KV cache
+
             # NOTE(woosuk): Here we assume that the first token in the prompt
             # is always the first token in the sequence.
             input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
@@ -411,13 +415,15 @@ class Worker:
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=draft_lens,  # FIXME (sangjin)
+            prompt_lens=[],  # FIXME (sangjin)
             draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
+            draft_size=self.sps_config.draft_size,
         )
+
         return tokens_tensor, positions_tensor, input_metadata
 
     @torch.inference_mode()

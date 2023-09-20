@@ -3,6 +3,8 @@ import copy
 import enum
 from typing import Dict, List, Optional, Union
 
+import torch
+
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
 
@@ -188,6 +190,7 @@ class Sequence:
         token_id: int,
         logprobs: Dict[int, float],
     ) -> None:
+        print(logprobs, token_id)
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
@@ -241,21 +244,15 @@ class Sequence:
     def get_num_additional_blocks(self, draft_size) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
-        print(self.logical_token_blocks)
-        print("num empty slots: ", num_empty_slots)
-        print("draft_size", draft_size)
 
         if draft_size <= num_empty_slots:
-            print("C")
             return 0
 
         num_additional_blocks = (
             draft_size - num_empty_slots) // self.block_size
         if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
-            print("A")
             return num_additional_blocks
         else:
-            print("B")
             return num_additional_blocks + 1
 
     def __repr__(self) -> str:
@@ -360,17 +357,20 @@ class SequenceOutputs:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        probs: torch.Tensor  # added for speculative sampling
     ) -> None:
         self.seq_id = seq_id
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.probs = probs
 
     def __repr__(self) -> str:
         return (f"SequenceOutputs(seq_id={self.seq_id}, "
                 f"parent_seq_id={self.parent_seq_id}, "
                 f"output_token={self.output_token}), "
-                f"logprobs={self.logprobs}")
+                f"logprobs={self.logprobs}, "
+                f"probs shape={self.probs.shape}")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceOutputs):
