@@ -190,7 +190,7 @@ class Sequence:
         token_id: int,
         logprobs: Dict[int, float],
     ) -> None:
-        print(logprobs, token_id)
+        print("append token id", logprobs, token_id)
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
@@ -210,6 +210,7 @@ class Sequence:
         assert accept_cnt <= self.draft_size
 
         reject_cnt = self.draft_size - accept_cnt
+        print("reject", reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)

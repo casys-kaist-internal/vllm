@@ -12,7 +12,7 @@ from vllm.sequence import (  # sequence
     SequenceGroupMetadata, SequenceOutputs,
     SequenceStatus)
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
-from vllm.model_executor.layers.sps_sampler import modified_rejection_sample
+from vllm.model_executor.layers.sampler import modified_rejection_sample
 
 logger = init_logger(__name__)
 
@@ -557,6 +557,7 @@ class Scheduler:
                     self.block_manager.remove_slots(seq)
 
                 else:
+                    print("all accepted")
                     # all accepted so sample additional token
                     seq.append_token_id(
                         target_output[seq.seq_id].next_token_id, target_output[seq.seq_id].output_logprobs)

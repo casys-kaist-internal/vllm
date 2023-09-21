@@ -59,12 +59,9 @@ class Sampler(nn.Module):
 
         # Apply presence and frequency penalties.
         output_tokens = _get_output_tokens(input_metadata)
-        print(output_tokens)
-        print(len(output_tokens), logits.shape[0])
         # assert len(output_tokens) == logits.shape[0]
         presence_penalties, frequency_penalties = _get_penalties(
             input_metadata)
-        print("presence_penality", len(presence_penalties))
         # assert len(presence_penalties) == logits.shape[0]
         # assert len(frequency_penalties) == logits.shape[0]
         logits = _apply_penalties(logits, output_tokens, presence_penalties,
@@ -515,3 +512,30 @@ def _sample(
                 )
 
     return seq_outputs
+
+
+def modified_rejection_sample(
+    target_prob: torch.Tensor,
+    draft_prob: torch.Tensor,
+    sampling_params: SamplingParams
+) -> SequenceOutputs:
+    x = target_prob - draft_prob
+    x_max = torch.where(x > 0, x, torch.zeros_like(x))
+    x_max_sum = torch.sum(x_max, dim=-1, keepdim=True)
+    resample_prob = x_max / x_max_sum
+    resample_logprob = torch.log(resample_prob)
+
+    # naive greedy sampling
+    if sampling_params.temperature < _SAMPLING_EPS:
+        resample_token_id = torch.argmax(resample_prob).item()
+
+    else:
+        resample_token_id = torch.multinomial(resample_prob,
+                                              num_samples=1,
+                                              replacement=True).item()
+
+    resample_output_logprobs: Dict[int, float] = {}
+    resample_output_logprobs[resample_token_id] = resample_logprob[
+        resample_token_id].item()
+
+    return resample_token_id, resample_output_logprobs

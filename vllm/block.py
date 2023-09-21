@@ -42,7 +42,7 @@ class LogicalTokenBlock:
     def remove_token(self) -> None:
         assert self.num_tokens != 0
 
-        self.token_ids[self.num_tokens] = _BLANK_TOKEN_ID
+        self.token_ids[self.num_tokens - 1] = _BLANK_TOKEN_ID
         self.num_tokens -= 1
 
     def get_token_ids(self) -> List[int]:

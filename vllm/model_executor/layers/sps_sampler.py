@@ -448,7 +448,7 @@ def modified_rejection_sample(
     draft_prob: torch.Tensor,
     sampling_params: SamplingParams
 ) -> SequenceOutputs:
-    print(target_prob, draft_prob)
+    print("AAA", target_prob, draft_prob)
     x = target_prob - draft_prob
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=-1, keepdim=True)

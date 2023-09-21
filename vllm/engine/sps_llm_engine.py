@@ -354,7 +354,6 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
-            print("first run")
             output = self._run_target_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -383,15 +382,9 @@ class SpSLLMEngine:
                 # Update the scheduler with the model outputs.
                 seq_groups = self.scheduler.draft_update(draft_output)
 
-                # Decode the sequences.
-                self._decode_sequences(seq_groups)
-
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
-                print(draft_output)
-
-            print("draft -> target")
 
             # Execute the target model 1 time
             target_output = self._run_target_workers(
@@ -402,11 +395,14 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            print(target_output)
-
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.target_update(
                 draft_output_list, target_output)
+
+            print("seq data", seq_groups[0].seqs[0].data)
+            print("!!!!!!!!!!!!!!!!!!!!!!!")
+            # Decode the sequences.
+            self._decode_sequences(seq_groups)
 
         # Stop the sequences that meet the stopping criteria.
         self._stop_sequences(seq_groups)
