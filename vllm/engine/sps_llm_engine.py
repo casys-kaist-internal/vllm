@@ -340,7 +340,7 @@ class SpSLLMEngine:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
             self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
-        # (f"draft_size : {self.sps_config.draft_size}")
+
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
                 # Nothing to do.
@@ -368,7 +368,6 @@ class SpSLLMEngine:
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
-            print("-" * 20)
             for _ in range(self.sps_config.draft_size):
                 draft_output = self._run_draft_workers(
                     "execute_draft_model",
@@ -399,8 +398,6 @@ class SpSLLMEngine:
             seq_groups = self.scheduler.target_update(
                 draft_output_list, target_output)
 
-            print("seq data", seq_groups[0].seqs[0].data)
-            print("!!!!!!!!!!!!!!!!!!!!!!!")
             # Decode the sequences.
             self._decode_sequences(seq_groups)
 
@@ -488,15 +485,18 @@ class SpSLLMEngine:
         """Decodes the sequence outputs."""
         for seq_group in seq_groups:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                new_token, new_output_text = detokenize_incrementally(
-                    self.tokenizer,
-                    seq.output_tokens,
-                    seq.get_last_token_id(),
-                    skip_special_tokens=True,
-                )
-                if new_token is not None:
-                    seq.output_tokens.append(new_token)
-                    seq.output_text = new_output_text
+                need_to_decode = seq.data.need_to_decode
+
+                for i in range(-need_to_decode, 0):
+                    new_token, new_output_text = detokenize_incrementally(
+                        self.tokenizer,
+                        seq.output_tokens,
+                        seq.get_token_id_from_index(i),
+                        skip_special_tokens=True,
+                    )
+                    if new_token is not None:
+                        seq.output_tokens.append(new_token)
+                        seq.output_text = new_output_text
 
     def _stop_sequences(self, seq_groups: List[SequenceGroup]) -> None:
         """Stop the finished sequences."""

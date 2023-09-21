@@ -535,8 +535,6 @@ class Scheduler:
                     draft_prob = draft_seq_output.probs[token_id]
                     target_prob = target_output[seq.seq_id].probs[i][token_id]
 
-                    print(draft_prob, target_prob)
-
                     r = torch.rand(1, device=draft_prob.device)
 
                     if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
@@ -548,16 +546,11 @@ class Scheduler:
                                                                                          draft_seq_output.probs, seq_group.sampling_params)
                         break
 
-                print("Accepted", accepted_cnt)
+                seq.accept_draft_tokens(accepted_cnt)
 
                 if accepted_cnt != self.sps_config.draft_size:
-                    # rollback
-                    seq.accept_draft_tokens(accepted_cnt)
                     seq.append_token_id(resample_token_id, resample_logprobs)
-                    self.block_manager.remove_slots(seq)
-
                 else:
-                    print("all accepted")
                     # all accepted so sample additional token
                     seq.append_token_id(
                         target_output[seq.seq_id].next_token_id, target_output[seq.seq_id].output_logprobs)

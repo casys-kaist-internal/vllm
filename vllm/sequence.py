@@ -65,8 +65,11 @@ class SequenceData:
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
         self.draft_cumulative_logprobs: List[float] = []
+        self.need_to_decode = 0
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
+        self.need_to_decode = 1  # used for decoding sequence
+
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
 
@@ -84,12 +87,17 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
+    def get_token_id_from_index(self, idx) -> int:
+        return self.output_token_ids[idx]
+
     # draft token related methods
     def append_draft_token_id(self, token_id: int, logprob: float) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_cumulative_logprobs.append(logprob)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
+        self.need_to_decode = accept_cnt  # used for decoding sequence
+
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
@@ -190,7 +198,6 @@ class Sequence:
         token_id: int,
         logprobs: Dict[int, float],
     ) -> None:
-        print("append token id", logprobs, token_id)
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
@@ -210,7 +217,6 @@ class Sequence:
         assert accept_cnt <= self.draft_size
 
         reject_cnt = self.draft_size - accept_cnt
-        print("reject", reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
@@ -226,6 +232,9 @@ class Sequence:
 
     def get_last_token_id(self) -> int:
         return self.data.get_last_token_id()
+
+    def get_token_id_from_index(self, idx) -> int:
+        return self.data.get_token_id_from_index(idx)
 
     def get_output_token_ids(self) -> List[int]:
         return self.data.output_token_ids
