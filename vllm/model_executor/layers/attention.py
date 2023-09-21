@@ -82,6 +82,14 @@ class PagedAttention(nn.Module):
         attn_bias = BlockDiagonalCausalMask.from_seqlens(prompt_lens)
         input_metadata.attn_bias.append(attn_bias)
 
+    def set_draft_attn_bias(self, input_metadata: InputMetadata) -> None:
+        if input_metadata.attn_bias:
+            # Already set by a previous layer.
+            return
+        prompt_lens = input_metadata.draft_lens
+        attn_bias = BlockDiagonalCausalMask.from_seqlens(prompt_lens)
+        input_metadata.attn_bias.append(attn_bias)
+
     def multi_query_kv_attention(
         self,
         output: torch.Tensor,
@@ -167,6 +175,8 @@ class PagedAttention(nn.Module):
         self,
         output: torch.Tensor,
         query: torch.Tensor,
+        key: torch.Tensor,  # FIXME: (hyunjae) key is not used
+        value: torch.Tensor,  # FIXME: (hyunjae) value is not used
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
         input_metadata: InputMetadata,
@@ -183,30 +193,45 @@ class PagedAttention(nn.Module):
             input_metadata: metadata for paged attention.
         """
 
-        print("output_shape", output.shape)
-        print("query_shape", query.shape)
-        print("key_cache shape", key_cache.shape)
-        print("value_cache shape", value_cache.shape)
-
-        print("input_metadata.block_tables",
-              input_metadata.block_tables.shape[0])  # [1, 32] <- 점점 늘어님?
-        # [num_seqs, (max_num_blocks)]
-
         draft_lens = input_metadata.draft_lens
-
-        print("block_table shape", input_metadata.block_tables.shape)
-        print("slot_mapping shape", input_metadata.slot_mapping.shape)
+        context_lens = input_metadata.context_lens
 
         start = 0
-        for draft_len in draft_lens:
+        # For each draft
+        # NOTE: (hyunjae) Assume that draft tokens come first
+        # NOTE: (hyunjae) We may need to assume query is small enough to fit in GPU memory
+        for seq_group_idx, (draft_len, context_len) in enumerate(
+                zip(draft_lens, context_lens)):
+
+            # Get seq_id of draft
+            seq_ids, _ = input_metadata.seq_groups[seq_group_idx]
+
+            # FIXME: (hyunjae) Verify
+            assert len(seq_ids) == 1
+            seq_id = seq_ids[0]
 
             draft_query = query[start:start + draft_len]
+            draft_output = output[start:start + draft_len]
 
-            # For each token, find equivalent block in key_cache
+            block_size = value_cache.shape[3]
+
+            for i in range(draft_len):
+
+                attention_ops.single_query_cached_kv_attention(
+                    draft_output[i:i + 1],
+                    draft_query[i:i + 1],
+                    key_cache,
+                    value_cache,
+                    self.head_mapping,
+                    self.scale,
+                    input_metadata.block_tables,
+                    context_len - (draft_len - i - 1),
+                    block_size,
+                    input_metadata.max_context_len,
+                    None,  # alibi_slopes
+                )
 
             start += draft_len
-            pass
-        print("TEST")
 
     def forward(
         self,
@@ -246,6 +271,10 @@ class PagedAttention(nn.Module):
         # Pre-allocate the output tensor.
         output = torch.empty_like(query)
 
+        # [prmpt1 prmp2..  promptk | x0 x1 ..           xk]
+        #  |<--num_prompt_tokens-->|<--num_draft_tokens-->|
+        #  |  # big mask         | ....
+
         # Compute the attention op for prompts.
         num_prompt_tokens = input_metadata.num_prompt_tokens
         if num_prompt_tokens > 0:
@@ -257,17 +286,6 @@ class PagedAttention(nn.Module):
                 query[:num_prompt_tokens],
                 key[:num_prompt_tokens],
                 value[:num_prompt_tokens],
-                input_metadata,
-            )
-
-        num_draft_tokens = input_metadata.num_draft_tokens
-        if num_draft_tokens > 0:
-            # FIXME: (hyunjae) Apply Attention-bias and run in one-go
-            self.multiple_query_cached_kv_attention(
-                output[:num_draft_tokens],
-                query[:num_draft_tokens],
-                key[:num_draft_tokens],
-                value[:num_draft_tokens],
                 input_metadata,
             )
 
@@ -288,6 +306,20 @@ class PagedAttention(nn.Module):
                 key_cache,
                 value_cache,
                 input_metadata.slot_mapping,
+            )
+
+        # TODO: Multiple-token cache-ops should happen to fill KV cache for draft tokens
+        num_draft_tokens = input_metadata.num_draft_tokens
+        if num_draft_tokens > 0:
+            # FIXME: (hyunjae) Apply Attention-bias and run in one-go
+            self.multiple_query_cached_kv_attention(
+                output[:num_draft_tokens],
+                query[:num_draft_tokens],
+                key[:num_draft_tokens],
+                value[:num_draft_tokens],
+                key_cache,
+                value_cache,
+                input_metadata,
             )
 
         if input_metadata.num_generation_tokens > 0:

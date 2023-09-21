@@ -304,6 +304,10 @@ class Scheduler:
 
     def free_seq(self, seq: Sequence, finish_status: SequenceStatus) -> None:
         seq.status = finish_status
+        print("fin")
+        print(seq.prompt)
+        print("ANS")
+        print(seq.output_text)
         self.block_manager.free(seq)
 
     def free_finished_seq_groups(self) -> None:

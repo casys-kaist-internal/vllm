@@ -11,7 +11,7 @@ from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceGroupMetadata, SequenceData
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceGroupMetadata, SequenceData, SequenceOutputs
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -663,11 +663,16 @@ class SpSLLMEngine(LLMEngine):
                              "Try increasing `gpu_memory_utilization` when "
                              "initializing the engine.")
 
-        self.cache_config.num_gpu_blocks = num_gpu_blocks
-        self.cache_config.num_cpu_blocks = num_cpu_blocks
+        # FIXME: 나눠써..
+        self.cache_config.num_gpu_blocks = num_gpu_blocks // 2
+        self.cache_config.num_cpu_blocks = num_cpu_blocks // 2
 
         # Initialize the cache.
         self._run_workers("init_cache_engine", cache_config=self.cache_config)
+
+        # Initialize target cache
+        self._run_workers("init_target_cache_engine",
+                          cache_config=self.cache_config)
 
     # TODO: Make SpSEngineArgs that specifies two models!
     @classmethod
@@ -796,9 +801,8 @@ class SpSLLMEngine(LLMEngine):
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
 
-        # TEST: Execute target model for finished sequence
-        # 지금은 input 전체를 draft취급 하자
-        output = self._run_workers(
+        # Checking if target model produces same token
+        target_output = self._run_workers(
             "execute_target_model",
             seq_group_metadata_list=seq_group_metadata_list,
             blocks_to_swap_in={},
@@ -806,9 +810,17 @@ class SpSLLMEngine(LLMEngine):
             blocks_to_copy={},
         )
 
+        def detokenize(sequence_output: SequenceOutputs):
+            return self.draft_tokenizer.decode([sequence_output.output_token])
+
+        a = detokenize(output[0])
+        b = detokenize(target_output[0])
+
+        print(a, b)
+
         # Scenarios for SpS
         # Update the scheduler with the model outputs.
-        seq_groups = self.scheduler.update(output)
+        seq_groups = self.scheduler.update(target_output)
 
         # Decode the sequences.
         self._decode_sequences(seq_groups)  # No Change!

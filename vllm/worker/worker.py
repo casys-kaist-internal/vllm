@@ -264,6 +264,12 @@ class Worker:
         slot_mapping: List[int] = []
         prompt_lens: List[int] = []
 
+        # NOTE: (hyunjae) Some generation-like settings moved to handle draft-prompts
+        max_context_len = 0
+        max_num_blocks_per_seq = 0
+        context_lens: List[int] = []
+        draft_block_tables: List[List[int]] = []
+
         # Add draft tokens.
         draft_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
@@ -291,9 +297,16 @@ class Worker:
                 slot_mapping.extend([0] * len(draft_tokens))
                 continue
 
+            # NOTE(hyunjae): Context lens needed as well
+            context_len = seq_data.get_len()
+            context_lens.append(context_len)
+
             # Compute the slot mapping.
             block_table = seq_group_metadata.block_tables[seq_id]
-            print(block_table, seq_ids, len(draft_tokens), seq_data.get_len())
+            draft_block_tables.append(block_table)
+            max_context_len = max(max_context_len, context_len)
+            max_num_blocks_per_seq = max(max_num_blocks_per_seq,
+                                         len(block_table))
 
             # FIXME: Is this correct? ie: Target model should only have draft tokens
             for i in range(len(draft_tokens)):
@@ -302,11 +315,7 @@ class Worker:
                 slot = block_number * self.block_size + block_offset
                 slot_mapping.append(slot)
 
-        # Add generation tokens.
-        max_context_len = 0
-        max_num_blocks_per_seq = 0
-        context_lens: List[int] = []
-        generation_block_tables: List[List[int]] = []
+        # NOTE: (Hyunjae) We need to add block tables in order to use kv cache
 
         # Optimization: Pad the input length to be a multiple of 8.
         # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
@@ -320,7 +329,7 @@ class Worker:
         context_lens_tensor = torch.cuda.IntTensor(context_lens)
         padded_block_tables = [
             _pad_to_max(block_table, max_num_blocks_per_seq)
-            for block_table in generation_block_tables
+            for block_table in draft_block_tables
         ]
         block_tables_tensor = torch.cuda.IntTensor(padded_block_tables)
 
@@ -331,7 +340,7 @@ class Worker:
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=draft_lens,  # FIXME (sangjin)
+            prompt_lens=prompt_lens,  # FIXME (sangjin)
             draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
@@ -450,6 +459,7 @@ class SpSWorker(Worker):
         self.cache_config = None
         self.block_size = None
         self.cache_engine = None
+        self.target_cache_engine = None
         self.cache_events = None
         self.gpu_cache = None
 
@@ -473,7 +483,7 @@ class SpSWorker(Worker):
         # Initialize the model.
         set_random_seed(self.draft_model_config.seed)
         self.draft_model = get_model(self.draft_model_config)
-        set_random_seed(self.target_model_config.seed)
+        set_random_seed(self.draft_model_config.seed)  # FIXME: For test
         self.target_model = get_model(self.target_model_config)
 
     # TODO: Small, Large 둘 다 돌릴 때 가정해서 수정
@@ -525,6 +535,10 @@ class SpSWorker(Worker):
             input_metadata=input_metadata,
             cache_events=None,
         )
+
+        # FIXME: (hyunjae) Use _prepare_target_inputs for more accuracte profiling
+        input_tokens, input_positions, input_metadata = self._prepare_inputs(
+            seqs)
 
         num_layers = self.target_model_config.get_num_layers(
             self.parallel_config)
@@ -610,10 +624,19 @@ class SpSWorker(Worker):
         self.cache_config = cache_config
         self.block_size = cache_config.block_size
         self.cache_engine = CacheEngine(self.cache_config,
-                                        self.target_model_config,
+                                        self.draft_model_config,
                                         self.parallel_config)
         self.cache_events = self.cache_engine.events
         self.gpu_cache = self.cache_engine.gpu_cache
+
+    def init_target_cache_engine(self, cache_config: CacheConfig) -> None:
+        self.target_cache_config = cache_config
+        self.target_block_size = cache_config.block_size
+        self.target_cache_engine = CacheEngine(self.target_cache_config,
+                                               self.target_model_config,
+                                               self.parallel_config)
+        self.target_cache_events = self.target_cache_engine.events
+        self.target_gpu_cache = self.target_cache_engine.gpu_cache
 
     # NOTE: We expect all elements to be prompt!
     @torch.inference_mode()
@@ -627,13 +650,13 @@ class SpSWorker(Worker):
         # Issue cache operations.
         issued_cache_op = False
         if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.target_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
         if blocks_to_swap_out:
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.target_cache_engine.swap_out(blocks_to_swap_out)
             issued_cache_op = True
         if blocks_to_copy:
-            self.cache_engine.copy(blocks_to_copy)
+            self.target_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
 
         if issued_cache_op:
@@ -655,13 +678,11 @@ class SpSWorker(Worker):
         input_tokens, input_positions, input_metadata = self._prepare_target_inputs(
             seq_group_metadata_list)
 
-        print("Running Target Model")
-
         output = self.target_model(
             input_ids=input_tokens,
             positions=input_positions,
             kv_caches=self.gpu_cache,
             input_metadata=input_metadata,
-            cache_events=None,  # FIXME(hyunjae)
+            cache_events=cache_events,  # FIXME(hyunjae)
         )
         return output

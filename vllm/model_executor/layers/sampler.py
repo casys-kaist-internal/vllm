@@ -95,12 +95,33 @@ def _prune_hidden_states(
 ) -> torch.Tensor:
     start_idx = 0
     last_token_indicies: List[int] = []
-    for prompt_len in input_metadata.prompt_lens:
-        last_token_indicies.append(start_idx + prompt_len - 1)
-        start_idx += prompt_len
-    last_token_indicies.extend(
-        range(start_idx, start_idx + input_metadata.num_generation_tokens))
-    return hidden_states[last_token_indicies]
+
+    # NOTE: For real target model, we may not need to prune hidden states
+    # as we need to compare distributions with draft logit
+    #
+    # TODO: (hyunjae) Fix this tragedy. I think num_generation_tokens shoudl be 0
+    # for target model
+
+    if len(input_metadata.prompt_lens) > 0:
+        for prompt_len in input_metadata.prompt_lens:
+            last_token_indicies.append(start_idx + prompt_len - 1)
+            start_idx += prompt_len
+
+        last_token_indicies.extend(
+            range(start_idx, start_idx + input_metadata.num_generation_tokens))
+        return hidden_states[last_token_indicies]
+
+    elif len(input_metadata.draft_lens) > 0:
+        # For draft model, we need all of them
+        for draft_len in input_metadata.draft_lens:
+            last_token_indicies.append(start_idx + draft_len - 1)
+            start_idx += draft_len
+
+        return hidden_states[last_token_indicies]
+    else:
+        last_token_indicies.extend(
+            range(start_idx, start_idx + input_metadata.num_generation_tokens))
+        return hidden_states[last_token_indicies]
 
 
 def _get_penalties(
@@ -299,6 +320,11 @@ def _sample_from_prompt(
         next_token_id = torch.argmax(prob)
         next_token_ids = [next_token_id.item()]
     else:
+        # Greedy sampling.
+        # assert sampling_params.best_of == 1
+        # next_token_id = torch.argmax(prob)
+        # next_token_ids = [next_token_id.item()]
+
         # Random sampling.
         # Sample `best_of` tokens for the prompt.
         num_seqs = sampling_params.best_of
@@ -380,7 +406,8 @@ def _sample(
     idx = 0
     for i, seq_group in enumerate(input_metadata.seq_groups):
         seq_ids, sampling_params = seq_group
-        if i < input_metadata.num_prompts:
+        # print(i, input_metadata.num_prompts, input_metadata.num_drafts)
+        if i < input_metadata.num_prompts + input_metadata.num_drafts:
             # Generate the next tokens for a prompt input.
             assert len(seq_ids) == sampling_params.best_of
             prob = probs[idx]
