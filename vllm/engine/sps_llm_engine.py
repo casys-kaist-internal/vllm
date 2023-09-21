@@ -391,7 +391,9 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
 
+            print("")
             print("Join Target")
+            print("")
             # Execute the target model 1 time
             target_output = self._run_target_workers(
                 "execute_target_model",
@@ -400,7 +402,10 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
-
+            
+            print("")
+            print("Next Target")
+            print("")
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.target_update(
                 draft_output_list, target_output)
