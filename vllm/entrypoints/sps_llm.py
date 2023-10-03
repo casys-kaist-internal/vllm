@@ -150,8 +150,7 @@ class SpSLLM:
             pbar = tqdm(total=num_requests, desc="Processed prompts")
         # Run the engine.
         outputs: List[RequestOutput] = []
-        # while self.llm_engine.has_unfinished_requests():
-        for _ in range(10):  # debugging purpose only 10 iterations
+        while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
             for output in step_outputs:
                 if output.finished:

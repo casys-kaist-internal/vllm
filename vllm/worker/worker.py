@@ -86,7 +86,8 @@ class Worker:
 
         # Enable top-k sampling to reflect the accurate memory usage.
         vocab_size = self.model.config.vocab_size
-        sampling_params = SamplingParams(top_p=0.99, top_k=vocab_size - 1)
+        sampling_params = SamplingParams(
+            top_p=1, top_k=-1)  # change to 1
         max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
         max_num_seqs = self.scheduler_config.max_num_seqs
         seqs = []
@@ -348,6 +349,8 @@ class Worker:
 
         # Add draft tokens.
         draft_lens: List[int] = []
+        prompt_lens: List[int] = []
+
         for seq_group_metadata in seq_group_metadata_list:
             seq_ids = list(seq_group_metadata.seq_data.keys())
             sampling_params = seq_group_metadata.sampling_params
@@ -358,27 +361,32 @@ class Worker:
 
             seq_data = seq_group_metadata.seq_data[seq_id]
             # FIXME(sangjin): initially we dont use kv cache
-            draft_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
-            draft_lens.append(len(seq_data.get_draft_token_ids()))
+            prompt_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
+            prompt_len = len(prompt_tokens)
+            prompt_lens.append(prompt_len)
+            input_tokens.extend(prompt_tokens)
+            input_positions.extend(range(len(prompt_tokens)))
 
-            input_tokens.extend(draft_tokens)
+            # draft_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
+            draft_lens.append(len(seq_data.get_draft_token_ids()))
+            # input_tokens.extend(draft_tokens)
             # input_tokens.extend(seq_data.get_draft_token_ids()) # If we use KV cache
 
             # NOTE(woosuk): Here we assume that the first token in the prompt
             # is always the first token in the sequence.
-            input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
+            # input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
 
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.extend([0] * len(draft_tokens))
+                slot_mapping.extend([0] * len(prompt_len))
                 continue
 
             # Compute the slot mapping.
             block_table = seq_group_metadata.block_tables[seq_id]
             # print(f"range i : {len(draft_tokens) + seq_data.get_len()}")
             # print(f"seq_len : {seq_data.get_len()}, draft token len : {len(draft_tokens)}")
-            for i in range(seq_data.get_len() + seq_data.get_draft_len()):
+            for i in range(prompt_len):
                 # print(f"i : {i}, block size : {self.block_size}, table_len : {len(block_table)}")
 
                 block_number = block_table[i // self.block_size]
@@ -412,11 +420,13 @@ class Worker:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
+        print(draft_lens)
+
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=[],  # FIXME (sangjin)
-            draft_lens=draft_lens,
+            prompt_lens=prompt_lens,  # FIXME (sangjin)
+            draft_lens=draft_lens,  # FIXME (sangjin)
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
@@ -562,6 +572,7 @@ class Worker:
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
+
         return output
 
     def init_distributed_environment(self) -> None:

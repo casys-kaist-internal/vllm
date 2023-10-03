@@ -195,7 +195,7 @@ class PagedAttention(nn.Module):
 
         # Compute the attention op for prompts.
         num_prompt_tokens = input_metadata.num_prompt_tokens
-        if num_prompt_tokens > 0:
+        if num_prompt_tokens > 0:  # FIXME(sangjin)
             # Prompt run.
             assert input_metadata.num_generation_tokens == 0
             self.set_attn_bias(input_metadata)

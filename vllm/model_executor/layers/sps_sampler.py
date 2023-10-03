@@ -455,8 +455,6 @@ def modified_rejection_sample(
     resample_prob = x_max / x_max_sum
     resample_output_logprobs = torch.log(resample_prob)
 
-    print(resample_prob)
-
     # naive greedy sampling
     if sampling_params.temperature < _SAMPLING_EPS:
         resample_token_id = torch.argmax(resample_prob)

@@ -65,10 +65,10 @@ class SequenceData:
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
         self.draft_cumulative_logprobs: List[float] = []
-        self.need_to_decode = 0
+        self.need_to_decode = 1
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
-        self.need_to_decode = 1  # used for decoding sequence
+        # self.need_to_decode = 1  # used for decoding sequence
 
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
@@ -96,7 +96,8 @@ class SequenceData:
         self.draft_cumulative_logprobs.append(logprob)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
-        self.need_to_decode = accept_cnt  # used for decoding sequence
+        # used for decoding sequence + 1 for the additional last token
+        self.need_to_decode = accept_cnt + 1
 
         for i in range(accept_cnt):
             self.append_token_id(

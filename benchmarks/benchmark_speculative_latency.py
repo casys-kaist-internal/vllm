@@ -10,7 +10,6 @@ from vllm import SpSLLM, SamplingParams
 
 
 def main(args: argparse.Namespace):
-    print(args)
 
     # Process all the requests in a single batch if possible.
     # NOTE(woosuk): If the request cannot be processed in a single batch,
@@ -28,14 +27,14 @@ def main(args: argparse.Namespace):
 
     sampling_params = SamplingParams(
         n=args.n,
-        temperature=0.0 if args.use_beam_search else 1.0,
+        temperature=0.9,
         top_p=1.0,
         use_beam_search=args.use_beam_search,
-        ignore_eos=True,
+        ignore_eos=False,
         max_tokens=args.output_len,
     )
-    print(sampling_params)
-    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
+
+    dummy_prompt_token_ids = ([[0] * args.input_len]) * args.batch_size
 
     def run_to_completion(profile: bool = False):
         if profile:

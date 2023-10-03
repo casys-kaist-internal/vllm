@@ -407,6 +407,8 @@ class Scheduler:
             seq_group.num_seqs(status=SequenceStatus.RUNNING)
             for seq_group in self.running)
 
+        print("self running length", len(self.running))
+
         scheduler_outputs = SchedulerOutputs(
             scheduled_seq_groups=self.running,
             prompt_run=False,
@@ -534,7 +536,6 @@ class Scheduler:
                     token_id = draft_seq_output.output_token
                     draft_prob = draft_seq_output.probs[token_id]
                     target_prob = target_output[seq.seq_id].probs[i][token_id]
-
                     r = torch.rand(1, device=draft_prob.device)
 
                     if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
@@ -545,7 +546,7 @@ class Scheduler:
                         resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
                                                                                          draft_seq_output.probs, seq_group.sampling_params)
                         break
-
+                print("!!!!! accepted_cnt", accepted_cnt)
                 seq.accept_draft_tokens(accepted_cnt)
 
                 if accepted_cnt != self.sps_config.draft_size:
@@ -553,7 +554,7 @@ class Scheduler:
                 else:
                     # all accepted so sample additional token
                     seq.append_token_id(
-                        target_output[seq.seq_id].next_token_id, target_output[seq.seq_id].output_logprobs)
+                        target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
 
         return scheduled
 
