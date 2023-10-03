@@ -29,7 +29,7 @@ class Worker:
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
-        sps_config: SpSConfig,
+        sps_config: Optional[SpSConfig] = None,
         rank: Optional[int] = None,
         distributed_init_method: Optional[str] = None,
     ) -> None:
@@ -255,7 +255,6 @@ class Worker:
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
-            draft_size=self.sps_config.draft_size,
         )
 
         return tokens_tensor, positions_tensor, input_metadata

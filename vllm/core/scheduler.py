@@ -545,7 +545,7 @@ class Scheduler:
                                                                                          draft_seq_output.probs, seq_group.sampling_params)
                         break
                 seq.accept_draft_tokens(accepted_cnt)
-
+                # print("! accepted_cnt", accepted_cnt)
                 if accepted_cnt != self.sps_config.draft_size:
                     seq.append_token_id(resample_token_id, resample_logprobs)
                 else:

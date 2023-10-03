@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import torch
 from xformers.ops import AttentionBias
@@ -31,7 +31,7 @@ class InputMetadata:
         context_lens: torch.Tensor,
         max_context_len: int,
         block_tables: torch.Tensor,
-        draft_size: int
+        draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_groups = seq_groups
         self.seq_data = seq_data

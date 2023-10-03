@@ -144,7 +144,7 @@ class Sequence:
         prompt: str,
         prompt_token_ids: List[int],
         block_size: int,
-        draft_size: int,
+        draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt

@@ -123,11 +123,11 @@ class LLMEngine:
 
         self.workers: List[Worker] = []
         worker = Worker(
-            self.model_config,
-            self.parallel_config,
-            self.scheduler_config,
-            0,
-            distributed_init_method,
+            model_config=self.model_config,
+            parallel_config=self.parallel_config,
+            scheduler_config=self.scheduler_config,
+            rank=0,
+            distributed_init_method=distributed_init_method,
         )
         self.workers.append(worker)
         self._run_workers(
