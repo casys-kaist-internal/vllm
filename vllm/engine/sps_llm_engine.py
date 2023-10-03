@@ -338,7 +338,6 @@ class SpSLLMEngine:
 
     def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
-        print("step start")
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
             self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
@@ -355,7 +354,6 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
-            print("prompt run")
             output = self._run_target_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -371,7 +369,6 @@ class SpSLLMEngine:
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
             for _ in range(self.sps_config.draft_size):
-                print("draft run, draft_idx:", _)
                 draft_output = self._run_draft_workers(
                     "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -387,7 +384,6 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
-            print("execute target model")
             # Execute the target model 1 time
             target_output = self._run_target_workers(
                 "execute_target_model",
@@ -512,7 +508,6 @@ class SpSLLMEngine:
                     if seq.output_text.endswith(stop_str):
                         # Truncate the output text so that the stop string is
                         # not included in the output.
-                        print("!STOPPED")
                         seq.output_text = seq.output_text[:-len(stop_str)]
                         self.scheduler.free_seq(
                             seq, SequenceStatus.FINISHED_STOPPED)
@@ -523,14 +518,12 @@ class SpSLLMEngine:
 
                 # Check if the sequence has reached max_model_len.
                 if seq.get_len() > self.scheduler_config.max_model_len:
-                    print("!STOPPED max model len")
 
                     self.scheduler.free_seq(
                         seq, SequenceStatus.FINISHED_LENGTH_CAPPED)
                     continue
                 # Check if the sequence has reached max_tokens.
                 if seq.get_output_len() >= sampling_params.max_tokens:
-                    print("!STOPPED max token", sampling_params.max_tokens)
 
                     self.scheduler.free_seq(
                         seq, SequenceStatus.FINISHED_LENGTH_CAPPED)
@@ -540,7 +533,6 @@ class SpSLLMEngine:
                     need_to_decode = seq.data.need_to_decode
                     for i in range(-need_to_decode, 0):
                         if seq.get_token_id_from_index(i) == self.tokenizer.eos_token_id:
-                            print("!STOPPED eos token")
                             self.scheduler.free_seq(
                                 seq, SequenceStatus.FINISHED_STOPPED)
                             continue

@@ -420,8 +420,6 @@ class Worker:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
-        print(draft_lens)
-
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,

@@ -407,8 +407,6 @@ class Scheduler:
             seq_group.num_seqs(status=SequenceStatus.RUNNING)
             for seq_group in self.running)
 
-        print("self running length", len(self.running))
-
         scheduler_outputs = SchedulerOutputs(
             scheduled_seq_groups=self.running,
             prompt_run=False,
@@ -546,7 +544,6 @@ class Scheduler:
                         resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
                                                                                          draft_seq_output.probs, seq_group.sampling_params)
                         break
-                print("!!!!! accepted_cnt", accepted_cnt)
                 seq.accept_draft_tokens(accepted_cnt)
 
                 if accepted_cnt != self.sps_config.draft_size:

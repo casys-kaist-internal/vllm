@@ -45,7 +45,7 @@ class Sampler(nn.Module):
         # Get the hidden states that we use for sampling.
         hidden_states = _prune_hidden_states(hidden_states, input_metadata)
         # [72, 768] (draft_size + 1) * batch size
-        print("hidden states", hidden_states.shape)
+        # print("hidden states", hidden_states.shape)
 
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())
@@ -74,7 +74,6 @@ class Sampler(nn.Module):
             t = torch.tensor(temperatures,
                              dtype=logits.dtype,
                              device=logits.device)
-            print(logits.shape, t.shape)
             # Use in-place division to avoid creating a new tensor.
             logits.div_(t.unsqueeze(dim=1))
 
@@ -222,7 +221,6 @@ def _get_temperatures(input_metadata: InputMetadata) -> List[float]:
             # (i.e., greedy sampling or beam search).
             # Set the temperature to 1 to avoid division by zero.
             temperature = 1.0
-        print("num_drafts", input_metadata.num_drafts)
         if input_metadata.num_drafts > 0:
             # Draft tokens
             temperatures += [temperature] * \
