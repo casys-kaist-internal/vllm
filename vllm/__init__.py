@@ -21,6 +21,5 @@ __all__ = [
     "AsyncLLMEngine",
     "AsyncEngineArgs",
     "initialize_cluster",
-
     "SpSLLM",
 ]

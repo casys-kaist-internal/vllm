@@ -259,12 +259,22 @@ class Sequence:
         if draft_size <= num_empty_slots:
             return 0
 
-        num_additional_blocks = (
-            draft_size - num_empty_slots) // self.block_size
-        if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
-            return num_additional_blocks
-        else:
-            return num_additional_blocks + 1
+        num_additional_blocks = 1
+        remaining_slots = draft_size - num_empty_slots
+
+        while remaining_slots > 0:
+            num_additional_blocks += 1
+            remaining_slots -= self.block_size
+
+        return num_additional_blocks
+
+        # num_additional_blocks = (
+        #     draft_size - num_empty_slots) // self.block_size
+
+        # if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
+        #     return num_additional_blocks
+        # else:
+        #     return num_additional_blocks + 1
 
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "
@@ -344,7 +354,6 @@ class SequenceGroupMetadata:
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
-        self.is_target = False
         self.seq_data = seq_data
         self.sampling_params = sampling_params
         self.block_tables = block_tables

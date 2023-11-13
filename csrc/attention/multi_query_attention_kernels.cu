@@ -77,7 +77,7 @@ namespace vllm
       int HEAD_SIZE,
       int BLOCK_SIZE,
       int NUM_THREADS>
-  __global__ void single_query_cached_kv_attention_kernel(
+  __global__ void multi_query_cached_kv_attention_kernel(
       scalar_t *__restrict__ out,           // [num_seqs, num_heads, head_size]
       const scalar_t *__restrict__ q,       // [num_seqs, num_heads, head_size]
       const scalar_t *__restrict__ k_cache, // [num_blocks, num_kv_heads, head_size/x, block_size, x]
@@ -358,21 +358,21 @@ namespace vllm
 
 } // namespace vllm
 
-#define LAUNCH_ATTENTION_KERNEL(T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS)                 \
-  vllm::single_query_cached_kv_attention_kernel<T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS> \
-      <<<grid, block, shared_mem_size, stream>>>(                                      \
-          out_ptr,                                                                     \
-          query_ptr,                                                                   \
-          key_cache_ptr,                                                               \
-          value_cache_ptr,                                                             \
-          head_mapping_ptr,                                                            \
-          scale,                                                                       \
-          block_tables_ptr,                                                            \
-          context_lens_ptr,                                                            \
-          max_num_blocks_per_seq,                                                      \
-          alibi_slopes_ptr,                                                            \
-          q_stride,                                                                    \
-          kv_block_stride,                                                             \
+#define LAUNCH_ATTENTION_KERNEL(T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS)                \
+  vllm::multi_query_cached_kv_attention_kernel<T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS> \
+      <<<grid, block, shared_mem_size, stream>>>(                                     \
+          out_ptr,                                                                    \
+          query_ptr,                                                                  \
+          key_cache_ptr,                                                              \
+          value_cache_ptr,                                                            \
+          head_mapping_ptr,                                                           \
+          scale,                                                                      \
+          block_tables_ptr,                                                           \
+          context_lens_ptr,                                                           \
+          max_num_blocks_per_seq,                                                     \
+          alibi_slopes_ptr,                                                           \
+          q_stride,                                                                   \
+          kv_block_stride,                                                            \
           kv_head_stride);
 
 // TODO(woosuk): Tune NUM_THREADS.
@@ -380,7 +380,7 @@ template <
     typename T,
     int BLOCK_SIZE,
     int NUM_THREADS = 128>
-void single_query_cached_kv_attention_launcher(
+void multi_query_cached_kv_attention_launcher(
     torch::Tensor &out,
     torch::Tensor &query,
     torch::Tensor &key_cache,
@@ -461,17 +461,17 @@ void single_query_cached_kv_attention_launcher(
   }
 }
 
-#define CALL_KERNEL_LAUNCHER(T, BLOCK_SIZE)                 \
-  single_query_cached_kv_attention_launcher<T, BLOCK_SIZE>( \
-      out,                                                  \
-      query,                                                \
-      key_cache,                                            \
-      value_cache,                                          \
-      head_mapping,                                         \
-      scale,                                                \
-      block_tables,                                         \
-      context_lens,                                         \
-      max_context_len,                                      \
+#define CALL_KERNEL_LAUNCHER(T, BLOCK_SIZE)                \
+  multi_query_cached_kv_attention_launcher<T, BLOCK_SIZE>( \
+      out,                                                 \
+      query,                                               \
+      key_cache,                                           \
+      value_cache,                                         \
+      head_mapping,                                        \
+      scale,                                               \
+      block_tables,                                        \
+      context_lens,                                        \
+      max_context_len,                                     \
       alibi_slopes);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
@@ -511,7 +511,7 @@ void single_query_cached_kv_attention_launcher(
     break;                                                      \
   }
 
-void single_query_cached_kv_attention(
+void multi_query_cached_kv_attention(
     torch::Tensor &out,          // [num_seqs, num_heads, head_size]
     torch::Tensor &query,        // [num_seqs, num_heads, head_size]
     torch::Tensor &key_cache,    // [num_blocks, num_heads, head_size/x, block_size, x]

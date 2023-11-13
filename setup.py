@@ -78,7 +78,8 @@ if not compute_capabilities:
 
 # Add target compute capabilities to NVCC flags.
 for capability in compute_capabilities:
-    NVCC_FLAGS += ["-gencode", f"arch=compute_{capability},code=sm_{capability}"]
+    NVCC_FLAGS += ["-gencode",
+                   f"arch=compute_{capability},code=sm_{capability}"]
 
 # Use NVCC threads to parallelize the build.
 if nvcc_cuda_version >= Version("11.2"):
@@ -98,7 +99,8 @@ ext_modules.append(cache_extension)
 # Attention kernels.
 attention_extension = CUDAExtension(
     name="vllm.attention_ops",
-    sources=["csrc/attention.cpp", "csrc/attention/attention_kernels.cu"],
+    sources=["csrc/attention.cpp", "csrc/attention/attention_kernels.cu", 
+    "csrc/attention/multi_query_attention_kernels.cu"],  # SJCHOI
     extra_compile_args={"cxx": CXX_FLAGS, "nvcc": NVCC_FLAGS},
 )
 ext_modules.append(attention_extension)
@@ -154,6 +156,7 @@ def get_requirements() -> List[str]:
     """Get Python package dependencies from requirements.txt."""
     with open(get_path("requirements.txt")) as f:
         requirements = f.read().strip().split("\n")
+    print(requirements)
     return requirements
 
 

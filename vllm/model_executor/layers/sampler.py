@@ -58,6 +58,7 @@ class Sampler(nn.Module):
         # print("logits", logits.shape)
 
         # Apply presence and frequency penalties.
+        # FIXME(sangjin): do I need to consider draft tokens when considering penalties?
         output_tokens = _get_output_tokens(input_metadata)
         # assert len(output_tokens) == logits.shape[0]
         presence_penalties, frequency_penalties = _get_penalties(
@@ -102,11 +103,11 @@ def _prune_hidden_states(
     start_idx = 0
     last_token_indicies: List[int] = []
     if input_metadata.num_drafts > 0:
-        for i, draft_len in enumerate(input_metadata.draft_lens):
-            start_idx += input_metadata.prompt_lens[i]
+        for _, draft_len in enumerate(input_metadata.draft_lens):
             last_token_indicies.extend(
-                range(start_idx - draft_len - 1, start_idx))
-            # should consider one additional token when all accepted
+                range(start_idx, start_idx + draft_len))
+            start_idx += draft_len + 1
+            # FIXME(sangjin) should consider one additional token when all accepted
     else:
         for prompt_len in input_metadata.prompt_lens:
             last_token_indicies.append(start_idx + prompt_len - 1)

@@ -384,6 +384,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
+
             # Execute the target model 1 time
             target_output = self._run_target_workers(
                 "execute_target_model",
@@ -502,17 +503,21 @@ class SpSLLMEngine:
         for seq_group in seq_groups:
             sampling_params = seq_group.sampling_params
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                need_to_decode = seq.data.need_to_decode
+
                 # Check if the sequence has generated a stop string.
                 stopped = False
                 for stop_str in sampling_params.stop:
-                    if seq.output_text.endswith(stop_str):
-                        # Truncate the output text so that the stop string is
-                        # not included in the output.
-                        seq.output_text = seq.output_text[:-len(stop_str)]
-                        self.scheduler.free_seq(
-                            seq, SequenceStatus.FINISHED_STOPPED)
-                        stopped = True
-                        break
+                    for i in range(-need_to_decode, 0):
+                        if seq.output_text[:i].endswith(stop_str):
+                            # Truncate the output text so that the stop string is
+                            # not included in the output.
+                            seq.output_text = (seq.output_text[:i])[
+                                :-len(stop_str)]
+                            self.scheduler.free_seq(
+                                seq, SequenceStatus.FINISHED_STOPPED)
+                            stopped = True
+                            break
                 if stopped:
                     continue
 
@@ -530,7 +535,6 @@ class SpSLLMEngine:
                     continue
                 # Check if the sequence has generated the EOS token.
                 if not sampling_params.ignore_eos:
-                    need_to_decode = seq.data.need_to_decode
                     for i in range(-need_to_decode, 0):
                         if seq.get_token_id_from_index(i) == self.tokenizer.eos_token_id:
                             self.scheduler.free_seq(

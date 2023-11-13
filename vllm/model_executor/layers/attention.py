@@ -155,6 +155,40 @@ class PagedAttention(nn.Module):
             None,  # alibi_slopes
         )
 
+    def multi_query_cached_kv_attention(
+        self,
+        output: torch.Tensor,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        input_metadata: InputMetadata,
+    ) -> None:
+        """PagedAttention for the draft tokens.
+
+        Args:
+            output: shape = [num_draft_tokens, num_heads, head_size]
+            query: shape = [num_draft_tokens, num_heads, head_size]
+            key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
+                block_size, x]
+            value_cache: shape = [num_blocks, num_kv_heads, head_size,
+                block_size]
+            input_metadata: metadata for paged attention.
+        """
+        block_size = value_cache.shape[3]
+        attention_ops.multi_query_cached_kv_attention(
+            output,
+            query,
+            key_cache,
+            value_cache,
+            self.head_mapping,
+            self.scale,
+            input_metadata.block_tables,
+            input_metadata.context_lens,
+            block_size,
+            input_metadata.max_context_len,
+            None,  # alibi_slopes
+        )
+
     def forward(
         self,
         query: torch.Tensor,
@@ -195,7 +229,7 @@ class PagedAttention(nn.Module):
 
         # Compute the attention op for prompts.
         num_prompt_tokens = input_metadata.num_prompt_tokens
-        if num_prompt_tokens > 0:  # FIXME(sangjin)
+        if num_prompt_tokens > 0:
             # Prompt run.
             assert input_metadata.num_generation_tokens == 0
             self.set_attn_bias(input_metadata)
@@ -226,7 +260,21 @@ class PagedAttention(nn.Module):
                 input_metadata.slot_mapping,
             )
 
-        if input_metadata.num_generation_tokens > 0:
+        if input_metadata.num_draft_tokens > 0:
+            # Draft run.
+            assert input_metadata.num_generation_tokens == 0
+            assert input_metadata.num_prompt_tokens == 0
+            assert key_cache is not None and value_cache is not None, (
+                "key_cache and value_cache must be provided when "
+                "validating draft tokens"
+            )
+            # Compute the attention op for draft tokens.
+            self.multi_query_cached_kv_attention(
+                output[num_prompt_tokens:num_valid_tokens],
+                query[num_prompt_tokens:num_valid_tokens], key_cache,
+                value_cache, input_metadata)
+
+        elif input_metadata.num_generation_tokens > 0:
             # Decoding run.
             assert input_metadata.num_prompt_tokens == 0
             assert key_cache is not None and value_cache is not None, (

@@ -300,7 +300,7 @@ class Scheduler:
                 prompt_limit = min(
                     self.scheduler_config.max_model_len,
                     self.scheduler_config.max_num_batched_tokens)
-                if num_prompt_tokens + draft_size > prompt_limit:
+                if num_prompt_tokens > prompt_limit:
                     logger.warning(
                         f"Input prompt ({num_prompt_tokens} tokens) is too long"
                         f" and exceeds limit of {prompt_limit}")
@@ -528,7 +528,7 @@ class Scheduler:
         # Verify and rollback
         for seq_group in scheduled:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                accepted_cnt = 0
+                accept_cnt = 0
                 for i, draft_output in enumerate(draft_output_list):
                     draft_seq_output = draft_output[seq.seq_id]
                     token_id = draft_seq_output.output_token
@@ -538,15 +538,17 @@ class Scheduler:
 
                     if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
                         # accept
-                        accepted_cnt += 1
+                        accept_cnt += 1
                     else:
                         # reject
                         resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
                                                                                          draft_seq_output.probs, seq_group.sampling_params)
                         break
-                seq.accept_draft_tokens(accepted_cnt)
-                # print("! accepted_cnt", accepted_cnt)
-                if accepted_cnt != self.sps_config.draft_size:
+
+                seq.accept_draft_tokens(accept_cnt)
+                # print("! accept_cnt", accept_cnt)
+
+                if accept_cnt != self.sps_config.draft_size:
                     seq.append_token_id(resample_token_id, resample_logprobs)
                 else:
                     # all accepted so sample additional token

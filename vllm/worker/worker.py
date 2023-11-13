@@ -347,57 +347,46 @@ class Worker:
         slot_mapping: List[int] = []
 
         # Add draft tokens.
-        draft_lens: List[int] = []
-        prompt_lens: List[int] = []
-
-        for seq_group_metadata in seq_group_metadata_list:
-            seq_ids = list(seq_group_metadata.seq_data.keys())
-            sampling_params = seq_group_metadata.sampling_params
-            seq_groups.append((seq_ids, sampling_params))
-
-            # Use any sequence in the group.
-            seq_id = seq_ids[0]
-
-            seq_data = seq_group_metadata.seq_data[seq_id]
-            # FIXME(sangjin): initially we dont use kv cache
-            prompt_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
-            prompt_len = len(prompt_tokens)
-            prompt_lens.append(prompt_len)
-            input_tokens.extend(prompt_tokens)
-            input_positions.extend(range(len(prompt_tokens)))
-
-            # draft_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
-            draft_lens.append(len(seq_data.get_draft_token_ids()))
-            # input_tokens.extend(draft_tokens)
-            # input_tokens.extend(seq_data.get_draft_token_ids()) # If we use KV cache
-
-            # NOTE(woosuk): Here we assume that the first token in the prompt
-            # is always the first token in the sequence.
-            # input_positions.extend(range(len(draft_tokens)))  # FIXME(sangjin)
-
-            if seq_group_metadata.block_tables is None:
-                # During memory profiling, the block tables are not initialized
-                # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.extend([0] * len(prompt_len))
-                continue
-
-            # Compute the slot mapping.
-            block_table = seq_group_metadata.block_tables[seq_id]
-            # print(f"range i : {len(draft_tokens) + seq_data.get_len()}")
-            # print(f"seq_len : {seq_data.get_len()}, draft token len : {len(draft_tokens)}")
-            for i in range(prompt_len):
-                # print(f"i : {i}, block size : {self.block_size}, table_len : {len(block_table)}")
-
-                block_number = block_table[i // self.block_size]
-                block_offset = i % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append(slot)
-
-        # Add generation tokens.
         max_context_len = 0
         max_num_blocks_per_seq = 0
         context_lens: List[int] = []
         generation_block_tables: List[List[int]] = []
+        draft_lens: List[int] = []
+
+        for seq_group_metadata in seq_group_metadata_list:
+            if seq_group_metadata.is_prompt:
+                continue
+
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            sampling_params = seq_group_metadata.sampling_params
+            seq_groups.append((seq_ids, sampling_params))
+
+            for seq_id in seq_ids:
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                draft_tokens = seq_data.get_draft_token_ids()
+                draft_lens.append(len(draft_tokens))
+                input_tokens.extend(draft_tokens)
+
+                context_len = seq_data.get_len()
+                position_start = context_len - 1
+                input_positions.extend(
+                    range(position_start, position_start + len(draft_tokens)))
+
+                block_table = seq_group_metadata.block_tables[seq_id]
+                generation_block_tables.append(block_table)
+
+                max_context_len = max(
+                    max_context_len, context_len + len(draft_tokens))
+                max_num_blocks_per_seq = max(
+                    max_num_blocks_per_seq, len(block_table))
+
+                # Compute the slot mapping
+                for i in range(position_start, position_start + len(draft_tokens)):
+                    block_number = block_table[i // self.block_size]
+                    block_offset = i % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append(slot)
+                    context_lens.append(i)
 
         # Optimization: Pad the input length to be a multiple of 8.
         # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
@@ -422,8 +411,8 @@ class Worker:
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            prompt_lens=prompt_lens,  # FIXME (sangjin)
-            draft_lens=draft_lens,  # FIXME (sangjin)
+            prompt_lens=[],
+            draft_lens=draft_lens,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,

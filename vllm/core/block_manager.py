@@ -177,13 +177,13 @@ class BlockSpaceManager:
             return last_block.block_number, new_block.block_number
 
     def append_slots(self, seq: Sequence, draft_size: int) -> Optional[Tuple[int, int]]:
-        """Allocate a physical slot for a new token."""
-        logical_blocks = seq.logical_token_blocks
+        """Allocate physical slots for new tokens."""
+        # logical_blocks = seq.logical_token_blocks
         block_table = self.block_tables[seq.seq_id]
 
-        # 전 iteration 에서 생성된 new token을 위한 공간
-        if len(block_table) < len(logical_blocks):
-            # The sequence has a new logical block.
+        # prompt iteration 에서 생성된 new token을 위한 공간
+        if len(block_table) < len(seq.logical_token_blocks):
+            # The sequence has a new logical block for prompt run
             # Allocate a new physical block.
             block = self.gpu_allocator.allocate()
             block_table.append(block)
