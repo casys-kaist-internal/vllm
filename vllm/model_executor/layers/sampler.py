@@ -105,8 +105,7 @@ def _prune_hidden_states(
         for _, draft_len in enumerate(input_metadata.draft_lens):
             last_token_indicies.extend(
                 range(start_idx, start_idx + draft_len))
-            start_idx += draft_len + 1
-            # FIXME(sangjin) should consider one additional token when all accepted
+            start_idx += draft_len
     else:
         for prompt_len in input_metadata.prompt_lens:
             last_token_indicies.append(start_idx + prompt_len - 1)

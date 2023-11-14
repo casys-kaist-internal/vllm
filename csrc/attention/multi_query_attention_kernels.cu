@@ -151,7 +151,7 @@ namespace vllm
     constexpr int x = 16 / sizeof(scalar_t);
     float qk_max = -FLT_MAX;
 
-    const int *block_table = block_tables + (seq_idx / (draft_size + 1)) * max_num_blocks_per_seq;
+    const int *block_table = block_tables + (seq_idx / (draft_size + 1)) * max_num_blocks_per_seq; // SJCHOI changed this line for multi query
     const int context_len = context_lens[seq_idx];
     const int num_blocks = (context_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
@@ -162,6 +162,7 @@ namespace vllm
     for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS)
     {
       const int physical_block_number = block_table[block_idx];
+      // printf("seq_idx %d block_idx %d physical_block_number: %d\n", seq_idx, block_idx, physical_block_number);
 
       // Load a key to registers.
       // Each thread in a thread group has a different part of the key.

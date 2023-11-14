@@ -290,6 +290,7 @@ class PagedAttention(nn.Module):
                 query[num_prompt_tokens:num_valid_tokens], key_cache,
                 value_cache, input_metadata)
 
+            # print(output)
             # print("multi_query_cached_kv_attention finish")
 
         elif input_metadata.num_generation_tokens > 0:

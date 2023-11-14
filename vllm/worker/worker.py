@@ -382,7 +382,7 @@ class Worker:
                 # Compute context length
                 for i in range(len(draft_tokens)):
                     context_lens.append(context_len + i)
-                max_context_len = max(context_lens)
+                max_context_len = max(max_context_len, max(context_lens))
 
                 # Compute the slot mapping
                 for i in range(position_start, position_start + len(draft_tokens)):
@@ -399,6 +399,8 @@ class Worker:
         # print("input tokens", input_tokens)
         # print("input positions", input_positions)
         # print("slot mapping", slot_mapping)
+        # print("draft lens", draft_lens)
+        # print("context_lens", context_lens)
 
         # Convert to tensors.
         tokens_tensor = torch.cuda.LongTensor(input_tokens)

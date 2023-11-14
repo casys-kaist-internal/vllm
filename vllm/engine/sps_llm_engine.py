@@ -339,7 +339,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
-            self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+            self.sps_config.draft_size)
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -393,7 +393,6 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
-
             # Update the scheduler with the model outputs.
             seq_groups = self.scheduler.target_update(
                 draft_output_list, target_output)
