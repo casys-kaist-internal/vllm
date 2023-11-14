@@ -90,7 +90,8 @@ namespace vllm
       const float *__restrict__ alibi_slopes, // [num_heads]
       const int q_stride,
       const int kv_block_stride,
-      const int kv_head_stride)
+      const int kv_head_stride,
+      const int draft_size)
   {
     constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
     constexpr int NUM_THREAD_GROUPS = NUM_THREADS / THREAD_GROUP_SIZE; // Note: This assumes THREAD_GROUP_SIZE divides NUM_THREADS
@@ -150,7 +151,7 @@ namespace vllm
     constexpr int x = 16 / sizeof(scalar_t);
     float qk_max = -FLT_MAX;
 
-    const int *block_table = block_tables + seq_idx * max_num_blocks_per_seq;
+    const int *block_table = block_tables + (seq_idx / draft_size) * max_num_blocks_per_seq;
     const int context_len = context_lens[seq_idx];
     const int num_blocks = (context_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
@@ -200,6 +201,7 @@ namespace vllm
         }
       }
     }
+    __syncthreads();
 
     // Perform reduction across the threads in the same warp to get the
     // max qk value for each "warp" (not across the thread block yet).
@@ -355,7 +357,6 @@ namespace vllm
       }
     }
   }
-
 } // namespace vllm
 
 #define LAUNCH_ATTENTION_KERNEL(T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS)                \
@@ -373,7 +374,8 @@ namespace vllm
           alibi_slopes_ptr,                                                           \
           q_stride,                                                                   \
           kv_block_stride,                                                            \
-          kv_head_stride);
+          kv_head_stride,                                                             \
+          draft_size);
 
 // TODO(woosuk): Tune NUM_THREADS.
 template <
@@ -390,6 +392,7 @@ void multi_query_cached_kv_attention_launcher(
     torch::Tensor &block_tables,
     torch::Tensor &context_lens,
     int max_context_len,
+    int draft_size,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
   int num_seqs = query.size(0);
@@ -472,6 +475,7 @@ void multi_query_cached_kv_attention_launcher(
       block_tables,                                        \
       context_lens,                                        \
       max_context_len,                                     \
+      draft_size,                                          \
       alibi_slopes);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
@@ -522,6 +526,7 @@ void multi_query_cached_kv_attention(
     torch::Tensor &context_lens, // [num_seqs]
     int block_size,
     int max_context_len,
+    int draft_size,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
   if (query.dtype() == at::ScalarType::Float)

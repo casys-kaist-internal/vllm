@@ -393,6 +393,10 @@ class Worker:
         input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
         input_positions = _pad_to_alignment(input_positions, multiple_of=8)
 
+        print("input tokens", input_tokens)
+        print("input positions", input_positions)
+        print("slot mapping", slot_mapping)
+
         # Convert to tensors.
         tokens_tensor = torch.cuda.LongTensor(input_tokens)
         positions_tensor = torch.cuda.LongTensor(input_positions)

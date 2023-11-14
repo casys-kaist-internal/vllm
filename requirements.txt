@@ -1,8 +1,9 @@
 ninja  # For faster builds.
 psutil
 ray >= 2.5.1
-torch == 2.1.0+cu118
 sentencepiece  # Required for LLaMA tokenizer.
+numpy
+torch >= 2.0.0
 transformers >= 4.31.0  # Required for LLaMA-2.
 xformers >= 0.0.21
 fastapi

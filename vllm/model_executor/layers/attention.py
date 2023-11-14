@@ -12,6 +12,8 @@ from vllm import cache_ops
 from vllm import pos_encoding_ops
 from vllm.model_executor.input_metadata import InputMetadata
 
+import sys
+
 _SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
 
 
@@ -186,6 +188,7 @@ class PagedAttention(nn.Module):
             input_metadata.context_lens,
             block_size,
             input_metadata.max_context_len,
+            input_metadata.draft_size,
             None,  # alibi_slopes
         )
 
@@ -252,6 +255,7 @@ class PagedAttention(nn.Module):
         if (num_valid_tokens > 0 and key_cache is not None
                 and value_cache is not None):
             # The stride is 3 because the key and value are sliced from qkv.
+            print("reshape and cache")
             cache_ops.reshape_and_cache(
                 key[:num_valid_tokens],
                 value[:num_valid_tokens],
@@ -268,11 +272,26 @@ class PagedAttention(nn.Module):
                 "key_cache and value_cache must be provided when "
                 "validating draft tokens"
             )
+            print("multi_query_cached_kv_attention start")
             # Compute the attention op for draft tokens.
+
+            print("num prompt tokens: ", num_prompt_tokens)
+            print("num valid tokens: ", num_valid_tokens)
+            print("output shape: ", output.shape)
+            print("query shape: ", query.shape)
+            print("key_cache shape: ", key_cache.shape)
+            print("value_cache shape: ", value_cache.shape)
+            print("block table size: ", input_metadata.block_tables.shape)
+            print("block table: ", input_metadata.block_tables)
+            print("context lens shape: ", input_metadata.context_lens.shape)
+            print("context lens: ", input_metadata.context_lens)
+
             self.multi_query_cached_kv_attention(
                 output[num_prompt_tokens:num_valid_tokens],
                 query[num_prompt_tokens:num_valid_tokens], key_cache,
                 value_cache, input_metadata)
+
+            print("multi_query_cached_kv_attention finish")
 
         elif input_metadata.num_generation_tokens > 0:
             # Decoding run.
@@ -280,11 +299,13 @@ class PagedAttention(nn.Module):
             assert key_cache is not None and value_cache is not None, (
                 "key_cache and value_cache must be provided when "
                 "generating tokens.")
+            print("single_query_cached_kv_attention start")
             # Compute the attention op for generation tokens.
             self.single_query_cached_kv_attention(
                 output[num_prompt_tokens:num_valid_tokens],
                 query[num_prompt_tokens:num_valid_tokens], key_cache,
                 value_cache, input_metadata)
+            print("single_query_cached_kv_attention end")
 
         # Reshape the output tensor.
         # NOTE(woosuk): The output tensor may include paddings.

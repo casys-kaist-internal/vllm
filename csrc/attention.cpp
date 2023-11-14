@@ -25,6 +25,7 @@ void multi_query_cached_kv_attention(
     torch::Tensor &context_lens,
     int block_size,
     int max_context_len,
+    int draft_size,
     const c10::optional<torch::Tensor> &alibi_slopes);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
