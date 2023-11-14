@@ -56,7 +56,7 @@ class InputMetadata:
         else:
             self.num_generation_tokens = 0
             assert block_tables.shape[0] == self.num_drafts
-            assert context_lens.shape[0] == self.num_drafts * draft_size
+            assert context_lens.shape[0] == self.num_drafts * (draft_size + 1)
 
         self.num_valid_tokens = slot_mapping.shape[0]
         if block_tables.numel() > 0:

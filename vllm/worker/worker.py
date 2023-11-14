@@ -363,7 +363,8 @@ class Worker:
 
             for seq_id in seq_ids:
                 seq_data = seq_group_metadata.seq_data[seq_id]
-                draft_tokens = seq_data.get_draft_token_ids()
+                draft_tokens = [seq_data.get_last_token_id()] + \
+                    seq_data.get_draft_token_ids()
                 draft_lens.append(len(draft_tokens))
                 input_tokens.extend(draft_tokens)
 
@@ -375,10 +376,13 @@ class Worker:
                 block_table = seq_group_metadata.block_tables[seq_id]
                 generation_block_tables.append(block_table)
 
-                max_context_len = max(
-                    max_context_len, context_len + len(draft_tokens))
                 max_num_blocks_per_seq = max(
                     max_num_blocks_per_seq, len(block_table))
+
+                # Compute context length
+                for i in range(len(draft_tokens)):
+                    context_lens.append(context_len + i)
+                max_context_len = max(context_lens)
 
                 # Compute the slot mapping
                 for i in range(position_start, position_start + len(draft_tokens)):
@@ -386,16 +390,15 @@ class Worker:
                     block_offset = i % self.block_size
                     slot = block_number * self.block_size + block_offset
                     slot_mapping.append(slot)
-                    context_lens.append(i)
 
         # Optimization: Pad the input length to be a multiple of 8.
         # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
         input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
         input_positions = _pad_to_alignment(input_positions, multiple_of=8)
 
-        print("input tokens", input_tokens)
-        print("input positions", input_positions)
-        print("slot mapping", slot_mapping)
+        # print("input tokens", input_tokens)
+        # print("input positions", input_positions)
+        # print("slot mapping", slot_mapping)
 
         # Convert to tensors.
         tokens_tensor = torch.cuda.LongTensor(input_tokens)

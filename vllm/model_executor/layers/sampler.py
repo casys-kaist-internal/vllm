@@ -45,7 +45,6 @@ class Sampler(nn.Module):
         # Get the hidden states that we use for sampling.
         hidden_states = _prune_hidden_states(hidden_states, input_metadata)
         # [72, 768] (draft_size + 1) * batch size
-        # print("hidden states", hidden_states.shape)
 
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())

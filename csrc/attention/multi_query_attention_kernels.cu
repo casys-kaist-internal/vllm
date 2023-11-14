@@ -151,7 +151,7 @@ namespace vllm
     constexpr int x = 16 / sizeof(scalar_t);
     float qk_max = -FLT_MAX;
 
-    const int *block_table = block_tables + (seq_idx / draft_size) * max_num_blocks_per_seq;
+    const int *block_table = block_tables + (seq_idx / (draft_size + 1)) * max_num_blocks_per_seq;
     const int context_len = context_lens[seq_idx];
     const int num_blocks = (context_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
