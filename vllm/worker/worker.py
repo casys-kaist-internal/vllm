@@ -108,6 +108,8 @@ class Worker:
             seqs)
 
         # Execute the model.
+        # FIXME(sangjin): I think profiling memory usage should be done with executing
+        # both target model and draft model.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         self.model(
             input_ids=input_tokens,
@@ -124,6 +126,7 @@ class Worker:
         total_gpu_memory = get_gpu_memory()
         cache_block_size = CacheEngine.get_cache_block_size(
             block_size, self.model_config, self.parallel_config)
+        # FIXME(sangjin): gpu_memory_utilization is fixed to 0.4 for temporary fix.
         num_gpu_blocks = int(
             (total_gpu_memory * gpu_memory_utilization - peak_memory) //
             cache_block_size)
