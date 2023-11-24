@@ -282,11 +282,12 @@ class SpSEngineArgs:
                             action='store_true',
                             help='use Ray for distributed serving, will be '
                             'automatically set when using more than 1 GPU')
-        parser.add_argument('--target-pipeline-parallel-size',
-                            '-target-pp',
-                            type=int,
-                            default=SpSEngineArgs.target_pipeline_parallel_size,
-                            help='number of pipeline stages')
+        parser.add_argument(
+            '--target-pipeline-parallel-size',
+            '-target-pp',
+            type=int,
+            default=SpSEngineArgs.target_pipeline_parallel_size,
+            help='number of pipeline stages')
         parser.add_argument('--target-tensor-parallel-size',
                             '-target-tp',
                             type=int,
@@ -346,29 +347,28 @@ class SpSEngineArgs:
 
     def create_engine_configs(
         self,
-    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, ParallelConfig, SchedulerConfig, SpSConfig]:
+    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig,
+               ParallelConfig, SchedulerConfig, SpSConfig]:
         # Initialize the configs.
-        target_model_config = ModelConfig(self.target_model, self.tokenizer,
-                                          self.tokenizer_mode, self.trust_remote_code,
-                                          self.target_download_dir, self.use_np_weights,
-                                          self.use_dummy_weights, self.dtype,
-                                          self.seed)
-        draft_model_config = ModelConfig(self.draft_model, self.tokenizer,
-                                         self.tokenizer_mode, self.trust_remote_code,
-                                         self.draft_download_dir, self.use_np_weights,
-                                         self.use_dummy_weights, self.dtype,
-                                         self.seed)
+        target_model_config = ModelConfig(
+            self.target_model, self.tokenizer, self.tokenizer_mode,
+            self.trust_remote_code, self.target_download_dir,
+            self.use_np_weights, self.use_dummy_weights, self.dtype, self.seed)
+        draft_model_config = ModelConfig(
+            self.draft_model, self.tokenizer, self.tokenizer_mode,
+            self.trust_remote_code, self.draft_download_dir,
+            self.use_np_weights, self.use_dummy_weights, self.dtype, self.seed)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space)
-        target_parallel_config = ParallelConfig(self.target_pipeline_parallel_size,
-                                                self.target_tensor_parallel_size,
-                                                self.worker_use_ray)
+        target_parallel_config = ParallelConfig(
+            self.target_pipeline_parallel_size,
+            self.target_tensor_parallel_size, self.worker_use_ray)
         draft_parallel_config = ParallelConfig(1,
                                                self.draft_tensor_parallel_size,
                                                self.worker_use_ray)
-        scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
-                                           self.max_num_seqs,
-                                           target_model_config.get_max_model_len())
+        scheduler_config = SchedulerConfig(
+            self.max_num_batched_tokens, self.max_num_seqs,
+            target_model_config.get_max_model_len())
         sps_config = SpSConfig(self.draft_size)
         return target_model_config, draft_model_config, cache_config, target_parallel_config, draft_parallel_config, scheduler_config, sps_config

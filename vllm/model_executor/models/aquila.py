@@ -48,13 +48,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class AquilaMLP(nn.Module):
 
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, hidden_size: int, intermediate_size: int,
+                 hidden_act: str, parallel_state: ParallelState):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(hidden_size,
                                                  2 * intermediate_size,
@@ -102,13 +97,8 @@ class AquilaRMSNorm(nn.Module):
 
 class AquilaAttention(nn.Module):
 
-    def __init__(
-        self,
-        hidden_size: int,
-        num_heads: int,
-        num_kv_heads: int,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, hidden_size: int, num_heads: int, num_kv_heads: int,
+                 parallel_state: ParallelState):
         super().__init__()
         self.hidden_size = hidden_size
         tp_size = parallel_state.get_tensor_model_parallel_world_size()
@@ -124,22 +114,18 @@ class AquilaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
 
         self.qkv_proj = ColumnParallelLinear(
-            hidden_size,
-            (self.total_num_heads + 2 * self.total_num_kv_heads) *
+            hidden_size, (self.total_num_heads + 2 * self.total_num_kv_heads) *
             self.head_dim,
             bias=False,
             gather_output=False,
             perform_initialization=False,
-            parallel_state=parallel_state
-        )
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+            parallel_state=parallel_state)
+        self.o_proj = RowParallelLinear(self.total_num_heads * self.head_dim,
+                                        hidden_size,
+                                        bias=False,
+                                        input_is_parallel=True,
+                                        perform_initialization=False,
+                                        parallel_state=parallel_state)
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
             self.head_dim,
@@ -173,14 +159,11 @@ class AquilaDecoderLayer(nn.Module):
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_attention_heads,
-            parallel_state=parallel_state
-        )
-        self.mlp = AquilaMLP(
-            hidden_size=self.hidden_size,
-            intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act,
-            parallel_state=parallel_state
-        )
+            parallel_state=parallel_state)
+        self.mlp = AquilaMLP(hidden_size=self.hidden_size,
+                             intermediate_size=config.intermediate_size,
+                             hidden_act=config.hidden_act,
+                             parallel_state=parallel_state)
         self.input_layernorm = AquilaRMSNorm(config.hidden_size,
                                              eps=config.rms_norm_eps)
         self.post_attention_layernorm = AquilaRMSNorm(config.hidden_size,
@@ -229,7 +212,8 @@ class AquilaModel(nn.Module):
             perform_initialization=False,
             parallel_state=parallel_state)
         self.layers = nn.ModuleList([
-            AquilaDecoderLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)
+            AquilaDecoderLayer(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
         ])
         self.norm = AquilaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -301,7 +285,8 @@ class AquilaForCausalLM(nn.Module):
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
         tp_size = self.parallel_state.get_tensor_model_parallel_world_size()
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         q_proj_shard_size = (self.config.hidden_size // tp_size)
         kv_proj_shard_size = (self.config.hidden_size //
                               self.config.num_attention_heads *

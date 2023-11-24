@@ -8,9 +8,9 @@ from vllm.core.block_manager import BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
 from vllm.sequence import (  # sequence
-    SequenceData, SequenceData,
-    SequenceGroupMetadata, SequenceOutputs,
-    SequenceStatus)
+    SequenceData, SequenceData, SequenceGroupMetadata, SequenceOutputs,
+    SequenceStatus,
+)
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs
 from vllm.model_executor.layers.sampler import modified_rejection_sample
 
@@ -26,6 +26,7 @@ class PreemptionMode(enum.Enum):
     recompute them when the sequences are resumed, treating the sequences as
     new prompts.
     """
+
     SWAP = enum.auto()
     RECOMPUTE = enum.auto()
 
@@ -64,7 +65,7 @@ class Scheduler:
         self,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
-        sps_config: SpSConfig = None
+        sps_config: SpSConfig = None,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
@@ -131,7 +132,8 @@ class Scheduler:
                 num_prompt_tokens = seq_group.get_seqs()[0].get_len()
                 prompt_limit = min(
                     self.scheduler_config.max_model_len,
-                    self.scheduler_config.max_num_batched_tokens)
+                    self.scheduler_config.max_num_batched_tokens,
+                )
                 if num_prompt_tokens > prompt_limit:
                     logger.warning(
                         f"Input prompt ({num_prompt_tokens} tokens) is too long"
@@ -158,8 +160,7 @@ class Scheduler:
                 num_curr_seqs = sum(
                     seq_group.num_seqs(status=SequenceStatus.RUNNING)
                     for seq_group in self.running)
-                if (num_curr_seqs + num_new_seqs >
-                        self.scheduler_config.max_num_seqs):
+                if num_curr_seqs + num_new_seqs > self.scheduler_config.max_num_seqs:
                     break
 
                 seq_group = self.waiting.pop(0)
@@ -226,8 +227,7 @@ class Scheduler:
             num_curr_seqs = sum(
                 seq_group.num_seqs(status=SequenceStatus.RUNNING)
                 for seq_group in self.running)
-            if (num_curr_seqs + num_new_seqs >
-                    self.scheduler_config.max_num_seqs):
+            if num_curr_seqs + num_new_seqs > self.scheduler_config.max_num_seqs:
                 break
 
             seq_group = self.swapped.pop(0)
@@ -299,7 +299,8 @@ class Scheduler:
                 num_prompt_tokens = seq_group.get_seqs()[0].get_len()
                 prompt_limit = min(
                     self.scheduler_config.max_model_len,
-                    self.scheduler_config.max_num_batched_tokens)
+                    self.scheduler_config.max_num_batched_tokens,
+                )
                 if num_prompt_tokens + draft_size > prompt_limit:
                     logger.warning(
                         f"Input prompt ({num_prompt_tokens} tokens) is too long"
@@ -326,8 +327,7 @@ class Scheduler:
                 num_curr_seqs = sum(
                     seq_group.num_seqs(status=SequenceStatus.RUNNING)
                     for seq_group in self.running)
-                if (num_curr_seqs + num_new_seqs >
-                        self.scheduler_config.max_num_seqs):
+                if num_curr_seqs + num_new_seqs > self.scheduler_config.max_num_seqs:
                     break
 
                 seq_group = self.waiting.pop(0)
@@ -359,7 +359,8 @@ class Scheduler:
         preempted: List[SequenceGroup] = []
         while self.running:
             seq_group = self.running.pop(0)
-            while not self.block_manager.can_append_slots(seq_group, draft_size):
+            while not self.block_manager.can_append_slots(
+                    seq_group, draft_size):
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = self.running.pop(-1)
@@ -394,8 +395,7 @@ class Scheduler:
             num_curr_seqs = sum(
                 seq_group.num_seqs(status=SequenceStatus.RUNNING)
                 for seq_group in self.running)
-            if (num_curr_seqs + num_new_seqs >
-                    self.scheduler_config.max_num_seqs):
+            if num_curr_seqs + num_new_seqs > self.scheduler_config.max_num_seqs:
                 break
 
             seq_group = self.swapped.pop(0)
@@ -419,8 +419,7 @@ class Scheduler:
         return scheduler_outputs
 
     def sps_schedule(
-            self,
-            draft_size: int
+        self, draft_size: int
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
@@ -516,7 +515,7 @@ class Scheduler:
     def target_update(
         self,
         draft_output_list: List[Dict[int, SequenceOutputs]],
-        target_output: Dict[int, SequenceOutputs]
+        target_output: Dict[int, SequenceOutputs],
     ) -> List[SequenceGroup]:
         scheduled: List[SequenceGroup] = []
         for seq_group in self.running:
@@ -530,28 +529,43 @@ class Scheduler:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 accepted_cnt = 0
                 for i, draft_output in enumerate(draft_output_list):
-                    draft_seq_output = draft_output[seq.seq_id]
+                    draft_seq_output: SequenceOutputs = draft_output[
+                        seq.seq_id]
                     token_id = draft_seq_output.output_token
                     draft_prob = draft_seq_output.probs[token_id]
                     target_prob = target_output[seq.seq_id].probs[i][token_id]
                     r = torch.rand(1, device=draft_prob.device)
 
-                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
+                    print(token_id)
+
+                    if r < torch.min(
+                            torch.tensor([1], device=draft_prob.device),
+                            target_prob / draft_prob,
+                    ) or True:
                         # accept
                         accepted_cnt += 1
                     else:
                         # reject
-                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
-                                                                                         draft_seq_output.probs, seq_group.sampling_params)
+                        (
+                            resample_token_id,
+                            resample_logprobs,
+                        ) = modified_rejection_sample(
+                            target_output[seq.seq_id].probs[i],
+                            draft_seq_output.probs,
+                            seq_group.sampling_params,
+                        )
                         break
                 seq.accept_draft_tokens(accepted_cnt)
                 # print("! accepted_cnt", accepted_cnt)
                 if accepted_cnt != self.sps_config.draft_size:
                     seq.append_token_id(resample_token_id, resample_logprobs)
+
                 else:
                     # all accepted so sample additional token
                     seq.append_token_id(
-                        target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
+                        target_output[seq.seq_id].output_token,
+                        target_output[seq.seq_id].logprobs,
+                    )
 
         return scheduled
 

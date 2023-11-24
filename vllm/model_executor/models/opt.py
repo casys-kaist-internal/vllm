@@ -57,13 +57,11 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
 
 class OPTAttention(nn.Module):
 
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        bias: bool = True,
-        parallel_state: ParallelState = None
-    ) -> None:
+    def __init__(self,
+                 embed_dim: int,
+                 num_heads: int,
+                 bias: bool = True,
+                 parallel_state: ParallelState = None) -> None:
         super().__init__()
         self.embed_dim = embed_dim
         tensor_model_parallel_world_size = (
@@ -112,12 +110,10 @@ class OPTDecoderLayer(nn.Module):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
-        self.self_attn = OPTAttention(
-            embed_dim=self.embed_dim,
-            num_heads=config.num_attention_heads,
-            bias=config.enable_bias,
-            parallel_state=parallel_state
-        )
+        self.self_attn = OPTAttention(embed_dim=self.embed_dim,
+                                      num_heads=config.num_attention_heads,
+                                      bias=config.enable_bias,
+                                      parallel_state=parallel_state)
         self.do_layer_norm_before = config.do_layer_norm_before
         self.activation_fn = get_act_fn(config.activation_function)
 
@@ -220,8 +216,10 @@ class OPTDecoder(nn.Module):
         else:
             self.final_layer_norm = None
 
-        self.layers = nn.ModuleList(
-            [OPTDecoderLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            OPTDecoderLayer(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
 
     def forward(
         self,
@@ -306,7 +304,8 @@ class OPTForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
@@ -319,7 +318,7 @@ class OPTForCausalLM(nn.Module):
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
-                    ["q_proj", "k_proj", "v_proj"]):
+                ["q_proj", "k_proj", "v_proj"]):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]

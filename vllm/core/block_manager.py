@@ -88,12 +88,13 @@ class BlockSpaceManager:
         return (num_free_gpu_blocks - num_required_blocks >=
                 self.watermark_blocks)
 
-    def can_sps_allocate(self, seq_group: SequenceGroup, draft_size: int) -> bool:
+    def can_sps_allocate(self, seq_group: SequenceGroup,
+                         draft_size: int) -> bool:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
         seq = seq_group.get_seqs()[0]
-        num_required_blocks = len(
-            seq.logical_token_blocks) + seq.get_num_additional_blocks(draft_size)
+        num_required_blocks = len(seq.logical_token_blocks
+                                  ) + seq.get_num_additional_blocks(draft_size)
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
         # Use watermark to avoid frequent cache eviction.
         return (num_free_gpu_blocks - num_required_blocks >=
@@ -123,7 +124,9 @@ class BlockSpaceManager:
 
         # Allocate new physical token blocks that will store the prompt tokens.
         block_table: BlockTable = []
-        for _ in range(len(seq.logical_token_blocks) + seq.get_num_additional_blocks(draft_size)):
+        for _ in range(
+                len(seq.logical_token_blocks) +
+                seq.get_num_additional_blocks(draft_size)):
             block = self.gpu_allocator.allocate()
             # Set the reference counts of the token blocks.
             block.ref_count = seq_group.num_seqs()
@@ -140,7 +143,8 @@ class BlockSpaceManager:
         num_seqs = seq_group.num_seqs(status=SequenceStatus.RUNNING)
         return num_seqs <= num_free_gpu_blocks
 
-    def can_append_slots(self, seq_group: SequenceGroup, draft_size: int) -> bool:
+    def can_append_slots(self, seq_group: SequenceGroup,
+                         draft_size: int) -> bool:
         # Simple heuristic: If there is at least one free block FIXME(sangjin) change description
         # for each sequence, we can append.
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
@@ -176,7 +180,8 @@ class BlockSpaceManager:
             self.gpu_allocator.free(last_block)
             return last_block.block_number, new_block.block_number
 
-    def append_slots(self, seq: Sequence, draft_size: int) -> Optional[Tuple[int, int]]:
+    def append_slots(self, seq: Sequence,
+                     draft_size: int) -> Optional[Tuple[int, int]]:
         """Allocate a physical slot for a new token."""
         logical_blocks = seq.logical_token_blocks
         block_table = self.block_tables[seq.seq_id]

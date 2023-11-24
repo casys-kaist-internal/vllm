@@ -11,6 +11,7 @@ from vllm.sampling_params import SamplingParams
 
 class SequenceStatus(enum.Enum):
     """Status of a sequence."""
+
     WAITING = enum.auto()
     RUNNING = enum.auto()
     SWAPPED = enum.auto()
@@ -69,7 +70,6 @@ class SequenceData:
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         # self.need_to_decode = 1  # used for decoding sequence
-
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
 
@@ -100,8 +100,8 @@ class SequenceData:
         self.need_to_decode = accept_cnt + 1
 
         for i in range(accept_cnt):
-            self.append_token_id(
-                self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
+            self.append_token_id(self.draft_token_ids[i],
+                                 self.draft_cumulative_logprobs[i])
 
         self.draft_token_ids.clear()
         self.draft_cumulative_logprobs.clear()
@@ -160,6 +160,8 @@ class Sequence:
         # Initialize the logical token blocks with the prompt token ids.
         self._append_tokens_to_blocks(prompt_token_ids)
         self.status = SequenceStatus.WAITING
+        self.rejection_positions: List[int] = [
+        ]  # (hyunjae) : Log points of rejection
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -220,6 +222,10 @@ class Sequence:
         reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
+
+        if reject_cnt > 0:
+            self.rejection_positions.append(len(self.output_logprobs))
+
         self._remove_tokens_from_blocks(reject_cnt)
 
     def get_len(self) -> int:
@@ -259,9 +265,10 @@ class Sequence:
         if draft_size <= num_empty_slots:
             return 0
 
-        num_additional_blocks = (
-            draft_size - num_empty_slots) // self.block_size
-        if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
+        num_additional_blocks = (draft_size -
+                                 num_empty_slots) // self.block_size
+        if (draft_size -
+                num_empty_slots) == num_additional_blocks * self.block_size:
             return num_additional_blocks
         else:
             return num_additional_blocks + 1
@@ -363,12 +370,12 @@ class SequenceOutputs:
     """
 
     def __init__(
-        self,
-        seq_id: int,
-        parent_seq_id: int,
-        output_token: int,
-        logprobs: Dict[int, float],
-        probs: torch.Tensor  # added for speculative sampling
+            self,
+            seq_id: int,
+            parent_seq_id: int,
+            output_token: int,
+            logprobs: Dict[int, float],
+            probs: torch.Tensor,  # added for speculative sampling
     ) -> None:
         self.seq_id = seq_id
         self.parent_seq_id = parent_seq_id

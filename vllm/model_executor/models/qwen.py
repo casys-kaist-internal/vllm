@@ -39,30 +39,24 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class QWenMLP(nn.Module):
 
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str = "silu",
-        parallel_state: ParallelState = None
-    ):
+    def __init__(self,
+                 hidden_size: int,
+                 intermediate_size: int,
+                 hidden_act: str = "silu",
+                 parallel_state: ParallelState = None):
         super().__init__()
-        self.gate_up_proj = ColumnParallelLinear(
-            hidden_size,
-            2 * intermediate_size,
-            bias=False,
-            gather_output=False,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
-        self.c_proj = RowParallelLinear(
-            intermediate_size,
-            hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.gate_up_proj = ColumnParallelLinear(hidden_size,
+                                                 2 * intermediate_size,
+                                                 bias=False,
+                                                 gather_output=False,
+                                                 perform_initialization=False,
+                                                 parallel_state=parallel_state)
+        self.c_proj = RowParallelLinear(intermediate_size,
+                                        hidden_size,
+                                        bias=False,
+                                        input_is_parallel=True,
+                                        perform_initialization=False,
+                                        parallel_state=parallel_state)
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
@@ -90,22 +84,18 @@ class QWenAttention(nn.Module):
         self.head_dim = hidden_size // self.total_num_heads
 
         # pylint: disable=invalid-name
-        self.c_attn = ColumnParallelLinear(
-            hidden_size,
-            3 * hidden_size,
-            bias=True,
-            gather_output=False,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
-        self.c_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.c_attn = ColumnParallelLinear(hidden_size,
+                                           3 * hidden_size,
+                                           bias=True,
+                                           gather_output=False,
+                                           perform_initialization=False,
+                                           parallel_state=parallel_state)
+        self.c_proj = RowParallelLinear(self.total_num_heads * self.head_dim,
+                                        hidden_size,
+                                        bias=False,
+                                        input_is_parallel=True,
+                                        perform_initialization=False,
+                                        parallel_state=parallel_state)
         self.scaling = self.head_dim**-0.5
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
@@ -140,13 +130,16 @@ class QWenBlock(nn.Module):
         super().__init__()
         self.ln_1 = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
-        self.attn = QWenAttention(config.n_embd, config.num_attention_heads,
-                                  config.max_position_embeddings, parallel_state=parallel_state)
+        self.attn = QWenAttention(config.n_embd,
+                                  config.num_attention_heads,
+                                  config.max_position_embeddings,
+                                  parallel_state=parallel_state)
 
         self.ln_2 = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
-        self.mlp = QWenMLP(config.n_embd, config.ffn_hidden_size //
-                           2, parallel_state=parallel_state)
+        self.mlp = QWenMLP(config.n_embd,
+                           config.ffn_hidden_size // 2,
+                           parallel_state=parallel_state)
 
     def forward(
         self,
@@ -188,8 +181,10 @@ class QWenModel(nn.Module):
                                           config.n_embd,
                                           perform_initialization=False,
                                           parallel_state=parallel_state)
-        self.h = nn.ModuleList(
-            [QWenBlock(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.h = nn.ModuleList([
+            QWenBlock(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.ln_f = RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -225,14 +220,12 @@ class QWenLMHeadModel(nn.Module):
         self.config = config
         self.transformer = QWenModel(config, parallel_state=parallel_state)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.lm_head = ColumnParallelLinear(
-            config.n_embd,
-            vocab_size,
-            bias=False,
-            gather_output=False,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.lm_head = ColumnParallelLinear(config.n_embd,
+                                            vocab_size,
+                                            bias=False,
+                                            gather_output=False,
+                                            perform_initialization=False,
+                                            parallel_state=parallel_state)
         self.sampler = Sampler(config.vocab_size, parallel_state)
         self.parallel_state = parallel_state
 
@@ -259,7 +252,8 @@ class QWenLMHeadModel(nn.Module):
         cache_dir: Optional[str] = None,
         use_np_cache: bool = False,
     ):
-        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size(
+        )
         tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 

@@ -86,8 +86,7 @@ class Worker:
 
         # Enable top-k sampling to reflect the accurate memory usage.
         vocab_size = self.model.config.vocab_size
-        sampling_params = SamplingParams(
-            top_p=1, top_k=-1)  # change to 1
+        sampling_params = SamplingParams(top_p=1, top_k=-1)  # change to 1
         max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
         max_num_seqs = self.scheduler_config.max_num_seqs
         seqs = []
@@ -144,6 +143,7 @@ class Worker:
                                         self.parallel_config)
         self.cache_events = self.cache_engine.events
         self.gpu_cache = self.cache_engine.gpu_cache
+        self.null_cache = self.cache_engine.null_cache
 
     def _prepare_inputs(
         self,
@@ -360,7 +360,8 @@ class Worker:
 
             seq_data = seq_group_metadata.seq_data[seq_id]
             # FIXME(sangjin): initially we dont use kv cache
-            prompt_tokens = seq_data.get_token_ids() + seq_data.get_draft_token_ids()
+            prompt_tokens = seq_data.get_token_ids(
+            ) + seq_data.get_draft_token_ids()
             prompt_len = len(prompt_tokens)
             prompt_lens.append(prompt_len)
             input_tokens.extend(prompt_tokens)
@@ -565,7 +566,7 @@ class Worker:
         output = self.model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.gpu_cache,
+            kv_caches=self.null_cache,
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
@@ -580,7 +581,8 @@ class Worker:
                 raise RuntimeError(
                     "torch.distributed is already initialized but the torch world "
                     "size does not match parallel_config.world_size "
-                    f"({torch_world_size} vs. {self.parallel_config.world_size}).")
+                    f"({torch_world_size} vs. {self.parallel_config.world_size})."
+                )
 
         elif not self.distributed_init_method:
             raise ValueError(
@@ -597,8 +599,9 @@ class Worker:
 
         # A small all_reduce for warmup.
         torch.distributed.all_reduce(torch.zeros(1).cuda())
-        self.parallel_state.initialize_model_parallel(self.parallel_config.tensor_parallel_size,
-                                                      self.parallel_config.pipeline_parallel_size)
+        self.parallel_state.initialize_model_parallel(
+            self.parallel_config.tensor_parallel_size,
+            self.parallel_config.pipeline_parallel_size)
 
 
 def _pad_to_alignment(x: List[int], multiple_of: int) -> List[int]:

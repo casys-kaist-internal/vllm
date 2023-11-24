@@ -42,6 +42,7 @@ class CacheEngine:
 
         # Initialize the cache.
         self.gpu_cache = self.allocate_gpu_cache()
+        self.null_cache = [(None, None) for _ in range(self.num_layers)]
         self.cpu_cache = self.allocate_cpu_cache()
 
         # Initialize the stream for caching operations.

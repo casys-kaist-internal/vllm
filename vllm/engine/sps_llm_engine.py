@@ -247,11 +247,11 @@ class SpSLLMEngine:
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
         # Initialize the cache.
-        self._run_target_workers(
-            "init_cache_engine", cache_config=self.cache_config)
+        self._run_target_workers("init_cache_engine",
+                                 cache_config=self.cache_config)
 
-        self._run_draft_workers(
-            "init_cache_engine", cache_config=self.cache_config)
+        self._run_draft_workers("init_cache_engine",
+                                cache_config=self.cache_config)
 
     @classmethod
     def from_engine_args(cls, engine_args: SpSEngineArgs) -> "SpSLLMEngine":
@@ -305,8 +305,8 @@ class SpSLLMEngine:
         seqs: List[Sequence] = []
         for _ in range(sampling_params.best_of):
             seq_id = next(self.seq_counter)
-            seq = Sequence(seq_id, prompt, prompt_token_ids,
-                           block_size, self.sps_config.draft_size)
+            seq = Sequence(seq_id, prompt, prompt_token_ids, block_size,
+                           self.sps_config.draft_size)
             seqs.append(seq)
 
         # Create the sequence group.
@@ -339,7 +339,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         # Execute the draft model for K (window) times
         seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
-            self.sps_config.draft_size + 1)  # k 번 iteration 돌 때 필요한 memory 미리 할당
+            self.sps_config.draft_size)  # k 번 iteration 돌 때 필요한 memory 미리 할당
 
         if scheduler_outputs.is_empty():
             if not scheduler_outputs.ignored_seq_groups:
@@ -354,7 +354,7 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
-            output = self._run_target_workers(
+            output = self._run_draft_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -384,6 +384,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
                 scheduler_outputs.blocks_to_copy = None
+
             # Execute the target model 1 time
             target_output = self._run_target_workers(
                 "execute_target_model",
@@ -394,8 +395,8 @@ class SpSLLMEngine:
             )
 
             # Update the scheduler with the model outputs.
-            seq_groups = self.scheduler.target_update(
-                draft_output_list, target_output)
+            seq_groups = self.scheduler.target_update(draft_output_list,
+                                                      target_output)
 
             # Decode the sequences.
             self._decode_sequences(seq_groups)
@@ -532,7 +533,8 @@ class SpSLLMEngine:
                 if not sampling_params.ignore_eos:
                     need_to_decode = seq.data.need_to_decode
                     for i in range(-need_to_decode, 0):
-                        if seq.get_token_id_from_index(i) == self.tokenizer.eos_token_id:
+                        if seq.get_token_id_from_index(
+                                i) == self.tokenizer.eos_token_id:
                             self.scheduler.free_seq(
                                 seq, SequenceStatus.FINISHED_STOPPED)
                             continue

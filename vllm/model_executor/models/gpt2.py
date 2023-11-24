@@ -89,12 +89,8 @@ class GPT2Attention(nn.Module):
 
 class GPT2MLP(nn.Module):
 
-    def __init__(
-        self,
-        intermediate_size: int,
-        config: GPT2Config,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, intermediate_size: int, config: GPT2Config,
+                 parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
         self.c_fc = ColumnParallelLinear(hidden_size,
@@ -173,11 +169,14 @@ class GPT2Model(nn.Module):
         # is divisible by 64. In addition, it allows us to shard the embedding
         # layer across 2, 4, 8, or more GPUs.
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.wte = VocabParallelEmbedding(
-            vocab_size, self.embed_dim, parallel_state=parallel_state)
+        self.wte = VocabParallelEmbedding(vocab_size,
+                                          self.embed_dim,
+                                          parallel_state=parallel_state)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
-        self.h = nn.ModuleList(
-            [GPT2Block(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.h = nn.ModuleList([
+            GPT2Block(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -240,7 +239,8 @@ class GPT2LMHeadModel(nn.Module):
                      use_np_cache: bool = False):
         tensor_model_parallel_world_size = (
             self.parallel_state.get_tensor_model_parallel_world_size())
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(

@@ -47,25 +47,21 @@ class MPTAttention(nn.Module):
         assert not config.attn_config["prefix_lm"]
         assert config.attn_config["alibi"]
 
-        self.qkv_proj = ColumnParallelLinear(
-            self.d_model,
-            3 * self.d_model,
-            bias=not config.no_bias,
-            gather_output=False,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.qkv_proj = ColumnParallelLinear(self.d_model,
+                                             3 * self.d_model,
+                                             bias=not config.no_bias,
+                                             gather_output=False,
+                                             perform_initialization=False,
+                                             parallel_state=parallel_state)
         if self.qk_ln:
             self.q_ln = nn.LayerNorm(self.d_model)
             self.k_ln = nn.LayerNorm(self.d_model)
-        self.out_proj = RowParallelLinear(
-            self.d_model,
-            self.d_model,
-            bias=not config.no_bias,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.out_proj = RowParallelLinear(self.d_model,
+                                          self.d_model,
+                                          bias=not config.no_bias,
+                                          input_is_parallel=True,
+                                          perform_initialization=False,
+                                          parallel_state=parallel_state)
 
         tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         assert self.total_num_heads % tp_world_size == 0
@@ -179,8 +175,10 @@ class MPTModel(nn.Module):
                                           config.d_model,
                                           perform_initialization=False,
                                           parallel_state=parallel_state)
-        self.blocks = nn.ModuleList(
-            [MPTBlock(config, parallel_state=parallel_state) for _ in range(config.n_layers)])
+        self.blocks = nn.ModuleList([
+            MPTBlock(config, parallel_state=parallel_state)
+            for _ in range(config.n_layers)
+        ])
         self.norm_f = nn.LayerNorm(config.d_model)
         if config.no_bias:
             for module in self.modules():
@@ -250,7 +248,8 @@ class MPTForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_world_size = self.parallel_state.get_tensor_model_parallel_world_size(
+        )
         tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         for name, loaded_weight in hf_model_weights_iterator(

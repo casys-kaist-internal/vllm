@@ -45,7 +45,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GPTBigCodeAttention(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig, parallel_state: ParallelState):
+    def __init__(self, config: GPTBigCodeConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
@@ -109,7 +110,7 @@ class GPTBigCodeAttention(nn.Module):
                 self.hidden_size // self.tensor_model_parallel_world_size,
                 self.kv_dim, self.kv_dim
             ],
-                dim=-1)
+                                dim=-1)
         key_cache, value_cache = kv_cache
         attn_output = self.attn(q, k, v, key_cache, value_cache,
                                 input_metadata, cache_event)
@@ -119,12 +120,8 @@ class GPTBigCodeAttention(nn.Module):
 
 class GPTBigMLP(nn.Module):
 
-    def __init__(
-        self,
-        intermediate_size: int,
-        config: GPTBigCodeConfig,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, intermediate_size: int, config: GPTBigCodeConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
         self.c_fc = ColumnParallelLinear(hidden_size,
@@ -150,7 +147,8 @@ class GPTBigMLP(nn.Module):
 
 class GPTBigCodeBlock(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig, parallel_state: ParallelState):
+    def __init__(self, config: GPTBigCodeConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
         inner_dim = (config.n_inner if config.n_inner is not None else 4 *
@@ -189,7 +187,8 @@ class GPTBigCodeBlock(nn.Module):
 
 class GPTBigCodeModel(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig, parallel_state: ParallelState):
+    def __init__(self, config: GPTBigCodeConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         self.config = config
         assert not config.add_cross_attention
@@ -202,11 +201,14 @@ class GPTBigCodeModel(nn.Module):
         # is divisible by 64. In addition, it allows us to shard the embedding
         # layer across 2, 4, 8, or more GPUs.
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.wte = VocabParallelEmbedding(
-            vocab_size, self.embed_dim, parallel_state=parallel_state)
+        self.wte = VocabParallelEmbedding(vocab_size,
+                                          self.embed_dim,
+                                          parallel_state=parallel_state)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
-        self.h = nn.ModuleList(
-            [GPTBigCodeBlock(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.h = nn.ModuleList([
+            GPTBigCodeBlock(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -236,11 +238,12 @@ class GPTBigCodeModel(nn.Module):
 
 class GPTBigCodeForCausalLM(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig, parallel_state: ParallelState):
+    def __init__(self, config: GPTBigCodeConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         self.config = config
-        self.transformer = GPTBigCodeModel(
-            config, parallel_state=parallel_state)
+        self.transformer = GPTBigCodeModel(config,
+                                           parallel_state=parallel_state)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.wte.weight
@@ -270,7 +273,8 @@ class GPTBigCodeForCausalLM(nn.Module):
                      use_np_cache: bool = False):
         tensor_model_parallel_world_size = (
             self.parallel_state.get_tensor_model_parallel_world_size())
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(

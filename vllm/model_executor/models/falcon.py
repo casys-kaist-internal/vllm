@@ -110,20 +110,18 @@ class FalconAttention(nn.Module):
                 gather_output=False,
                 perform_initialization=False,
                 skip_bias_add=True,
-                parallel_state=parallel_state
-            )
+                parallel_state=parallel_state)
         elif self.multi_query:
             self.total_num_kv_heads = 1
             self.num_kv_heads = 1
-            self.query = ColumnParallelLinear(
-                self.hidden_size,
-                self.total_num_heads * self.head_dim,
-                bias=config.bias,
-                gather_output=False,
-                perform_initialization=False,
-                skip_bias_add=True,
-                parallel_state=parallel_state
-            )
+            self.query = ColumnParallelLinear(self.hidden_size,
+                                              self.total_num_heads *
+                                              self.head_dim,
+                                              bias=config.bias,
+                                              gather_output=False,
+                                              perform_initialization=False,
+                                              skip_bias_add=True,
+                                              parallel_state=parallel_state)
             self.key_value = FalconLinear(self.hidden_size,
                                           2 * self.head_dim,
                                           bias=config.bias)
@@ -138,8 +136,7 @@ class FalconAttention(nn.Module):
                 gather_output=False,
                 perform_initialization=False,
                 skip_bias_add=True,
-                parallel_state=parallel_state
-            )
+                parallel_state=parallel_state)
 
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
@@ -225,13 +222,14 @@ class FalconMLP(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
 
-        self.dense_h_to_4h = ColumnParallelLinear(hidden_size,
-                                                  4 * hidden_size,
-                                                  bias=config.bias,
-                                                  gather_output=False,
-                                                  perform_initialization=False,
-                                                  skip_bias_add=True,
-                                                  parallel_state=parallel_state)
+        self.dense_h_to_4h = ColumnParallelLinear(
+            hidden_size,
+            4 * hidden_size,
+            bias=config.bias,
+            gather_output=False,
+            perform_initialization=False,
+            skip_bias_add=True,
+            parallel_state=parallel_state)
         self.act = nn.GELU()
         self.reduce_row_parallel_results = not (config.new_decoder_architecture
                                                 or config.parallel_attn)
@@ -261,8 +259,8 @@ class FalconDecoderLayer(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.self_attention = FalconAttention(
-            config, parallel_state=parallel_state)
+        self.self_attention = FalconAttention(config,
+                                              parallel_state=parallel_state)
         self.mlp = FalconMLP(config, parallel_state=parallel_state)
         self.config = config
 
@@ -348,11 +346,15 @@ class FalconModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, self.embed_dim, perform_initialization=False, parallel_state=parallel_state)
+            config.vocab_size,
+            self.embed_dim,
+            perform_initialization=False,
+            parallel_state=parallel_state)
 
         # Transformer blocks
         self.h = nn.ModuleList([
-            FalconDecoderLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)
+            FalconDecoderLayer(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
         ])
 
         # Final Layer Norm

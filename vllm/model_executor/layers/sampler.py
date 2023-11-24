@@ -8,7 +8,7 @@ import torch.nn as nn
 from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.parallel_utils.tensor_parallel import (
-    gather_from_tensor_model_parallel_region)
+    gather_from_tensor_model_parallel_region, )
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import SequenceOutputs
 
@@ -45,11 +45,11 @@ class Sampler(nn.Module):
         # Get the hidden states that we use for sampling.
         hidden_states = _prune_hidden_states(hidden_states, input_metadata)
         # [72, 768] (draft_size + 1) * batch size
-        # print("hidden states", hidden_states.shape)
 
         # Get the logits for the next tokens.
         logits = torch.matmul(hidden_states, embedding.t())
         if embedding_bias is not None:
+            print("embedding_bias", embedding_bias.shape)
             logits += embedding_bias
         logits = gather_from_tensor_model_parallel_region(
             logits, self.parallel_state)
@@ -64,8 +64,13 @@ class Sampler(nn.Module):
             input_metadata)
         # assert len(presence_penalties) == logits.shape[0]
         # assert len(frequency_penalties) == logits.shape[0]
-        logits = _apply_penalties(logits, output_tokens, presence_penalties,
-                                  frequency_penalties, self.vocab_size)
+        logits = _apply_penalties(
+            logits,
+            output_tokens,
+            presence_penalties,
+            frequency_penalties,
+            self.vocab_size,
+        )
 
         # Apply temperature scaling.
         temperatures = _get_temperatures(input_metadata)
@@ -127,10 +132,10 @@ def _get_penalties(
         f = sampling_params.frequency_penalty
         if input_metadata.num_drafts > 0:
             # Draft tokens
-            presence_penalties += [p] * \
-                (input_metadata.draft_size + 1) * len(seq_ids)
-            frequency_penalties += [f] * \
-                (input_metadata.draft_size + 1) * len(seq_ids)
+            presence_penalties += [p] * (input_metadata.draft_size +
+                                         1) * len(seq_ids)
+            frequency_penalties += [f] * (input_metadata.draft_size +
+                                          1) * len(seq_ids)
         else:
             if i < input_metadata.num_prompts:
                 # A prompt input.
@@ -185,6 +190,7 @@ def _apply_penalties(
     # Return early if all sequences have zero penalties.
     if not indices:
         return logits
+    print("PENALTY")
 
     bin_counts = []
     for i in indices:
@@ -223,8 +229,8 @@ def _get_temperatures(input_metadata: InputMetadata) -> List[float]:
             temperature = 1.0
         if input_metadata.num_drafts > 0:
             # Draft tokens
-            temperatures += [temperature] * \
-                (input_metadata.draft_size + 1) * len(seq_ids)
+            temperatures += ([temperature] * (input_metadata.draft_size + 1) *
+                             len(seq_ids))
         else:
             if i < input_metadata.num_prompts:
                 # A prompt input.
@@ -415,19 +421,21 @@ def _sample(
             prob_total = probs[idx:idx +
                                (input_metadata.draft_size + 1) * len(seq_ids)]
             logprob_total = logprobs[idx:idx +
-                                     (input_metadata.draft_size + 1) * len(seq_ids)]\
-
+                                     (input_metadata.draft_size + 1) *
+                                     len(seq_ids)]
             # prob and logprob for only last token (in case of all acceptance)
-            prob = torch.empty(
-                (len(seq_ids), prob_total.shape[-1]), device='cuda')
-            logprob = torch.empty(
-                (len(seq_ids), prob_total.shape[-1]), device='cuda')
+            prob = torch.empty((len(seq_ids), prob_total.shape[-1]),
+                               device="cuda")
+            logprob = torch.empty((len(seq_ids), prob_total.shape[-1]),
+                                  device="cuda")
 
             for seq_idx in range(len(seq_ids)):
-                prob[seq_idx] = prob_total[seq_idx * (input_metadata.draft_size +
-                                                      1) + input_metadata.draft_size, ]
-                logprob[seq_idx] = logprob_total[seq_idx *
-                                                 (input_metadata.draft_size + 1) + input_metadata.draft_size, ]
+                prob[seq_idx] = prob_total[seq_idx *
+                                           (input_metadata.draft_size + 1) +
+                                           input_metadata.draft_size, ]
+                logprob[seq_idx] = logprob_total[
+                    seq_idx * (input_metadata.draft_size + 1) +
+                    input_metadata.draft_size, ]
 
             idx += (input_metadata.draft_size + 1) * len(seq_ids)
 
@@ -452,13 +460,10 @@ def _sample(
                 output_logprobs = next_logprobs[parent_seq_id].copy()
                 output_logprobs[next_token_id] = logprob[j,
                                                          next_token_id].item()
-                seq_outputs[seq_id] = SequenceOutputs(
-                    seq_id,
-                    parent_seq_id,
-                    next_token_id,
-                    output_logprobs,
-                    prob_total
-                )
+                seq_outputs[seq_id] = SequenceOutputs(seq_id, parent_seq_id,
+                                                      next_token_id,
+                                                      output_logprobs,
+                                                      prob_total)
         else:
             if i < input_metadata.num_prompts:
                 # Generate the next tokens for a prompt input.
@@ -476,11 +481,10 @@ def _sample(
                 # Build the output.
                 for seq_id, next_token_id in zip(seq_ids, next_token_ids):
                     output_logprobs = next_logprobs.copy()
-                    output_logprobs[next_token_id] = logprob[next_token_id].item()
-                    seq_outputs[seq_id] = SequenceOutputs(seq_id, seq_id,
-                                                          next_token_id,
-                                                          output_logprobs,
-                                                          prob)
+                    output_logprobs[next_token_id] = logprob[
+                        next_token_id].item()
+                    seq_outputs[seq_id] = SequenceOutputs(
+                        seq_id, seq_id, next_token_id, output_logprobs, prob)
             else:
                 # Generate the next tokens for generation tokens.
                 prob = probs[idx:idx + len(seq_ids)]
@@ -506,24 +510,18 @@ def _sample(
                         seq_ids, parent_seq_ids, next_token_ids):
                     j = seq_ids.index(parent_seq_id)
                     output_logprobs = next_logprobs[parent_seq_id].copy()
-                    output_logprobs[next_token_id] = logprob[j,
-                                                             next_token_id].item()
+                    output_logprobs[next_token_id] = logprob[
+                        j, next_token_id].item()
                     seq_outputs[seq_id] = SequenceOutputs(
-                        seq_id,
-                        parent_seq_id,
-                        next_token_id,
-                        output_logprobs,
-                        prob[j]
-                    )
+                        seq_id, parent_seq_id, next_token_id, output_logprobs,
+                        prob[j])
 
     return seq_outputs
 
 
 def modified_rejection_sample(
-    target_prob: torch.Tensor,
-    draft_prob: torch.Tensor,
-    sampling_params: SamplingParams
-) -> SequenceOutputs:
+        target_prob: torch.Tensor, draft_prob: torch.Tensor,
+        sampling_params: SamplingParams) -> SequenceOutputs:
     x = target_prob - draft_prob
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=-1, keepdim=True)

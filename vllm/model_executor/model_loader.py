@@ -41,7 +41,8 @@ def _get_model_architecture(config: PretrainedConfig) -> Type[nn.Module]:
         f"Supported architectures: {list(_MODEL_REGISTRY.keys())}")
 
 
-def get_model(model_config: ModelConfig, parallel_state: ParallelState) -> nn.Module:
+def get_model(model_config: ModelConfig,
+              parallel_state: ParallelState) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
     torch.set_default_dtype(model_config.dtype)
 

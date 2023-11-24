@@ -86,16 +86,13 @@ class BloomAttention(nn.Module):
             bias=True,
             gather_output=False,
             perform_initialization=False,
-            parallel_state=parallel_state
-        )
-        self.dense = RowParallelLinear(
-            self.hidden_size,
-            self.hidden_size,
-            bias=True,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+            parallel_state=parallel_state)
+        self.dense = RowParallelLinear(self.hidden_size,
+                                       self.hidden_size,
+                                       bias=True,
+                                       input_is_parallel=True,
+                                       perform_initialization=False,
+                                       parallel_state=parallel_state)
 
         # Create the alibi slopes and slice them.
         tp_rank = parallel_state.get_tensor_model_parallel_rank()
@@ -131,11 +128,12 @@ class BloomMLP(nn.Module):
     def __init__(self, config: BloomConfig, parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.hidden_size
-        self.dense_h_to_4h = ColumnParallelLinear(hidden_size,
-                                                  4 * hidden_size,
-                                                  gather_output=False,
-                                                  perform_initialization=False,
-                                                  parallel_state=parallel_state)
+        self.dense_h_to_4h = ColumnParallelLinear(
+            hidden_size,
+            4 * hidden_size,
+            gather_output=False,
+            perform_initialization=False,
+            parallel_state=parallel_state)
         self.act = get_act_fn("gelu")
         self.dense_4h_to_h = RowParallelLinear(4 * hidden_size,
                                                hidden_size,
@@ -158,8 +156,8 @@ class BloomBlock(nn.Module):
 
         self.input_layernorm = nn.LayerNorm(hidden_size,
                                             eps=config.layer_norm_epsilon)
-        self.self_attention = BloomAttention(
-            config, parallel_state=parallel_state)
+        self.self_attention = BloomAttention(config,
+                                             parallel_state=parallel_state)
         self.post_attention_layernorm = nn.LayerNorm(
             hidden_size, eps=config.layer_norm_epsilon)
         self.mlp = BloomMLP(config, parallel_state=parallel_state)
@@ -213,13 +211,18 @@ class BloomModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, self.embed_dim, perform_initialization=False, parallel_state=parallel_state)
+            config.vocab_size,
+            self.embed_dim,
+            perform_initialization=False,
+            parallel_state=parallel_state)
         self.word_embeddings_layernorm = nn.LayerNorm(
             self.embed_dim, eps=config.layer_norm_epsilon)
 
         # Transformer blocks
-        self.h = nn.ModuleList(
-            [BloomBlock(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.h = nn.ModuleList([
+            BloomBlock(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
 
         # Final Layer Norm
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)

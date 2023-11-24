@@ -22,15 +22,10 @@ def sample_requests(
     with open(dataset_path) as f:
         dataset = json.load(f)
     # Filter out the conversations with less than 2 turns.
-    dataset = [
-        data for data in dataset
-        if len(data["conversations"]) >= 2
-    ]
+    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
     # Only keep the first two turns of each conversation.
-    dataset = [
-        (data["conversations"][0]["value"], data["conversations"][1]["value"])
-        for data in dataset
-    ]
+    dataset = [(data["conversations"][0]["value"],
+                data["conversations"][1]["value"]) for data in dataset]
 
     # Tokenize the prompts and completions.
     prompts = [prompt for prompt, _ in dataset]
@@ -93,8 +88,8 @@ def run_base(
     outputs = llm._run_engine(use_tqdm=True)
     end = time.time()
 
-    print("Prompt: ", outputs[0].prompt,
-          "\nOutput: ", outputs[0].outputs[0].text)
+    print("Prompt: ", outputs[0].prompt, "\nOutput: ",
+          outputs[0].outputs[0].text)
 
     return end - start
 
@@ -138,8 +133,10 @@ def run_sps(
     outputs = llm._run_engine(use_tqdm=True)
     end = time.time()
 
-    print("Prompt: ", outputs[0].prompt,
-          "\nOutput: ", outputs[0].outputs[0].text)
+    print("Prompt: ", outputs[0].prompt, "\nOutput: ",
+          outputs[0].outputs[0].text)
+
+    print("Rejection Positions: ", outputs[0].outputs[0].rejection_positions)
 
     return end - start
 
@@ -153,36 +150,41 @@ def main(args: argparse.Namespace):
     requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
 
     if args.engine == "base":
-        elapsed_time = run_base(
-            requests, args.target_model, args.tokenizer, args.tensor_parallel_size, args.seed)
+        elapsed_time = run_base(requests, args.target_model, args.tokenizer,
+                                args.tensor_parallel_size, args.seed)
     elif args.engine == "sps":
         assert args.tensor_parallel_size == 1
-        elapsed_time = run_sps(
-            requests, args.target_model, args.draft_model, args.draft_size, args.tokenizer, args.tensor_parallel_size, args.seed)
+        elapsed_time = run_sps(requests, args.target_model, args.draft_model,
+                               args.draft_size, args.tokenizer,
+                               args.tensor_parallel_size, args.seed)
     else:
         raise ValueError(f"Unknown engine: {args.engine}")
-    total_num_tokens = sum(
-        prompt_len + output_len
-        for _, prompt_len, output_len in requests
-    )
+    total_num_tokens = sum(prompt_len + output_len
+                           for _, prompt_len, output_len in requests)
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the throughput.")
-    parser.add_argument("--engine", type=str, choices=["base", "sps"],
+    parser.add_argument("--engine",
+                        type=str,
+                        choices=["base", "sps"],
                         default="base")
-    parser.add_argument("--dataset", type=str, required=True,
+    parser.add_argument("--dataset",
+                        type=str,
+                        required=True,
                         help="Path to the dataset.")
-    parser.add_argument("--target-model", type=str,
+    parser.add_argument("--target-model",
+                        type=str,
                         default="facebook/opt-125m")
-    parser.add_argument("--draft-model", type=str,
-                        default="facebook/opt-125m")
+    parser.add_argument("--draft-model", type=str, default="facebook/opt-125m")
     parser.add_argument('--draft-size', type=int, default=8)
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
-    parser.add_argument("--num-prompts", type=int, default=1,
+    parser.add_argument("--num-prompts",
+                        type=int,
+                        default=1,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

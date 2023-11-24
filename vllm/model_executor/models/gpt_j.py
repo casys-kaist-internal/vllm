@@ -92,7 +92,8 @@ class GPTJAttention(nn.Module):
 
 class GPTJMLP(nn.Module):
 
-    def __init__(self, intermediate_size: int, config: GPTJConfig, parallel_state: ParallelState):
+    def __init__(self, intermediate_size: int, config: GPTJConfig,
+                 parallel_state: ParallelState):
         super().__init__()
         hidden_size = config.n_embd
         self.fc_in = ColumnParallelLinear(hidden_size,
@@ -158,8 +159,10 @@ class GPTJModel(nn.Module):
                                           self.embed_dim,
                                           perform_initialization=False,
                                           parallel_state=parallel_state)
-        self.h = nn.ModuleList(
-            [GPTJBlock(config, parallel_state=parallel_state) for _ in range(config.n_layer)])
+        self.h = nn.ModuleList([
+            GPTJBlock(config, parallel_state=parallel_state)
+            for _ in range(config.n_layer)
+        ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -236,7 +239,7 @@ class GPTJForCausalLM(nn.Module):
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
-                    ["q_proj", "k_proj", "v_proj"]):
+                ["q_proj", "k_proj", "v_proj"]):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]

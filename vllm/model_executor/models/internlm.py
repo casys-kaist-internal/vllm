@@ -23,13 +23,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class InternLMMLP(nn.Module):
 
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, hidden_size: int, intermediate_size: int,
+                 hidden_act: str, parallel_state: ParallelState):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(hidden_size,
                                                  2 * intermediate_size,
@@ -57,12 +52,8 @@ class InternLMMLP(nn.Module):
 
 class InternLMAttention(nn.Module):
 
-    def __init__(
-        self,
-        hidden_size: int,
-        num_heads: int,
-        parallel_state: ParallelState
-    ):
+    def __init__(self, hidden_size: int, num_heads: int,
+                 parallel_state: ParallelState):
         super().__init__()
         self.hidden_size = hidden_size
         tensor_model_parallel_world_size = (
@@ -74,22 +65,19 @@ class InternLMAttention(nn.Module):
         self.head_dim = hidden_size // self.total_num_heads
         self.scaling = self.head_dim**-0.5
 
-        self.qkv_proj = ColumnParallelLinear(
-            hidden_size,
-            3 * self.total_num_heads * self.head_dim,
-            bias=True,
-            gather_output=False,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            bias=True,
-            input_is_parallel=True,
-            perform_initialization=False,
-            parallel_state=parallel_state
-        )
+        self.qkv_proj = ColumnParallelLinear(hidden_size,
+                                             3 * self.total_num_heads *
+                                             self.head_dim,
+                                             bias=True,
+                                             gather_output=False,
+                                             perform_initialization=False,
+                                             parallel_state=parallel_state)
+        self.o_proj = RowParallelLinear(self.total_num_heads * self.head_dim,
+                                        hidden_size,
+                                        bias=True,
+                                        input_is_parallel=True,
+                                        perform_initialization=False,
+                                        parallel_state=parallel_state)
         self.attn = PagedAttentionWithRoPE(self.num_heads,
                                            self.head_dim,
                                            self.scaling,
@@ -120,14 +108,11 @@ class InternLMDecoderLayer(nn.Module):
         self.self_attn = InternLMAttention(
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
-            parallel_state=parallel_state
-        )
-        self.mlp = InternLMMLP(
-            hidden_size=self.hidden_size,
-            intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act,
-            parallel_state=parallel_state
-        )
+            parallel_state=parallel_state)
+        self.mlp = InternLMMLP(hidden_size=self.hidden_size,
+                               intermediate_size=config.intermediate_size,
+                               hidden_act=config.hidden_act,
+                               parallel_state=parallel_state)
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
@@ -171,7 +156,10 @@ class InternLMModel(nn.Module):
 
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.embed_tokens = VocabParallelEmbedding(
-            vocab_size, config.hidden_size, perform_initialization=False, parallel_state=parallel_state)
+            vocab_size,
+            config.hidden_size,
+            perform_initialization=False,
+            parallel_state=parallel_state)
         self.layers = nn.ModuleList([
             InternLMDecoderLayer(config, parallel_state=parallel_state)
             for _ in range(config.num_hidden_layers)
@@ -246,7 +234,8 @@ class InternLMForCausalLM(nn.Module):
                      use_np_cache: bool = False):
         tensor_model_parallel_world_size = (
             self.parallel_state.get_tensor_model_parallel_world_size())
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
@@ -267,7 +256,7 @@ class InternLMForCausalLM(nn.Module):
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
-                    ["q_proj", "k_proj", "v_proj"]):
+                ["q_proj", "k_proj", "v_proj"]):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]

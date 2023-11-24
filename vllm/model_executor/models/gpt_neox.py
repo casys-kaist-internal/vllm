@@ -94,11 +94,12 @@ class GPTNeoXMLP(nn.Module):
 
     def __init__(self, config: GPTNeoXConfig, parallel_state: ParallelState):
         super().__init__()
-        self.dense_h_to_4h = ColumnParallelLinear(config.hidden_size,
-                                                  config.intermediate_size,
-                                                  gather_output=False,
-                                                  perform_initialization=False,
-                                                  parallel_state=parallel_state)
+        self.dense_h_to_4h = ColumnParallelLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            gather_output=False,
+            perform_initialization=False,
+            parallel_state=parallel_state)
         self.dense_4h_to_h = RowParallelLinear(config.intermediate_size,
                                                config.hidden_size,
                                                input_is_parallel=True,
@@ -122,8 +123,8 @@ class GPTNeoXLayer(nn.Module):
                                             eps=config.layer_norm_eps)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size,
                                                      eps=config.layer_norm_eps)
-        self.attention = GPTNeoXAttention(
-            config, parallel_state=parallel_state)
+        self.attention = GPTNeoXAttention(config,
+                                          parallel_state=parallel_state)
         self.mlp = GPTNeoXMLP(config, parallel_state=parallel_state)
 
     def forward(
@@ -170,8 +171,10 @@ class GPTNeoXModel(nn.Module):
                                                config.hidden_size,
                                                perform_initialization=False,
                                                parallel_state=parallel_state)
-        self.layers = nn.ModuleList(
-            [GPTNeoXLayer(config, parallel_state=parallel_state) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            GPTNeoXLayer(config, parallel_state=parallel_state)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size,
                                              eps=config.layer_norm_eps)
 
@@ -240,7 +243,8 @@ class GPTNeoXForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
-        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank()
+        tensor_model_parallel_rank = self.parallel_state.get_tensor_model_parallel_rank(
+        )
         state_dict = self.state_dict()
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):
