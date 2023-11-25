@@ -4,17 +4,27 @@ import copy
 from functools import partial
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Dict
 
-from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig, SpSConfig)
+from vllm.config import (
+    CacheConfig,
+    ModelConfig,
+    ParallelConfig,
+    SchedulerConfig,
+    SpSConfig,
+)
 from vllm.core.scheduler import Scheduler
 from vllm.engine.arg_utils import SpSEngineArgs
 from vllm.engine.ray_utils import initialize_cluster, ray, RayWorker
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus, SequenceOutputs, SequenceData
-from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
-                                               get_tokenizer)
+from vllm.sequence import (
+    Sequence,
+    SequenceGroup,
+    SequenceStatus,
+    SequenceOutputs,
+    SequenceData,
+)
+from vllm.transformers_utils.tokenizer import detokenize_incrementally, get_tokenizer
 from vllm.utils import Counter
 
 if ray:
@@ -101,11 +111,12 @@ class SpSLLMEngine:
         self.tokenizer = get_tokenizer(
             target_model_config.tokenizer,
             tokenizer_mode=target_model_config.tokenizer_mode,
-            trust_remote_code=target_model_config.trust_remote_code)\
-
+            trust_remote_code=target_model_config.trust_remote_code,
+        )
         self.seq_counter = Counter()  # ???
 
-        assert self.target_parallel_config.worker_use_ray == self.draft_parallel_config.worker_use_ray
+        assert (self.target_parallel_config.worker_use_ray ==
+                self.draft_parallel_config.worker_use_ray)
 
         # Create the parallel GPU workers.
         if self.target_parallel_config.worker_use_ray:
@@ -131,11 +142,11 @@ class SpSLLMEngine:
         # before CUDA_VISIBLE_DEVICES is set in the Worker
         from vllm.worker.worker import Worker  # pylint: disable=import-outside-toplevel
 
-        assert self.target_parallel_config.world_size == 1, (
-            "Ray is required if parallel_config.world_size > 1.")
+        assert (self.target_parallel_config.world_size == 1
+                ), "Ray is required if parallel_config.world_size > 1."
 
-        assert self.draft_parallel_config.world_size == 1, (
-            "Ray is required if parallel_config.world_size > 1.")
+        assert (self.draft_parallel_config.world_size == 1
+                ), "Ray is required if parallel_config.world_size > 1."
 
         # Initialize target model and workers
         self.target_workers: List[Worker] = []
@@ -185,7 +196,8 @@ class SpSLLMEngine:
                 num_gpus=1,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=placement_group,
-                    placement_group_capture_child_tasks=True),
+                    placement_group_capture_child_tasks=True,
+                ),
             )(RayWorker).remote()
             self.workers.append(worker)
 
@@ -195,16 +207,18 @@ class SpSLLMEngine:
         parallel_config = copy.deepcopy(self.parallel_config)
         scheduler_config = copy.deepcopy(self.scheduler_config)
         sps_config = copy.deepcopy(self.sps_config)
-        self._run_workers("init_worker",
-                          get_all_outputs=True,
-                          worker_init_fn=lambda: Worker(
-                              model_config,
-                              parallel_config,
-                              scheduler_config,
-                              sps_config,
-                              None,
-                              None,
-                          ))
+        self._run_workers(
+            "init_worker",
+            get_all_outputs=True,
+            worker_init_fn=lambda: Worker(
+                model_config,
+                parallel_config,
+                scheduler_config,
+                sps_config,
+                None,
+                None,
+            ),
+        )
         self._run_workers(
             "init_model",
             get_all_outputs=True,
@@ -264,10 +278,12 @@ class SpSLLMEngine:
         distributed_init_method, placement_group = initialize_cluster(
             parallel_config)  # 나중에 고쳐야할 수 있음. draft initialize_cluster는 필요한가
         # Create the LLM engine.
-        engine = cls(*engine_configs,
-                     distributed_init_method,
-                     placement_group,
-                     log_stats=not engine_args.disable_log_stats)
+        engine = cls(
+            *engine_configs,
+            distributed_init_method,
+            placement_group,
+            log_stats=not engine_args.disable_log_stats,
+        )
         return engine
 
     def add_request(
@@ -354,7 +370,16 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
-            output = self._run_draft_workers(
+            output = self._run_target_workers(
+                "execute_model_nocache",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=None,
+                blocks_to_swap_out=None,
+                blocks_to_copy=None,
+            )
+
+            # This run needed to fill in draft KV cache
+            _output = self._run_draft_workers(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -368,7 +393,10 @@ class SpSLLMEngine:
 
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
-            for _ in range(self.sps_config.draft_size):
+
+            debug_draft_toks = []
+
+            for i in range(self.sps_config.draft_size):
                 draft_output = self._run_draft_workers(
                     "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -380,6 +408,13 @@ class SpSLLMEngine:
 
                 # Update the scheduler with the model outputs.
                 seq_groups = self.scheduler.draft_update(draft_output)
+
+                # DEBUG
+                seq = seq_groups[0].get_seqs(status=SequenceStatus.RUNNING)[0]
+
+                new_tok, res = self._debug_show_decode_results(
+                    seq, 1)  # Show the last token
+                debug_draft_toks.append(new_tok)
 
                 scheduler_outputs.blocks_to_swap_in = None
                 scheduler_outputs.blocks_to_swap_out = None
@@ -394,12 +429,35 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
+            # (hj) During target_update, if token from target-only accepted
+            # then we need to run draft model again to fill in the cache
+            def run_draft_for_caching_callback():
+                return self._run_draft_workers(
+                    "execute_draft_model",
+                    seq_group_metadata_list=seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
+
             # Update the scheduler with the model outputs.
-            seq_groups = self.scheduler.target_update(draft_output_list,
-                                                      target_output)
+            seq_groups, debug_accepted_cnt = self.scheduler.target_update(
+                draft_output_list, target_output,
+                run_draft_for_caching_callback)
 
             # Decode the sequences.
             self._decode_sequences(seq_groups)
+
+            if (debug_draft_toks != []
+                    or all([d != None for d in debug_draft_toks])):
+                proc_tocs = [
+                    d.replace("Ġ", " ") for d in debug_draft_toks if d != None
+                ]
+                print("Draft   \t : ", proc_tocs)
+                print("Accepted\t : ", proc_tocs[:debug_accepted_cnt])
+                print("Res     \t : ", (seq_groups[0].get_seqs(
+                    status=SequenceStatus.RUNNING)[0].output_text, ))
+                print()
 
         # Stop the sequences that meet the stopping criteria.
         self._stop_sequences(seq_groups)
@@ -456,15 +514,15 @@ class SpSLLMEngine:
             avg_generation_throughput = 0.0
 
         total_num_gpu_blocks = self.cache_config.num_gpu_blocks
-        num_free_gpu_blocks = (
-            self.scheduler.block_manager.get_num_free_gpu_blocks())
+        num_free_gpu_blocks = self.scheduler.block_manager.get_num_free_gpu_blocks(
+        )
         num_used_gpu_blocks = total_num_gpu_blocks - num_free_gpu_blocks
         gpu_cache_usage = num_used_gpu_blocks / total_num_gpu_blocks
 
         total_num_cpu_blocks = self.cache_config.num_cpu_blocks
         if total_num_cpu_blocks > 0:
-            num_free_cpu_blocks = (
-                self.scheduler.block_manager.get_num_free_cpu_blocks())
+            num_free_cpu_blocks = self.scheduler.block_manager.get_num_free_cpu_blocks(
+            )
             num_used_cpu_blocks = total_num_cpu_blocks - num_free_cpu_blocks
             cpu_cache_usage = num_used_cpu_blocks / total_num_cpu_blocks
         else:
@@ -498,6 +556,17 @@ class SpSLLMEngine:
                         seq.output_tokens.append(new_token)
                         seq.output_text = new_output_text
 
+    def _debug_show_decode_results(self, seq: Sequence, len: int) -> str:
+        """Decodes the sequence outputs."""
+        # for i in range(-len, 0):
+        new_token, new_output_text = detokenize_incrementally(
+            self.tokenizer,
+            seq.output_tokens,
+            seq.get_draft_token_id_from_index(-1),
+            skip_special_tokens=True,
+        )
+        return new_token, new_output_text
+
     def _stop_sequences(self, seq_groups: List[SequenceGroup]) -> None:
         """Stop the finished sequences."""
         for seq_group in seq_groups:
@@ -519,13 +588,11 @@ class SpSLLMEngine:
 
                 # Check if the sequence has reached max_model_len.
                 if seq.get_len() > self.scheduler_config.max_model_len:
-
                     self.scheduler.free_seq(
                         seq, SequenceStatus.FINISHED_LENGTH_CAPPED)
                     continue
                 # Check if the sequence has reached max_tokens.
                 if seq.get_output_len() >= sampling_params.max_tokens:
-
                     self.scheduler.free_seq(
                         seq, SequenceStatus.FINISHED_LENGTH_CAPPED)
                     continue
@@ -533,8 +600,8 @@ class SpSLLMEngine:
                 if not sampling_params.ignore_eos:
                     need_to_decode = seq.data.need_to_decode
                     for i in range(-need_to_decode, 0):
-                        if seq.get_token_id_from_index(
-                                i) == self.tokenizer.eos_token_id:
+                        if (seq.get_token_id_from_index(i) ==
+                                self.tokenizer.eos_token_id):
                             self.scheduler.free_seq(
                                 seq, SequenceStatus.FINISHED_STOPPED)
                             continue

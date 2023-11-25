@@ -516,6 +516,7 @@ class Scheduler:
         self,
         draft_output_list: List[Dict[int, SequenceOutputs]],
         target_output: Dict[int, SequenceOutputs],
+        callback_fn,
     ) -> List[SequenceGroup]:
         scheduled: List[SequenceGroup] = []
         for seq_group in self.running:
@@ -528,6 +529,10 @@ class Scheduler:
         for seq_group in scheduled:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 accepted_cnt = 0
+
+                draft_probs = []
+                target_probs = []
+
                 for i, draft_output in enumerate(draft_output_list):
                     draft_seq_output: SequenceOutputs = draft_output[
                         seq.seq_id]
@@ -536,12 +541,13 @@ class Scheduler:
                     target_prob = target_output[seq.seq_id].probs[i][token_id]
                     r = torch.rand(1, device=draft_prob.device)
 
-                    print(token_id)
+                    draft_probs.append(draft_prob.item())
+                    target_probs.append(target_prob.item())
 
                     if r < torch.min(
                             torch.tensor([1], device=draft_prob.device),
                             target_prob / draft_prob,
-                    ) or True:
+                    ):
                         # accept
                         accepted_cnt += 1
                     else:
@@ -556,18 +562,25 @@ class Scheduler:
                         )
                         break
                 seq.accept_draft_tokens(accepted_cnt)
+
+                # print with 4.d.p
+                print("draft_probs", ["%.4f" % x for x in draft_probs])
+                print("target_probs", ["%.4f" % x for x in target_probs])
+
                 # print("! accepted_cnt", accepted_cnt)
                 if accepted_cnt != self.sps_config.draft_size:
                     seq.append_token_id(resample_token_id, resample_logprobs)
 
                 else:
                     # all accepted so sample additional token
+                    callback_fn(
+                    )  # fill KV cache using last draft input as token
                     seq.append_token_id(
                         target_output[seq.seq_id].output_token,
                         target_output[seq.seq_id].logprobs,
                     )
 
-        return scheduled
+        return scheduled, accepted_cnt
 
     def free_seq(self, seq: Sequence, finish_status: SequenceStatus) -> None:
         seq.status = finish_status

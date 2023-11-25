@@ -90,6 +90,9 @@ class SequenceData:
     def get_token_id_from_index(self, idx) -> int:
         return self.output_token_ids[idx]
 
+    def get_draft_token_id_from_index(self, idx) -> int:
+        return self.draft_token_ids[idx]
+
     # draft token related methods
     def append_draft_token_id(self, token_id: int, logprob: float) -> None:
         self.draft_token_ids.append(token_id)
@@ -224,7 +227,7 @@ class Sequence:
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
 
         if reject_cnt > 0:
-            self.rejection_positions.append(len(self.output_logprobs))
+            self.rejection_positions.append(len(self.data.output_token_ids))
 
         self._remove_tokens_from_blocks(reject_cnt)
 
@@ -242,6 +245,9 @@ class Sequence:
 
     def get_token_id_from_index(self, idx) -> int:
         return self.data.get_token_id_from_index(idx)
+
+    def get_draft_token_id_from_index(self, idx) -> int:
+        return self.data.get_draft_token_id_from_index(idx)
 
     def get_output_token_ids(self) -> List[int]:
         return self.data.output_token_ids
