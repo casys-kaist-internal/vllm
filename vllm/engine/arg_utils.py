@@ -200,11 +200,11 @@ class SpSEngineArgs:
     target_pipeline_parallel_size: int = 1
     target_tensor_parallel_size: int = 1
     draft_data_parallel_size: int = 1
-    draft_tensor_parallel_size: int = 1
+    draft_tensor_parallel_size: int = 4
     block_size: int = 16
     swap_space: int = 4  # GiB
     # FIXME(sangjin): setting 0.4 for gpu_memory_utilization is a temporary fix
-    gpu_memory_utilization: float = 0.40
+    gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: int = 2560
     max_num_seqs: int = 256
     disable_log_stats: bool = False

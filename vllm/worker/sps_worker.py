@@ -16,8 +16,8 @@ from vllm.worker.cache_engine import CacheEngine
 from vllm.utils import get_gpu_memory
 
 
-class Worker:
-    """A worker class that executes (a partition of) the model on a GPU.
+class SpSWorker:
+    """A SpS worker class that executes (a partition of) the model on a GPU.
 
     Each worker is associated with a single GPU. The worker is responsible for
     maintaining the KV cache and executing the model on the GPU. In case of
@@ -26,15 +26,21 @@ class Worker:
 
     def __init__(
         self,
-        model_config: ModelConfig,
-        parallel_config: ParallelConfig,
+        target_model_config: ModelConfig,
+        draft_model_config: ModelConfig,
+        target_parallel_config: ParallelConfig,
+        draft_parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
+        sps_config: SpSConfig,
         rank: Optional[int] = None,
         distributed_init_method: Optional[str] = None,
     ) -> None:
-        self.model_config = model_config
-        self.parallel_config = parallel_config
+        self.target_model_config = target_model_config
+        self.draft_model_config = draft_model_config
+        self.target_parallel_config = target_parallel_config
+        self.draft_parallel_config = draft_parallel_config
         self.scheduler_config = scheduler_config
+        self.sps_config = sps_config
         self.rank = rank
         self.distributed_init_method = distributed_init_method
 
@@ -46,7 +52,8 @@ class Worker:
         self.cache_events = None
         self.gpu_cache = None
 
-        self.parallel_state = ParallelState()
+        self.target_parallel_state = ParallelState()
+        self.draft_parallel_state = ParallelState()
 
     def init_model(self):
         # This env var set by Ray causes exceptions with graph building.
@@ -63,9 +70,13 @@ class Worker:
         # Initialize the distributed environment.
         self.init_distributed_environment()
 
-        # Initialize the model.
-        set_random_seed(self.model_config.seed, self.parallel_state)
-        self.model = get_model(self.model_config, self.parallel_state)
+        # Initialize the target model and draft model
+        set_random_seed(self.target_model_config.seed,
+                        self.target_parallel_state)
+        self.target_model = get_model(
+            self.target_model_config, self.target_parallel_state)
+        self.draft_model = get_model(
+            self.draft_model_config, self.draft_parallel_state)
 
     @torch.inference_mode()
     def profile_num_available_blocks(
@@ -83,7 +94,6 @@ class Worker:
         # number of tokens equal to max_num_batched_tokens.
 
         # Enable top-k sampling to reflect the accurate memory usage.
-        vocab_size = self.model.config.vocab_size
         sampling_params = SamplingParams(
             top_p=1, top_k=-1)  # change to 1
         max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
@@ -108,11 +118,22 @@ class Worker:
         # Execute the model.
         # FIXME(sangjin): I think profiling memory usage should be done with executing
         # both target model and draft model.
-        num_layers = self.model_config.get_num_layers(self.parallel_config)
-        self.model(
+        target_num_layers = self.target_model_config.get_num_layers(
+            self.target_parallel_config)
+        self.target_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=[(None, None)] * num_layers,
+            kv_caches=[(None, None)] * target_num_layers,
+            input_metadata=input_metadata,
+            cache_events=None,
+        )
+
+        draft_num_layers = self.draft_model_config.get_num_layers(
+            self.draft_parallel_config)
+        self.draft_model(
+            input_ids=input_tokens,
+            positions=input_positions,
+            kv_caches=[(None, None)] * draft_num_layers,
             input_metadata=input_metadata,
             cache_events=None,
         )
@@ -122,29 +143,42 @@ class Worker:
         torch.cuda.synchronize()
         peak_memory = torch.cuda.max_memory_allocated()
         total_gpu_memory = get_gpu_memory()
-        cache_block_size = CacheEngine.get_cache_block_size(
-            block_size, self.model_config, self.parallel_config)
+        target_cache_block_size = CacheEngine.get_cache_block_size(
+            block_size, self.target_model_config, self.target_parallel_config)
+        draft_cache_block_size = CacheEngine.get_cache_block_size(
+            block_size, self.draft_model_config, self.draft_parallel_config)
+
         # FIXME(sangjin): gpu_memory_utilization is fixed to 0.4 for temporary fix.
         num_gpu_blocks = int(
             (total_gpu_memory * gpu_memory_utilization - peak_memory) //
-            cache_block_size)
-        num_cpu_blocks = int(cpu_swap_space // cache_block_size)
+            (target_cache_block_size + draft_cache_block_size))
+        num_cpu_blocks = int(
+            cpu_swap_space // (target_cache_block_size + draft_cache_block_size))
         num_gpu_blocks = max(num_gpu_blocks, 0)
         num_cpu_blocks = max(num_cpu_blocks, 0)
         torch.cuda.empty_cache()
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
-        set_random_seed(self.model_config.seed, self.parallel_state)
+        set_random_seed(self.target_model_config.seed,
+                        self.target_parallel_state)
         return num_gpu_blocks, num_cpu_blocks
 
+    # NOTE(sjchoi): there should be 2 cache engines, one for target model and one for draft model
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
         self.cache_config = cache_config
         self.block_size = cache_config.block_size
-        self.cache_engine = CacheEngine(self.cache_config, self.model_config,
-                                        self.parallel_config)
-        self.cache_events = self.cache_engine.events
-        self.gpu_cache = self.cache_engine.gpu_cache
+
+        self.target_cache_engine = CacheEngine(self.cache_config, self.target_model_config,
+                                               self.target_parallel_config)
+        self.draft_cache_engine = CacheEngine(self.cache_config, self.draft_model_config,
+                                              self.draft_parallel_config)
+
+        self.target_cache_events = self.target_cache_engine.events
+        self.draft_cache_events = self.draft_cache_engine.events
+
+        self.target_gpu_cache = self.target_cache_engine.gpu_cache
+        self.draft_gpu_cache = self.draft_cache_engine.gpu_cache
 
     def _prepare_inputs(
         self,
@@ -333,6 +367,7 @@ class Worker:
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
+            draft_size=self.sps_config.draft_size,
         )
 
         return tokens_tensor, positions_tensor, input_metadata
@@ -426,12 +461,13 @@ class Worker:
             context_lens=context_lens_tensor,
             max_context_len=max_context_len,
             block_tables=block_tables_tensor,
+            draft_size=self.sps_config.draft_size,
         )
 
         return tokens_tensor, positions_tensor, input_metadata
 
     @torch.inference_mode()
-    def execute_model(
+    def execute_target_model_for_prompt(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         blocks_to_swap_in: Dict[int, int],
@@ -467,10 +503,10 @@ class Worker:
             seq_group_metadata_list)
 
         # Execute the model.
-        output = self.model(
+        output = self.target_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.gpu_cache,
+            kv_caches=self.target_gpu_cache,
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
@@ -513,10 +549,10 @@ class Worker:
             seq_group_metadata_list)
 
         # Execute the model.
-        output = self.model(
+        output = self.draft_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.gpu_cache,
+            kv_caches=self.draft_gpu_cache,
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
@@ -559,10 +595,10 @@ class Worker:
             seq_group_metadata_list)
 
         # Execute the model.
-        output = self.model(
+        output = self.target_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.gpu_cache,
+            kv_caches=self.target_gpu_cache,
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
@@ -573,7 +609,7 @@ class Worker:
         """Initialize the distributed environment."""
         if torch.distributed.is_initialized():
             torch_world_size = torch.distributed.get_world_size()
-            if torch_world_size != self.parallel_config.world_size:
+            if torch_world_size != self.target_parallel_config.world_size:
                 raise RuntimeError(
                     "torch.distributed is already initialized but the torch world "
                     "size does not match parallel_config.world_size "
@@ -587,15 +623,17 @@ class Worker:
         else:
             torch.distributed.init_process_group(
                 backend="nccl",
-                world_size=self.parallel_config.world_size,
+                world_size=self.target_parallel_config.world_size,
                 rank=self.rank,
                 init_method=self.distributed_init_method,
             )
 
         # A small all_reduce for warmup.
         torch.distributed.all_reduce(torch.zeros(1).cuda())
-        self.parallel_state.initialize_model_parallel(self.parallel_config.tensor_parallel_size,
-                                                      self.parallel_config.pipeline_parallel_size)
+        self.target_parallel_state.initialize_model_parallel(self.target_parallel_config.tensor_parallel_size,
+                                                             self.target_parallel_config.pipeline_parallel_size)
+        self.draft_parallel_state.initialize_model_parallel(self.draft_parallel_config.tensor_parallel_size,
+                                                            self.draft_parallel_config.pipeline_parallel_size)
 
 
 def _pad_to_alignment(x: List[int], multiple_of: int) -> List[int]:

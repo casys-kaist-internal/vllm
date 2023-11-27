@@ -103,14 +103,14 @@ class SpSLLMEngine:
             tokenizer_mode=target_model_config.tokenizer_mode,
             trust_remote_code=target_model_config.trust_remote_code)\
 
-        self.seq_counter = Counter()  # ???
+        self.seq_counter = Counter()
 
         assert self.target_parallel_config.worker_use_ray == self.draft_parallel_config.worker_use_ray
 
         # Create the parallel GPU workers.
         if self.target_parallel_config.worker_use_ray:
             self._init_workers_ray(placement_group)
-        else:  # single gpu 먼저 구현하고 나중에 ray 구현
+        else:
             self._init_workers(distributed_init_method)
 
         # Profile the memory usage and initialize the cache.
@@ -129,7 +129,7 @@ class SpSLLMEngine:
     def _init_workers(self, distributed_init_method: str):
         # Lazy import the Worker to avoid importing torch.cuda/xformers
         # before CUDA_VISIBLE_DEVICES is set in the Worker
-        from vllm.worker.worker import Worker  # pylint: disable=import-outside-toplevel
+        from vllm.worker.sps_worker import SpSWorker  # pylint: disable=import-outside-toplevel
 
         assert self.target_parallel_config.world_size == 1, (
             "Ray is required if parallel_config.world_size > 1.")
@@ -138,35 +138,20 @@ class SpSLLMEngine:
             "Ray is required if parallel_config.world_size > 1.")
 
         # Initialize target model and workers
-        self.target_workers: List[Worker] = []
-        worker = Worker(
+        self.workers: List[SpSWorker] = []
+        worker = SpSWorker(
             self.target_model_config,
-            self.target_parallel_config,
-            self.scheduler_config,
-            self.sps_config,
-            0,
-            distributed_init_method,
-        )
-        self.target_workers.append(worker)
-
-        self._run_target_workers(
-            "init_model",
-            get_all_outputs=True,
-        )
-
-        # Initialize draft model and workers
-        self.draft_workers: List[Worker] = []
-        worker = Worker(
             self.draft_model_config,
+            self.target_parallel_config,
             self.draft_parallel_config,
             self.scheduler_config,
             self.sps_config,
             0,
             distributed_init_method,
         )
-        self.draft_workers.append(worker)
+        self.workers.append(worker)
 
-        self._run_draft_workers(
+        self._run_workers(
             "init_model",
             get_all_outputs=True,
         )
@@ -174,9 +159,10 @@ class SpSLLMEngine:
     def _init_workers_ray(self, placement_group: "PlacementGroup"):
         # Lazy import the Worker to avoid importing torch.cuda/xformers
         # before CUDA_VISIBLE_DEVICES is set in the Worker
-        from vllm.worker.worker import Worker  # pylint: disable=import-outside-toplevel
+        from vllm.worker.sps_worker import SpSWorker  # pylint: disable=import-outside-toplevel
 
-        self.workers: List[Worker] = []
+        # Initialize target workers
+        self.workers: List[SpSWorker] = []
         for bundle in placement_group.bundle_specs:
             if not bundle.get("GPU", 0):
                 continue
@@ -191,15 +177,19 @@ class SpSLLMEngine:
 
         # Initialize torch distributed process group for the workers.
         init_torch_dist_process_group(self.workers, backend="nccl")
-        model_config = copy.deepcopy(self.model_config)
-        parallel_config = copy.deepcopy(self.parallel_config)
+        target_model_config = copy.deepcopy(self.target_model_config)
+        draft_model_config = copy.deepcopy(self.draft_model_config)
+        target_parallel_config = copy.deepcopy(self.target_parallel_config)
+        draft_parallel_config = copy.deepcopy(self.draft_parallel_config)
         scheduler_config = copy.deepcopy(self.scheduler_config)
         sps_config = copy.deepcopy(self.sps_config)
         self._run_workers("init_worker",
                           get_all_outputs=True,
-                          worker_init_fn=lambda: Worker(
-                              model_config,
-                              parallel_config,
+                          worker_init_fn=lambda: SpSWorker(
+                              target_model_config,
+                              draft_model_config,
+                              target_parallel_config,
+                              draft_parallel_config,
                               scheduler_config,
                               sps_config,
                               None,
@@ -221,7 +211,7 @@ class SpSLLMEngine:
     def _init_cache(self) -> None:
         """Profiles the memory usage and initializes the KV cache."""
         # Get the maximum number of blocks that can be allocated on GPU and CPU.
-        num_blocks = self._run_target_workers(
+        num_blocks = self._run_workers(
             "profile_num_available_blocks",
             get_all_outputs=True,
             block_size=self.cache_config.block_size,
@@ -247,10 +237,7 @@ class SpSLLMEngine:
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
         # Initialize the cache.
-        self._run_target_workers(
-            "init_cache_engine", cache_config=self.cache_config)
-
-        self._run_draft_workers(
+        self._run_workers(
             "init_cache_engine", cache_config=self.cache_config)
 
     @classmethod
@@ -324,9 +311,13 @@ class SpSLLMEngine:
         """
         self.scheduler.abort_seq_group(request_id)
 
-    def get_model_config(self) -> ModelConfig:
-        """Gets the model configuration."""
-        return self.model_config
+    def get_target_model_config(self) -> ModelConfig:
+        """Gets the target model configuration."""
+        return self.target_model_config
+
+    def get_draft_model_config(self) -> ModelConfig:
+        """Gets the draft model configuration."""
+        return self.draft_model_config
 
     def get_num_unfinished_requests(self) -> int:
         """Gets the number of unfinished requests."""
@@ -354,8 +345,9 @@ class SpSLLMEngine:
 
         # For prompt just sample with auto-regressive target model
         if scheduler_outputs.prompt_run:
-            output = self._run_target_workers(
-                "execute_model",
+            output = self._run_workers(
+                # SJCHOI what should I name this method? execute target model for prompt.
+                "execute_target_model_for_prompt",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
@@ -369,7 +361,7 @@ class SpSLLMEngine:
         else:
             draft_output_list: List[Dict[int, SequenceOutputs]] = []
             for _ in range(self.sps_config.draft_size):
-                draft_output = self._run_draft_workers(
+                draft_output = self._run_workers(
                     "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -386,7 +378,7 @@ class SpSLLMEngine:
                 scheduler_outputs.blocks_to_copy = None
 
             # Execute the target model 1 time
-            target_output = self._run_target_workers(
+            target_output = self._run_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -415,6 +407,7 @@ class SpSLLMEngine:
             # Log the system stats.
             self._log_system_stats(scheduler_outputs.prompt_run,
                                    scheduler_outputs.num_batched_tokens)
+
         return request_outputs
 
     def _log_system_stats(
@@ -540,7 +533,7 @@ class SpSLLMEngine:
                                 seq, SequenceStatus.FINISHED_STOPPED)
                             continue
 
-    def _run_target_workers(
+    def _run_workers(
         self,
         method: str,
         *args,
@@ -549,7 +542,7 @@ class SpSLLMEngine:
     ) -> Any:
         """Runs the given method on all workers."""
         all_outputs = []
-        for worker in self.target_workers:
+        for worker in self.workers:
             if self.target_parallel_config.worker_use_ray:
                 executor = partial(worker.execute_method.remote, method)
             else:
@@ -559,37 +552,6 @@ class SpSLLMEngine:
             all_outputs.append(output)
 
         if self.target_parallel_config.worker_use_ray:
-            all_outputs = ray.get(all_outputs)
-
-        if get_all_outputs:
-            return all_outputs
-
-        # Make sure all workers have the same results.
-        output = all_outputs[0]
-        for other_output in all_outputs[1:]:
-            assert output == other_output
-
-        return output
-
-    def _run_draft_workers(
-        self,
-        method: str,
-        *args,
-        get_all_outputs: bool = False,
-        **kwargs,
-    ) -> Any:
-        """Runs the given method on all workers."""
-        all_outputs = []
-        for worker in self.draft_workers:
-            if self.draft_parallel_config.worker_use_ray:
-                executor = partial(worker.execute_method.remote, method)
-            else:
-                executor = getattr(worker, method)
-
-            output = executor(*args, **kwargs)
-            all_outputs.append(output)
-
-        if self.draft_parallel_config.worker_use_ray:
             all_outputs = ray.get(all_outputs)
 
         if get_all_outputs:
