@@ -550,10 +550,10 @@ class Scheduler:
 
                 if accept_cnt != self.sps_config.draft_size:
                     seq.append_token_id(resample_token_id, resample_logprobs)
-                else:
-                    # all accepted so sample additional token
-                    seq.append_token_id(
-                        target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
+                # else:
+                #     # all accepted so sample additional token
+                #     seq.append_token_id(
+                #         target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
 
         return scheduled
 

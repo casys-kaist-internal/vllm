@@ -69,17 +69,17 @@ if __name__ == '__main__':
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str,
                         default='facebook/opt-125m')
-    parser.add_argument('--draft-size', type=int, default=8)
+    parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--target-tensor-parallel-size',
                         '-target-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
     parser.add_argument('--output-len', type=int, default=128)
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--n', type=int, default=1,
                         help='Number of generated sequences per prompt.')
     parser.add_argument('--use-beam-search', action='store_true')
-    parser.add_argument('--num-iters', type=int, default=3,
+    parser.add_argument('--num-iters', type=int, default=1,
                         help='Number of iterations to run.')
     parser.add_argument('--trust-remote-code', action='store_true',
                         help='trust remote code from huggingface')
