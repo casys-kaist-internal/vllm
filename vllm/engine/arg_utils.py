@@ -20,6 +20,7 @@ class EngineArgs:
     dtype: str = 'auto'
     seed: int = 0
     worker_use_ray: bool = False
+    data_parallel_size: int = 1
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     block_size: int = 16
@@ -152,7 +153,8 @@ class EngineArgs:
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space)
-        parallel_config = ParallelConfig(self.pipeline_parallel_size,
+        parallel_config = ParallelConfig(self.data_parallel_size,
+                                         self.pipeline_parallel_size,
                                          self.tensor_parallel_size,
                                          self.worker_use_ray)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
@@ -197,10 +199,12 @@ class SpSEngineArgs:
     dtype: str = 'auto'
     seed: int = 0  # target 이랑 draft 랑 나눠야하나?
     worker_use_ray: bool = False
+    target_data_parallel_size: int = 1
     target_pipeline_parallel_size: int = 1
     target_tensor_parallel_size: int = 1
     draft_data_parallel_size: int = 1
-    draft_tensor_parallel_size: int = 4
+    draft_tensor_parallel_size: int = 1
+    draft_pipeline_parallel_size: int = 1
     block_size: int = 16
     swap_space: int = 4  # GiB
     # FIXME(sangjin): setting 0.4 for gpu_memory_utilization is a temporary fix
@@ -362,10 +366,12 @@ class SpSEngineArgs:
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space)
-        target_parallel_config = ParallelConfig(self.target_pipeline_parallel_size,
+        target_parallel_config = ParallelConfig(self.target_data_parallel_size,
+                                                self.target_pipeline_parallel_size,
                                                 self.target_tensor_parallel_size,
                                                 self.worker_use_ray)
-        draft_parallel_config = ParallelConfig(1,
+        draft_parallel_config = ParallelConfig(self.draft_data_parallel_size,
+                                               self.draft_pipeline_parallel_size,
                                                self.draft_tensor_parallel_size,
                                                self.worker_use_ray)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,

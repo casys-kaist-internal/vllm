@@ -116,7 +116,7 @@ class SpSWorker:
             seqs)
 
         # Execute the model.
-        # FIXME(sangjin): I think profiling memory usage should be done with executing
+        # Profiling memory usage should be done with executing
         # both target model and draft model.
         target_num_layers = self.target_model_config.get_num_layers(
             self.target_parallel_config)
@@ -148,7 +148,6 @@ class SpSWorker:
         draft_cache_block_size = CacheEngine.get_cache_block_size(
             block_size, self.draft_model_config, self.draft_parallel_config)
 
-        # FIXME(sangjin): gpu_memory_utilization is fixed to 0.4 for temporary fix.
         num_gpu_blocks = int(
             (total_gpu_memory * gpu_memory_utilization - peak_memory) //
             (target_cache_block_size + draft_cache_block_size))

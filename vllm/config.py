@@ -195,6 +195,7 @@ class ParallelConfig:
     """Configuration for the distributed execution.
 
     Args:
+        data_parallel_size: Number of data parallel groups.
         pipeline_parallel_size: Number of pipeline parallel groups.
         tensor_parallel_size: Number of tensor parallel groups.
         worker_use_ray: Whether to use Ray for model workers. Will be set to
@@ -204,20 +205,22 @@ class ParallelConfig:
 
     def __init__(
         self,
+        # NOTE(sjchoi): I added data parallel dimension because of draft model
+        data_parallel_size: int,
         pipeline_parallel_size: int,
         tensor_parallel_size: int,
         worker_use_ray: bool,
     ) -> None:
+        self.data_parallel_size = data_parallel_size
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
         self.worker_use_ray = worker_use_ray
 
-        self.world_size = pipeline_parallel_size * tensor_parallel_size
+        self.world_size = pipeline_parallel_size * \
+            tensor_parallel_size * data_parallel_size
         if self.world_size > 1:
             self.worker_use_ray = True
         self._verify_args()
-
-        self.data_parallel_size = 1  # FIXME
 
     def _verify_args(self) -> None:
         if self.pipeline_parallel_size > 1:

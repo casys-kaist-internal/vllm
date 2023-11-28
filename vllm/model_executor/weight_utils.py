@@ -35,7 +35,8 @@ def hf_model_weights_iterator(
             hf_folder = snapshot_download(model_name_or_path,
                                           allow_patterns="*.bin",
                                           cache_dir=cache_dir,
-                                          tqdm_class=Disabledtqdm)
+                                          tqdm_class=Disabledtqdm,
+                                          resume_download=True)  # NOTE(sjchoi): added because network unsable
     else:
         hf_folder = model_name_or_path
 

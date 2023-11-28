@@ -156,7 +156,6 @@ def main(args: argparse.Namespace):
         elapsed_time = run_base(
             requests, args.target_model, args.tokenizer, args.tensor_parallel_size, args.seed)
     elif args.engine == "sps":
-        assert args.tensor_parallel_size == 1
         elapsed_time = run_sps(
             requests, args.target_model, args.draft_model, args.draft_size, args.tokenizer, args.tensor_parallel_size, args.seed)
     else:

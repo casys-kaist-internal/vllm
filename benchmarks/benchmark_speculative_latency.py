@@ -66,13 +66,13 @@ if __name__ == '__main__':
         description='Benchmark the latency of processing a single batch of '
                     'requests till completion.')
     parser.add_argument('--target-model', type=str,
-                        default='facebook/opt-125m')
+                        default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str,
                         default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=8)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--target-tensor-parallel-size',
-                        '-target-tp', type=int, default=4)
+                        '-target-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
     parser.add_argument('--output-len', type=int, default=128)
     parser.add_argument('--batch-size', type=int, default=8)
