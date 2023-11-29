@@ -370,10 +370,11 @@ class SpSEngineArgs:
                                                 self.target_pipeline_parallel_size,
                                                 self.target_tensor_parallel_size,
                                                 self.worker_use_ray)
+        # NOTE(sjchoi): need to match worker_use_ray with target and draft parallel config
         draft_parallel_config = ParallelConfig(self.draft_data_parallel_size,
                                                self.draft_pipeline_parallel_size,
                                                self.draft_tensor_parallel_size,
-                                               self.worker_use_ray)
+                                               target_parallel_config.worker_use_ray)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.get_max_model_len())

@@ -101,7 +101,7 @@ class SpSLLMEngine:
         self.tokenizer = get_tokenizer(
             target_model_config.tokenizer,
             tokenizer_mode=target_model_config.tokenizer_mode,
-            trust_remote_code=target_model_config.trust_remote_code)\
+            trust_remote_code=target_model_config.trust_remote_code)
 
         self.seq_counter = Counter()
 
@@ -486,7 +486,7 @@ class SpSLLMEngine:
         """Decodes the sequence outputs."""
         for seq_group in seq_groups:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                need_to_decode = seq.data.need_to_decode
+                need_to_decode = seq.get_output_len() - (len(seq.output_tokens) + seq.none_token_cnt)
 
                 for i in range(-need_to_decode, 0):
                     new_token, new_output_text = detokenize_incrementally(
@@ -498,13 +498,18 @@ class SpSLLMEngine:
                     if new_token is not None:
                         seq.output_tokens.append(new_token)
                         seq.output_text = new_output_text
+                    else:
+                        seq.none_token_cnt += 1
+
+                assert seq.get_output_len() == (len(seq.output_tokens) + seq.none_token_cnt)
 
     def _stop_sequences(self, seq_groups: List[SequenceGroup]) -> None:
         """Stop the finished sequences."""
         for seq_group in seq_groups:
             sampling_params = seq_group.sampling_params
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                need_to_decode = seq.data.need_to_decode
+                # NOTE(sjchoi): temporary fix
+                need_to_decode = self.sps_config.draft_size
 
                 # Check if the sequence has generated a stop string.
                 stopped = False

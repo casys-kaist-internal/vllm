@@ -555,6 +555,8 @@ class Scheduler:
                 #     seq.append_token_id(
                 #         target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
 
+                #     # Need to run draft model to cache kv for the additional token sampled by target model.
+
         return scheduled
 
     def free_seq(self, seq: Sequence, finish_status: SequenceStatus) -> None:

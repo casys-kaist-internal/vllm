@@ -175,10 +175,10 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, required=True,
                         help="Path to the dataset.")
     parser.add_argument("--target-model", type=str,
-                        default="facebook/opt-125m")
+                        default="facebook/opt-6.7B")
     parser.add_argument("--draft-model", type=str,
                         default="facebook/opt-125m")
-    parser.add_argument('--draft-size', type=int, default=8)
+    parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
     parser.add_argument("--num-prompts", type=int, default=1,

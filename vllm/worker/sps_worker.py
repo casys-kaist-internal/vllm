@@ -93,6 +93,10 @@ class SpSWorker:
         # Profile memory usage with max_num_sequences sequences and the total
         # number of tokens equal to max_num_batched_tokens.
 
+        # NOTE(sjchoi): Target and draft should have same vocab size for
+        # speculative sampling to work.
+        assert self.target_model.config.vocab_size == self.draft_model.config.vocab_size
+
         # Enable top-k sampling to reflect the accurate memory usage.
         sampling_params = SamplingParams(
             top_p=1, top_k=-1)  # change to 1

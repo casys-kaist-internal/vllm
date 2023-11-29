@@ -65,11 +65,8 @@ class SequenceData:
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
         self.draft_cumulative_logprobs: List[float] = []
-        self.need_to_decode = 1
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
-        # self.need_to_decode = 1  # used for decoding sequence
-
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
 
@@ -96,9 +93,6 @@ class SequenceData:
         self.draft_cumulative_logprobs.append(logprob)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
-        # used for decoding sequence + 1 for the additional last token
-        self.need_to_decode = accept_cnt + 1
-
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
@@ -155,6 +149,8 @@ class Sequence:
         self.output_logprobs: List[Dict[int, float]] = []
         self.output_tokens: List[str] = []
         self.output_text = ""
+        # NOTE(sjchoi): used for _decode_sequence assertion
+        self.none_token_cnt = 0
 
         self.logical_token_blocks: List[LogicalTokenBlock] = []
         # Initialize the logical token blocks with the prompt token ids.
