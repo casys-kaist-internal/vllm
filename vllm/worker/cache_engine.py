@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from vllm import cache_ops
+from vllm._C import cache_ops
 from vllm.config import CacheConfig, ModelConfig, ParallelConfig
 from vllm.logger import init_logger
 from vllm.utils import in_wsl
@@ -33,7 +33,7 @@ class CacheEngine:
 
         self.head_size = model_config.get_head_size()
         self.num_layers = model_config.get_num_layers(parallel_config)
-        self.num_heads = model_config.get_num_heads(parallel_config)
+        self.num_heads = model_config.get_num_kv_heads(parallel_config)
         self.dtype = model_config.dtype
 
         self.block_size = cache_config.block_size
@@ -146,7 +146,7 @@ class CacheEngine:
         parallel_config: ParallelConfig,
     ) -> int:
         head_size = model_config.get_head_size()
-        num_heads = model_config.get_num_heads(parallel_config)
+        num_heads = model_config.get_num_kv_heads(parallel_config)
         num_layers = model_config.get_num_layers(parallel_config)
 
         key_cache_block = block_size * num_heads * head_size
