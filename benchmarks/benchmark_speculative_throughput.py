@@ -115,6 +115,7 @@ def run_sps(
         draft_size=draft_size,
         tokenizer=tokenizer,
         target_tensor_parallel_size=tensor_parallel_size,
+        draft_tensor_parallel_size=tensor_parallel_size,
         seed=seed,
     )
 
@@ -178,10 +179,10 @@ if __name__ == "__main__":
                         default="facebook/opt-6.7B")
     parser.add_argument("--draft-model", type=str,
                         default="facebook/opt-125m")
-    parser.add_argument('--draft-size', type=int, default=4)
+    parser.add_argument('--draft-size', type=int, default=2)
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
-    parser.add_argument("--num-prompts", type=int, default=1,
+    parser.add_argument("--num-prompts", type=int, default=100,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

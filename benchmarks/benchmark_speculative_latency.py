@@ -30,7 +30,7 @@ def main(args: argparse.Namespace):
         temperature=0.9,
         top_p=1.0,
         use_beam_search=args.use_beam_search,
-        ignore_eos=False,
+        ignore_eos=True,
         max_tokens=args.output_len,
     )
 
@@ -41,12 +41,15 @@ def main(args: argparse.Namespace):
             torch.cuda.cudart().cudaProfilerStart()
         start_time = time.time()
 
-        llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-                     sampling_params=sampling_params,
-                     use_tqdm=False)  # 여기서부터 시작
+        output = llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                              sampling_params=sampling_params,
+                              use_tqdm=False)  # 여기서부터 시작
 
         end_time = time.time()
         latency = end_time - start_time
+        for i in range(args.batch_size):
+            assert output[i].outputs[0].finish_reason == "length"
+
         if profile:
             torch.cuda.cudart().cudaProfilerStop()
         return latency
@@ -58,6 +61,7 @@ def main(args: argparse.Namespace):
     latencies = []
     for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
         latencies.append(run_to_completion(profile=False))
+    print(latencies)
     print(f'Avg latency: {np.mean(latencies)} seconds')
 
 
@@ -72,10 +76,10 @@ if __name__ == '__main__':
     parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--target-tensor-parallel-size',
-                        '-target-tp', type=int, default=2)
+                        '-target-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
     parser.add_argument('--output-len', type=int, default=128)
-    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--n', type=int, default=1,
                         help='Number of generated sequences per prompt.')
     parser.add_argument('--use-beam-search', action='store_true')

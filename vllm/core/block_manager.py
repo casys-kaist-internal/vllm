@@ -181,12 +181,12 @@ class BlockSpaceManager:
         # logical_blocks = seq.logical_token_blocks
         block_table = self.block_tables[seq.seq_id]
 
-        # prompt iteration 에서 생성된 new token을 위한 공간
-        if len(block_table) < len(seq.logical_token_blocks):
-            # The sequence has a new logical block for prompt run
-            # Allocate a new physical block.
-            block = self.gpu_allocator.allocate()
-            block_table.append(block)
+        # # prompt iteration 에서 생성된 new token을 위한 공간
+        # if len(block_table) < len(seq.logical_token_blocks):
+        #     # The sequence has a new logical block for prompt run
+        #     # Allocate a new physical block.
+        #     block = self.gpu_allocator.allocate()
+        #     block_table.append(block)
 
         # 앞으로 생성될 draft tokens들을 위한 공간
         for _ in range(seq.get_num_additional_blocks(draft_size)):
@@ -251,6 +251,16 @@ class BlockSpaceManager:
         # at least one free block right after the swap-in.
         # NOTE: This should match the logic in can_append_slot().
         num_required_blocks = len(blocks) + num_swapped_seqs
+        return num_free_blocks - num_required_blocks >= self.watermark_blocks
+
+    def can_swap_in_with_draft_size(self, seq_group: SequenceGroup, draft_size: int) -> bool:
+        blocks = self._get_physical_blocks(seq_group)
+        num_swapped_seqs = seq_group.num_seqs(status=SequenceStatus.SWAPPED)
+        num_free_blocks = self.gpu_allocator.get_num_free_blocks()
+        # NOTE: Conservatively, we assume that every sequence will allocate
+        # draft_size free blocks right after the swap-in.
+        # NOTE: This should match the logic in can_append_slot().
+        num_required_blocks = len(blocks) + num_swapped_seqs * draft_size
         return num_free_blocks - num_required_blocks >= self.watermark_blocks
 
     def swap_in(self, seq_group: SequenceGroup) -> Dict[int, int]:

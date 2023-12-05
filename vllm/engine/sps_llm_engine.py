@@ -487,6 +487,7 @@ class SpSLLMEngine:
         for seq_group in seq_groups:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 need_to_decode = seq.get_output_len() - (len(seq.output_tokens) + seq.none_token_cnt)
+                seq.need_to_decode = need_to_decode  # used for _stop_sequences
 
                 for i in range(-need_to_decode, 0):
                     new_token, new_output_text = detokenize_incrementally(
@@ -509,7 +510,7 @@ class SpSLLMEngine:
             sampling_params = seq_group.sampling_params
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 # NOTE(sjchoi): temporary fix
-                need_to_decode = self.sps_config.draft_size
+                need_to_decode = seq.need_to_decode
 
                 # Check if the sequence has generated a stop string.
                 stopped = False
@@ -568,6 +569,7 @@ class SpSLLMEngine:
         if self.target_parallel_config.worker_use_ray:
             all_outputs = ray.get(all_outputs)
 
+        print(method, all_outputs)
         if get_all_outputs:
             return all_outputs
 

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-_LOGGING_INTERVAL_SEC = 5
+_LOGGING_INTERVAL_SEC = 1
 
 
 class LLMEngine:
@@ -392,9 +392,9 @@ class LLMEngine:
             cpu_cache_usage = 0.0
 
         logger.info("Avg prompt throughput: "
-                    f"{avg_prompt_throughput:.1f} tokens/s, "
+                    f"{avg_prompt_throughput:.4f} tokens/s, "
                     "Avg generation throughput: "
-                    f"{avg_generation_throughput:.1f} tokens/s, "
+                    f"{avg_generation_throughput:.4f} tokens/s, "
                     f"Running: {len(self.scheduler.running)} reqs, "
                     f"Swapped: {len(self.scheduler.swapped)} reqs, "
                     f"Pending: {len(self.scheduler.waiting)} reqs, "

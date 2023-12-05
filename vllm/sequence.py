@@ -151,6 +151,7 @@ class Sequence:
         self.output_text = ""
         # NOTE(sjchoi): used for _decode_sequence assertion
         self.none_token_cnt = 0
+        self.need_to_decode = 1
 
         self.logical_token_blocks: List[LogicalTokenBlock] = []
         # Initialize the logical token blocks with the prompt token ids.

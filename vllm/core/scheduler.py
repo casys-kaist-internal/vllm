@@ -57,6 +57,13 @@ class SchedulerOutputs:
         return (not self.scheduled_seq_groups and not self.blocks_to_swap_in
                 and not self.blocks_to_swap_out and not self.blocks_to_copy)
 
+    def __repr__(self) -> str:
+        return (f'SchedulerOutputs(prompt_run={self.prompt_run}, '
+                f'num_batched_tokens={self.num_batched_tokens}, '
+                f'blocks_to_swap_in={self.blocks_to_swap_in}, '
+                f'blocks_to_swap_out={self.blocks_to_swap_out}, '
+                f'blocks_to_copy={self.blocks_to_copy}) ')
+
 
 class Scheduler:
 
@@ -311,7 +318,7 @@ class Scheduler:
                     break
 
                 # If the sequence group cannot be allocated, stop.
-                if not self.block_manager.can_allocate(seq_group):
+                if not self.block_manager.can_sps_allocate(seq_group, 1):
                     break
 
                 # If the number of batched tokens exceeds the limit, stop.
@@ -331,7 +338,7 @@ class Scheduler:
                     break
 
                 seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
+                self._sps_allocate(seq_group, 1)
                 self.running.append(seq_group)
                 num_batched_tokens += num_prompt_tokens
                 scheduled.append(seq_group)
@@ -385,7 +392,7 @@ class Scheduler:
             if seq_group in preempted:
                 break
             # If the sequence group cannot be swapped in, stop.
-            if not self.block_manager.can_swap_in(seq_group):
+            if not self.block_manager.can_swap_in_with_draft_size(seq_group, draft_size):
                 break
 
             # The total number of sequences in the RUNNING state should not

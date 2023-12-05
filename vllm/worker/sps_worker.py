@@ -48,9 +48,15 @@ class SpSWorker:
         # self.init_cache_engine().
         self.cache_config = None
         self.block_size = None
-        self.cache_engine = None
-        self.cache_events = None
-        self.gpu_cache = None
+
+        self.target_cache_engine = None
+        self.draft_cache_engine = None
+
+        self.target_cache_events = None
+        self.draft_cache_events = None
+
+        self.target_gpu_cache = None
+        self.draft_gpu_cache = None
 
         self.target_parallel_state = ParallelState()
         self.draft_parallel_state = ParallelState()
@@ -480,17 +486,17 @@ class SpSWorker:
         # Issue cache operations.
         issued_cache_op = False
         if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.target_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
         if blocks_to_swap_out:
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.target_cache_engine.swap_out(blocks_to_swap_out)
             issued_cache_op = True
         if blocks_to_copy:
-            self.cache_engine.copy(blocks_to_copy)
+            self.target_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
 
         if issued_cache_op:
-            cache_events = self.cache_events
+            cache_events = self.target_cache_events
         else:
             cache_events = None
 
@@ -526,17 +532,17 @@ class SpSWorker:
         # Issue cache operations.
         issued_cache_op = False
         if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
         if blocks_to_swap_out:
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.draft_cache_engine.swap_out(blocks_to_swap_out)
             issued_cache_op = True
         if blocks_to_copy:
-            self.cache_engine.copy(blocks_to_copy)
+            self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
 
         if issued_cache_op:
-            cache_events = self.cache_events
+            cache_events = self.draft_cache_events
         else:
             cache_events = None
 
@@ -555,7 +561,7 @@ class SpSWorker:
         output = self.draft_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.target_gpu_cache,
+            kv_caches=self.draft_gpu_cache,
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
@@ -572,17 +578,17 @@ class SpSWorker:
         # Issue cache operations.
         issued_cache_op = False
         if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
         if blocks_to_swap_out:
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.draft_cache_engine.swap_out(blocks_to_swap_out)
             issued_cache_op = True
         if blocks_to_copy:
-            self.cache_engine.copy(blocks_to_copy)
+            self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
 
         if issued_cache_op:
-            cache_events = self.cache_events
+            cache_events = self.draft_cache_events
         else:
             cache_events = None
 
@@ -605,6 +611,9 @@ class SpSWorker:
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
+
+        print(output)
+
         return output
 
     @torch.inference_mode()
@@ -618,17 +627,17 @@ class SpSWorker:
         # Issue cache operations.
         issued_cache_op = False
         if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.target_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
         if blocks_to_swap_out:
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.target_cache_engine.swap_out(blocks_to_swap_out)
             issued_cache_op = True
         if blocks_to_copy:
-            self.cache_engine.copy(blocks_to_copy)
+            self.target_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
 
         if issued_cache_op:
-            cache_events = self.cache_events
+            cache_events = self.target_cache_events
         else:
             cache_events = None
 
