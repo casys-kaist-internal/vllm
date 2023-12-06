@@ -6,8 +6,6 @@
 
 import torch
 
-
-
 class ParallelState:
     """state for parallelism """
 
@@ -18,8 +16,6 @@ class ParallelState:
         self.tensor_model_parallel_group = None
         # Inter-layer model parallel group that the current rank belongs to.
         self.pipeline_model_parallel_group = None
-        # Model parallel group (both intra- and pipeline) that the current rank belongs to.
-        self.model_parallel_group = None
         # A list of global ranks for each pipeline group to ease calculation of the
         # source rank when broadcasting from the first or last pipeline stage.
         self.pipeline_global_ranks = None
@@ -69,7 +65,6 @@ class ParallelState:
         rank = torch.distributed.get_rank()
 
         # Build the tensor model-parallel groups.
-        
         assert self.tensor_model_parallel_group is None, (
             "tensor model parallel group is already initialized")
         for i in range(num_tensor_model_parallel_groups):
