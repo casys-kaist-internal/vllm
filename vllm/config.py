@@ -161,6 +161,12 @@ class ModelConfig:
                 "must be divisible by pipeline parallel size "
                 f"({pipeline_parallel_size}).")
 
+    def get_sliding_window(self) -> Optional[int]:
+        return getattr(self.hf_config, "sliding_window", None)
+
+    def get_vocab_size(self) -> int:
+        return self.hf_config.vocab_size
+
     def get_hidden_size(self) -> int:
         return self.hf_config.hidden_size
 
@@ -458,6 +464,7 @@ def _get_and_verify_max_len(
             "outputs or CUDA errors. Make sure the value is correct and "
             "within the model context size.")
     return int(max_model_len)
+
 
 class SpSConfig:
     def __init__(self, draft_size: int) -> None:

@@ -6,6 +6,7 @@
 
 import torch
 
+
 class ParallelState:
     """state for parallelism """
 
@@ -59,9 +60,9 @@ class ParallelState:
                 f"pipeline_model_parallel_size ({pipeline_model_parallel_size})")
 
         num_tensor_model_parallel_groups: int = (world_size //
-                                                tensor_model_parallel_size)
+                                                 tensor_model_parallel_size)
         num_pipeline_model_parallel_groups: int = (world_size //
-                                                pipeline_model_parallel_size)
+                                                   pipeline_model_parallel_size)
         rank = torch.distributed.get_rank()
 
         # Build the tensor model-parallel groups.
@@ -69,7 +70,7 @@ class ParallelState:
             "tensor model parallel group is already initialized")
         for i in range(num_tensor_model_parallel_groups):
             ranks = range(i * tensor_model_parallel_size,
-                        (i + 1) * tensor_model_parallel_size)
+                          (i + 1) * tensor_model_parallel_size)
             group = torch.distributed.new_group(ranks)
             if rank in ranks:
                 self.tensor_model_parallel_group = group
@@ -84,12 +85,10 @@ class ParallelState:
                 self.pipeline_model_parallel_group = group
                 self.pipeline_global_ranks = ranks
 
-
     def model_parallel_is_initialized(self):
         """Check if tensor and pipeline parallel groups are initialized."""
         return (self.tensor_model_parallel_group is not None
                 and self.pipeline_model_parallel_group is not None)
-
 
     def get_tensor_model_parallel_group(self):
         """Get the tensor model parallel group the caller rank belongs to."""
@@ -97,36 +96,30 @@ class ParallelState:
             "tenosr model parallel group is not initialized")
         return self.tensor_model_parallel_group
 
-
     def get_pipeline_model_parallel_group(self):
         """Get the pipeline model parallel group the caller rank belongs to."""
         assert self.pipeline_model_parallel_group is not None, (
             "pipeline model parallel group is not initialized")
         return self.pipeline_model_parallel_group
 
-
     def get_tensor_model_parallel_world_size(self):
         """Return world size for the tensor model parallel group."""
         return torch.distributed.get_world_size(
             group=self.get_tensor_model_parallel_group())
-
 
     def get_pipeline_model_parallel_world_size(self):
         """Return world size for the pipeline model parallel group."""
         return torch.distributed.get_world_size(
             group=self.get_pipeline_model_parallel_group())
 
-
     def get_tensor_model_parallel_rank(self):
         """Return my rank for the tensor model parallel group."""
         return torch.distributed.get_rank(group=self.get_tensor_model_parallel_group())
-
 
     def get_pipeline_model_parallel_rank(self):
         """Return my rank for the pipeline model parallel group."""
         return torch.distributed.get_rank(
             group=self.get_pipeline_model_parallel_group())
-
 
     def get_tensor_model_parallel_src_rank(self):
         """Calculate the global rank corresponding to the first local rank
@@ -135,14 +128,12 @@ class ParallelState:
         local_world_size = self.get_tensor_model_parallel_world_size()
         return (global_rank // local_world_size) * local_world_size
 
-
     def get_pipeline_model_parallel_first_rank(self):
         """Return the global rank of the first process in the pipeline for the
         current tensor parallel group"""
         assert self.pipeline_global_ranks is not None, (
             "Pipeline parallel group is not initialized")
         return self.pipeline_global_ranks[0]
-
 
     def get_pipeline_model_parallel_last_rank(self):
         """Return the global rank of the last process in the pipeline for the
@@ -152,7 +143,6 @@ class ParallelState:
         last_rank_local = self.get_pipeline_model_parallel_world_size() - 1
         return self.pipeline_global_ranks[last_rank_local]
 
-
     def get_pipeline_model_parallel_next_rank(self):
         """Return the global rank that follows the caller in the pipeline"""
         assert self.pipeline_global_ranks is not None, (
@@ -160,7 +150,6 @@ class ParallelState:
         rank_in_pipeline = self.get_pipeline_model_parallel_rank()
         world_size = self.get_pipeline_model_parallel_world_size()
         return self.pipeline_global_ranks[(rank_in_pipeline + 1) % world_size]
-
 
     def get_pipeline_model_parallel_prev_rank(self):
         """Return the global rank that preceeds the caller in the pipeline"""
@@ -170,7 +159,6 @@ class ParallelState:
         world_size = self.get_pipeline_model_parallel_world_size()
         return self.pipeline_global_ranks[(rank_in_pipeline - 1) % world_size]
 
-
     def destroy_model_parallel(self):
         """Set the groups to none."""
         self.tensor_model_parallel_group = None
@@ -178,7 +166,7 @@ class ParallelState:
         self.pipeline_global_ranks = None
 
 
-## original file ## 
+## original file ##
 # # Tensor model parallel group that the current rank belongs to.
 # _TENSOR_MODEL_PARALLEL_GROUP = None
 # # Pipeline model parallel group that the current rank belongs to.

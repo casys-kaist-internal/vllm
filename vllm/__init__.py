@@ -9,7 +9,7 @@ from vllm.entrypoints.sps_llm import SpSLLM
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.sampling_params import SamplingParams
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 __all__ = [
     "LLM",
