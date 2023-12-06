@@ -93,10 +93,10 @@ class SequenceData:
         if not self.output_token_ids:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
-    
+
     def get_token_id_from_index(self, idx) -> int:
         return self.output_token_ids[idx]
-    
+
     # draft token related methods
     def append_draft_token_id(self, token_id: int, logprob: float) -> None:
         self.draft_token_ids.append(token_id)
@@ -248,7 +248,7 @@ class Sequence:
 
     def get_last_token_id(self) -> int:
         return self.data.get_last_token_id()
-    
+
     def get_token_id_from_index(self, idx) -> int:
         return self.data.get_token_id_from_index(idx)
 
@@ -284,7 +284,7 @@ class Sequence:
         new_seq = copy.deepcopy(self)
         new_seq.seq_id = new_seq_id
         return new_seq
-    
+
     def get_num_additional_blocks(self, draft_size) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
@@ -463,7 +463,7 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
-        probs: torch.Tensor # for sps
+        probs: torch.Tensor  # for sps
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token

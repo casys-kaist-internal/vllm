@@ -201,9 +201,10 @@ class EngineArgs:
                                    self.dtype, self.seed, self.revision,
                                    self.tokenizer_revision, self.max_model_len,
                                    self.quantization)
-        cache_config = CacheConfig(
-            self.block_size, self.gpu_memory_utilization, self.swap_space,
-            getattr(model_config.hf_config, 'sliding_window', None))
+        cache_config = CacheConfig(self.block_size,
+                                   self.gpu_memory_utilization,
+                                   self.swap_space,
+                                   model_config.get_sliding_window())
         parallel_config = ParallelConfig(self.pipeline_parallel_size,
                                          self.tensor_parallel_size,
                                          self.worker_use_ray,
@@ -239,7 +240,14 @@ class AsyncEngineArgs(EngineArgs):
                             help='max number of prompt characters or prompt '
                             'ID numbers being printed in log. '
                             'Default: unlimited.')
+        parser.add_argument('--max-log-len',
+                            type=int,
+                            default=None,
+                            help='max number of prompt characters or prompt '
+                            'ID numbers being printed in log. '
+                            'Default: unlimited.')
         return parser
+
 
 @dataclass
 class SpSEngineArgs:
@@ -462,31 +470,31 @@ class SpSEngineArgs:
         self,
     ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, ParallelConfig, SchedulerConfig, SpSConfig]:
         target_model_config = ModelConfig(self.target_model, self.tokenizer,
-                                   self.tokenizer_mode, self.trust_remote_code,
-                                   self.target_download_dir, self.load_format,
-                                   self.dtype, self.seed, self.revision,
-                                   self.tokenizer_revision, self.max_model_len,
-                                   self.quantization)
+                                          self.tokenizer_mode, self.trust_remote_code,
+                                          self.target_download_dir, self.load_format,
+                                          self.dtype, self.seed, self.revision,
+                                          self.tokenizer_revision, self.max_model_len,
+                                          self.quantization)
         draft_model_config = ModelConfig(self.draft_model, self.tokenizer,
-                                   self.tokenizer_mode, self.trust_remote_code,
-                                   self.draft_download_dir, self.load_format,
-                                   self.dtype, self.seed, self.revision,
-                                   self.tokenizer_revision, self.max_model_len,
-                                   self.quantization)
+                                         self.tokenizer_mode, self.trust_remote_code,
+                                         self.draft_download_dir, self.load_format,
+                                         self.dtype, self.seed, self.revision,
+                                         self.tokenizer_revision, self.max_model_len,
+                                         self.quantization)
         cache_config = CacheConfig(
             self.block_size, self.gpu_memory_utilization, self.swap_space,
             getattr(target_model_config.hf_config, 'sliding_window', None))
         target_parallel_config = ParallelConfig(self.target_pipeline_parallel_size,
-                                         self.target_tensor_parallel_size,
-                                         self.worker_use_ray,
-                                         self.max_parallel_loading_workers)
+                                                self.target_tensor_parallel_size,
+                                                self.worker_use_ray,
+                                                self.max_parallel_loading_workers)
         draft_parallel_config = ParallelConfig(self.draft_pipeline_parallel_size,
-                                         self.draft_tensor_parallel_size,
-                                         self.worker_use_ray,
-                                         self.max_parallel_loading_workers)
+                                               self.draft_tensor_parallel_size,
+                                               self.worker_use_ray,
+                                               self.max_parallel_loading_workers)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.max_paddings)
         sps_config = SpSConfig(self.draft_size)
-        return target_model_config, draft_model_config, cache_config,target_parallel_config, draft_parallel_config, scheduler_config, sps_config
+        return target_model_config, draft_model_config, cache_config, target_parallel_config, draft_parallel_config, scheduler_config, sps_config

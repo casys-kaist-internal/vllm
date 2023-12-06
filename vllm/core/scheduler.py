@@ -1,16 +1,13 @@
 import enum
 import time
-import torch
-
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.block_manager import AllocStatus, BlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
-from vllm.sequence import (SamplerOutput, Sequence, SequenceData, SequenceGroup,
-                           SequenceGroupMetadata, SequenceStatus,
-                            SequenceOutput, SequenceGroupOutput)
+from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
+                           SequenceGroupMetadata, SequenceStatus)
 
 from vllm.model_executor.layers.sampler import modified_rejection_sample
 
@@ -260,11 +257,10 @@ class Scheduler:
                         self.scheduler_config.max_num_seqs):
                     break
 
-                seq_group = self.swapped.pop(0)
-                self._swap_in(seq_group, blocks_to_swap_in)
-                self._append_slot(seq_group, blocks_to_copy)
-                num_curr_seqs += num_new_seqs
-                self.running.append(seq_group)
+            seq_group = self.swapped.pop(0)
+            self._swap_in(seq_group, blocks_to_swap_in)
+            self._append_slot(seq_group, blocks_to_copy)
+            self.running.append(seq_group)
 
         # Each sequence in the generation phase only takes one token slot.
         # Therefore, the number of batched tokens is equal to the number of
@@ -309,7 +305,7 @@ class Scheduler:
             )
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
-    
+
     def _sps_schedule(self, draft_size) -> SchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
         blocks_to_swap_in: Dict[int, int] = {}
@@ -432,30 +428,31 @@ class Scheduler:
 
         # Swap in the sequence groups in the SWAPPED state if possible.
         self.swapped = self.policy.sort_by_priority(now, self.swapped)
-        while self.swapped and not blocks_to_swap_out:
-            seq_group = self.swapped[0]
-            # If the sequence group has been preempted in this step, stop.
-            if seq_group in preempted:
-                break
-            # If the sequence group cannot be swapped in, stop.
-            if not self.block_manager.can_swap_in(seq_group):
-                break
+        if not preempted:
+            num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
+                                for seq_group in self.running)
 
-            # The total number of sequences in the RUNNING state should not
-            # exceed the maximum number of sequences.
-            num_new_seqs = seq_group.num_seqs(status=SequenceStatus.SWAPPED)
-            num_curr_seqs = sum(
-                seq_group.num_seqs(status=SequenceStatus.RUNNING)
-                for seq_group in self.running)
-            if (num_curr_seqs + num_new_seqs >
-                    self.scheduler_config.max_num_seqs):
-                break
+            while self.swapped:
+                seq_group = self.swapped[0]
+                # If the sequence group cannot be swapped in, stop.
+                if not self.block_manager.can_swap_in(seq_group):
+                    break
+
+                # The total number of sequences in the RUNNING state should not
+                # exceed the maximum number of sequences.
+                num_new_seqs = seq_group.get_max_num_running_seqs()
+                if (num_curr_seqs + num_new_seqs >
+                        self.scheduler_config.max_num_seqs):
+                    break
 
             seq_group = self.swapped.pop(0)
             self._swap_in(seq_group, blocks_to_swap_in)
-            self._append_slots(seq_group, draft_size, blocks_to_copy)
+            self._append_slot(seq_group, blocks_to_copy)
             self.running.append(seq_group)
 
+        # Each sequence in the generation phase only takes one token slot.
+        # Therefore, the number of batched tokens is equal to the number of
+        # sequences in the RUNNING state.
         num_batched_tokens = sum(
             seq_group.num_seqs(status=SequenceStatus.RUNNING)
             for seq_group in self.running)
@@ -483,7 +480,7 @@ class Scheduler:
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
-            seq_data: Dict[int, List[SequenceData]] = {}
+            seq_data: Dict[int, SequenceData] = {}
             block_tables: Dict[int, List[int]] = {}
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
@@ -502,20 +499,22 @@ class Scheduler:
 
     def draft_update(
         self,
-        sample_output : SamplerOutput, # List[SequenceGroupOutput]
-        scheduler_output : SchedulerOutputs,
+        sample_output: SamplerOutput,  # List[SequenceGroupOutput]
+        scheduler_output: SchedulerOutputs,
     ) -> List[SequenceGroup]:
         scheduled: List[SequenceGroup] = []
-        draft_seq_output : Dict[int, SequenceOutput] # 기존 seq_outputs 역할
+        draft_seq_output: Dict[int, SequenceOutput]  # 기존 seq_outputs 역할
 
-        scheduler_seq_groups = scheduler_output.scheduled_seq_groups ## List[SequenceGroup]
-        for seq_group, output in zip(scheduler_seq_groups, sample_output): # SequenceGroup, SequenceGroupOutput
+        # List[SequenceGroup]
+        scheduler_seq_groups = scheduler_output.scheduled_seq_groups
+        # SequenceGroup, SequenceGroupOutput
+        for seq_group, output in zip(scheduler_seq_groups, sample_output):
             if seq_group in self.running:
                 for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                        scheduled.append(seq_group)
-                        draft_seq_output[seq.seq_id] = output[seq.seq_id] # SequenceOutput
-                        break
-        
+                    scheduled.append(seq_group)
+                    # SequenceOutput
+                    draft_seq_output[seq.seq_id] = output[seq.seq_id]
+                    break
 
         # Update the scheduled sequences and free blocks.
         for seq_group in scheduled:
@@ -538,23 +537,25 @@ class Scheduler:
                 seq.append_draft_token_id(output.output_token, output.logprobs)
 
         return scheduled, draft_seq_output
-    
+
     def target_update(
         self,
         draft_output_list: List[Dict[int, SequenceOutput]],
-        target_output: SamplerOutput, #List[SequenceGroupOutput]
-        scheduler_output : SchedulerOutputs,
+        target_output: SamplerOutput,  # List[SequenceGroupOutput]
+        scheduler_output: SchedulerOutputs,
     ) -> List[SequenceGroup]:
         scheduled: List[SequenceGroup] = []
-        outputs : Dict[int, SequenceOutput] # 기존 seq_outputs 역할
+        outputs: Dict[int, SequenceOutput]  # 기존 seq_outputs 역할
 
-        scheduler_seq_groups = scheduler_output.scheduled_seq_groups ## List[SequenceGroup]
-        for seq_group, output in zip(scheduler_seq_groups, target_output): # SequenceGroup, SequenceGroupOutput
+        # List[SequenceGroup]
+        scheduler_seq_groups = scheduler_output.scheduled_seq_groups
+        # SequenceGroup, SequenceGroupOutput
+        for seq_group, output in zip(scheduler_seq_groups, target_output):
             if seq_group in self.running:
                 for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                        scheduled.append(seq_group)
-                        outputs[seq.seq_id] = output[seq.seq_id] # SequenceOutput
-                        break
+                    scheduled.append(seq_group)
+                    outputs[seq.seq_id] = output[seq.seq_id]  # SequenceOutput
+                    break
 
         # Verify and rollback
         for seq_group in scheduled:
@@ -589,9 +590,6 @@ class Scheduler:
                 #     # Need to run draft model to cache kv for the additional token sampled by target model.
 
         return scheduled
-
-    def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
-        self.block_manager.fork(parent_seq, child_seq)
 
     def free_seq(self, seq: Sequence) -> None:
         self.block_manager.free(seq)

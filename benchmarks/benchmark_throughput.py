@@ -3,7 +3,7 @@ import argparse
 import json
 import random
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Optional, Tuple
 
 import torch
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
@@ -68,7 +68,6 @@ def run_vllm(
     n: int,
     use_beam_search: bool,
     trust_remote_code: bool,
-    dtype: str,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -78,7 +77,6 @@ def run_vllm(
         tensor_parallel_size=tensor_parallel_size,
         seed=seed,
         trust_remote_code=trust_remote_code,
-        dtype=dtype,
     )
 
     # Add the requests to the engine.
@@ -198,10 +196,9 @@ def main(args: argparse.Namespace):
                                    args.output_len)
 
     if args.backend == "vllm":
-        elapsed_time = run_vllm(requests, args.model, args.tokenizer,
-                                args.quantization, args.tensor_parallel_size,
-                                args.seed, args.n, args.use_beam_search,
-                                args.trust_remote_code, args.dtype)
+        elapsed_time = run_vllm(
+            requests, args.model, args.tokenizer, args.tensor_parallel_size,
+            args.seed, args.n, args.use_beam_search, args.trust_remote_code)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -261,15 +258,6 @@ if __name__ == "__main__":
     parser.add_argument('--trust-remote-code',
                         action='store_true',
                         help='trust remote code from huggingface')
-    parser.add_argument(
-        '--dtype',
-        type=str,
-        default='auto',
-        choices=['auto', 'half', 'float16', 'bfloat16', 'float', 'float32'],
-        help='data type for model weights and activations. '
-        'The "auto" option will use FP16 precision '
-        'for FP32 and FP16 models, and BF16 precision '
-        'for BF16 models.')
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model

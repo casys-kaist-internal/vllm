@@ -7,7 +7,8 @@ from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
 from vllm.core.scheduler import Scheduler, SchedulerOutputs
 from vllm.engine.arg_utils import EngineArgs
-from vllm.engine.ray_utils import RayWorker, initialize_cluster, ray
+from vllm.engine.metrics import record_metrics
+from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
@@ -160,14 +161,18 @@ class LLMEngine:
         for bundle in placement_group.bundle_specs:
             if not bundle.get("GPU", 0):
                 continue
+            if self.parallel_config.tensor_parallel_size == 1:
+                num_gpus = self.cache_config.gpu_memory_utilization
+            else:
+                num_gpus = 1
             worker = ray.remote(
                 num_cpus=0,
-                num_gpus=1,
+                num_gpus=num_gpus,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=placement_group,
                     placement_group_capture_child_tasks=True),
                 **ray_remote_kwargs,
-            )(RayWorker).remote(self.model_config.trust_remote_code)
+            )(RayWorkerVllm).remote(self.model_config.trust_remote_code)
             self.workers.append(worker)
 
         # Initialize torch distributed process group for the workers.
@@ -451,7 +456,7 @@ class LLMEngine:
         all_finished_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                               reverse=True)
+            reverse=True)
         for seq, parent, is_new in all_finished_seqs[:beam_width]:
             if is_new:
                 # A newly generated child sequence finishes and has a high
@@ -479,7 +484,7 @@ class LLMEngine:
         running_child_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                                reverse=True)
+            reverse=True)
 
         # Check if we can stop the beam search.
         if len(running_child_seqs) == 0:
@@ -593,8 +598,8 @@ class LLMEngine:
         else:
             self.num_generation_tokens.append((now, num_batched_tokens))
 
-        elapsed_time = now - self.last_logging_time
-        if elapsed_time < _LOGGING_INTERVAL_SEC:
+        should_log = now - self.last_logging_time >= _LOGGING_INTERVAL_SEC
+        if not should_log:
             return
 
         # Discard the old stats.
@@ -633,6 +638,16 @@ class LLMEngine:
         else:
             cpu_cache_usage = 0.0
 
+        record_metrics(
+            avg_prompt_throughput=avg_prompt_throughput,
+            avg_generation_throughput=avg_generation_throughput,
+            scheduler_running=len(self.scheduler.running),
+            scheduler_swapped=len(self.scheduler.swapped),
+            scheduler_waiting=len(self.scheduler.waiting),
+            gpu_cache_usage=gpu_cache_usage,
+            cpu_cache_usage=cpu_cache_usage,
+        )
+
         logger.info("Avg prompt throughput: "
                     f"{avg_prompt_throughput:.1f} tokens/s, "
                     "Avg generation throughput: "
@@ -655,7 +670,7 @@ class LLMEngine:
              read_offset=seq.read_offset,
              skip_special_tokens=prms.skip_special_tokens,
              spaces_between_special_tokens=prms.spaces_between_special_tokens,
-         )
+        )
         if seq.tokens is None:
             seq.tokens = new_tokens
         else:
