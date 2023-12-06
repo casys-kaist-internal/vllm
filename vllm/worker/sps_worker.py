@@ -8,8 +8,7 @@ import torch.distributed
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
 from vllm.model_executor import get_model, InputMetadata, set_random_seed
-from vllm.model_executor.parallel_utils.parallel_state import (
-    initialize_model_parallel, ParallelState)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
 from vllm.worker.cache_engine import CacheEngine
@@ -71,19 +70,20 @@ class SpSWorker:
         _check_if_gpu_supports_dtype(self.target_model_config.dtype)
 
         # Initialize the distributed environment.
-        _init_distributed_environment(self.target_parallel_config, self.rank,
-                                      self.distributed_init_method)
+        self._init_distributed_environment()
 
         # Initialize the model.
-        set_random_seed(self.target_model_config.seed,
-                        self.target_parallel_state)
-        
+        set_random_seed(self.target_model_config.seed)
 
     def load_model(self):
         self.target_model = get_model(
             self.target_model_config, self.target_parallel_state)
         self.draft_model = get_model(
             self.draft_model_config, self.draft_parallel_state)
+
+        # NOTE(sjchoi): Target and draft should have same vocab size for
+        # speculative sampling to work.
+        assert self.target_model.config.vocab_size == self.draft_model.config.vocab_size
 
     @torch.inference_mode()
     def profile_num_available_blocks(
@@ -99,15 +99,10 @@ class SpSWorker:
 
         # Profile memory usage with max_num_sequences sequences and the total
         # number of tokens equal to max_num_batched_tokens.
-        
-        # NOTE(sjchoi): Target and draft should have same vocab size for
-        # speculative sampling to work.
-        assert self.target_model.config.vocab_size == self.draft_model.config.vocab_size
-
 
         # Enable top-k sampling to reflect the accurate memory usage.
-        
-        sampling_params = SamplingParams(top_p=0.99, top_k= -1) # change to 1
+        vocab_size = self.target_model.config.vocab_size
+        sampling_params = SamplingParams(top_p=0.99, top_k=vocab_size - 1)
         max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
         max_num_seqs = self.scheduler_config.max_num_seqs
         seqs = []
@@ -159,7 +154,6 @@ class SpSWorker:
             block_size, self.target_model_config, self.target_parallel_config)
         draft_cache_block_size = CacheEngine.get_cache_block_size(
             block_size, self.draft_model_config, self.draft_parallel_config)
-
         num_gpu_blocks = int(
             (total_gpu_memory * gpu_memory_utilization - peak_memory) //
             (target_cache_block_size + draft_cache_block_size))
@@ -171,8 +165,7 @@ class SpSWorker:
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
-        set_random_seed(self.target_model_config.seed,
-                        self.target_parallel_state)
+        set_random_seed(self.target_model_config.seed)
         return num_gpu_blocks, num_cpu_blocks
 
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
@@ -374,7 +367,7 @@ class SpSWorker:
             sliding_window=self.sliding_window,
         )
         return tokens_tensor, positions_tensor, input_metadata
-    
+
     def _prepare_draft_inputs(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -558,7 +551,7 @@ class SpSWorker:
             sliding_window=self.sliding_window,
         )
         return tokens_tensor, positions_tensor, input_metadata
-    
+
     def _prepare_target_inputs(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -675,7 +668,7 @@ class SpSWorker:
 
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq,
                                              len(block_table))
-                
+
                 # Compoute context length
                 for i in range(len(draft_tokens)):
                     context_lens.append(context_len + i)
@@ -687,7 +680,6 @@ class SpSWorker:
                     block_offset = i % self.block_size
                     slot = block_number * self.block_size + block_offset
                     slot_mapping.append(slot)
-
 
                 if self.sliding_window is not None:
                     sliding_window_blocks = (self.sliding_window //
@@ -795,7 +787,7 @@ class SpSWorker:
             cache_events=cache_events,
         )
         return output
-    
+
     @torch.inference_mode()
     def execute_target_model_for_prompt(
         self,
@@ -876,13 +868,12 @@ class SpSWorker:
         output = self.draft_model(
             input_ids=input_tokens,
             positions=input_positions,
-            kv_caches=self.target_gpu_cache, ## is this right??
+            kv_caches=self.target_gpu_cache,  # is this right??
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
         return output
-    
-    
+
     @torch.inference_mode()
     def execute_draft_model(
         self,
@@ -925,7 +916,7 @@ class SpSWorker:
             cache_events=cache_events,
         )
         return output
-    
+
     @torch.inference_mode()
     def execute_target_model(
         self,
@@ -969,37 +960,35 @@ class SpSWorker:
         )
         return output
 
+    def _init_distributed_environment(
+        self
+    ) -> None:
+        """Initialize the distributed environment."""
+        if torch.distributed.is_initialized():
+            torch_world_size = torch.distributed.get_world_size()
+            if torch_world_size != self.target_parallel_config.world_size:
+                raise RuntimeError(
+                    "torch.distributed is already initialized but the torch world "
+                    "size does not match parallel_config.world_size "
+                    f"({torch_world_size} vs. {self.target_parallel_config.world_size}).")
+        elif not self.distributed_init_method:
+            raise ValueError(
+                "distributed_init_method must be set if torch.distributed "
+                "is not already initialized")
+        else:
+            torch.distributed.init_process_group(
+                backend="nccl",
+                world_size=self.target_parallel_config.world_size,
+                rank=self.rank,
+                init_method=self.distributed_init_method,
+            )
 
-
-def _init_distributed_environment(
-    parallel_config: ParallelConfig,
-    rank: int,
-    distributed_init_method: Optional[str] = None,
-) -> None:
-    """Initialize the distributed environment."""
-    if torch.distributed.is_initialized():
-        torch_world_size = torch.distributed.get_world_size()
-        if torch_world_size != parallel_config.world_size:
-            raise RuntimeError(
-                "torch.distributed is already initialized but the torch world "
-                "size does not match parallel_config.world_size "
-                f"({torch_world_size} vs. {parallel_config.world_size}).")
-    elif not distributed_init_method:
-        raise ValueError(
-            "distributed_init_method must be set if torch.distributed "
-            "is not already initialized")
-    else:
-        torch.distributed.init_process_group(
-            backend="nccl",
-            world_size=parallel_config.world_size,
-            rank=rank,
-            init_method=distributed_init_method,
-        )
-
-    # A small all_reduce for warmup.
-    torch.distributed.all_reduce(torch.zeros(1).cuda())
-    initialize_model_parallel(parallel_config.tensor_parallel_size,
-                              parallel_config.pipeline_parallel_size)
+        # A small all_reduce for warmup.
+        torch.distributed.all_reduce(torch.zeros(1).cuda())
+        self.target_parallel_state.initialize_model_parallel(self.target_parallel_config.tensor_parallel_size,
+                                                             self.target_parallel_config.pipeline_parallel_size)
+        self.draft_parallel_state.initialize_model_parallel(self.draft_parallel_config.tensor_parallel_size,
+                                                            self.draft_parallel_config.pipeline_parallel_size)
 
 
 def _pad_to_alignment(x: List[int], multiple_of: int, pad: int) -> List[int]:

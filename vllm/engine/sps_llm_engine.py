@@ -112,6 +112,8 @@ class SpSLLMEngine:
             revision=target_model_config.revision)
         self.seq_counter = Counter()
 
+        assert self.target_parallel_config.worker_use_ray == self.draft_parallel_config.worker_use_ray
+
         # Create the parallel GPU workers.
         if self.target_parallel_config.worker_use_ray:
             self._init_workers_ray(placement_group)
@@ -163,8 +165,7 @@ class SpSLLMEngine:
         self._run_workers(
             "load_model",
             get_all_outputs=True,
-            max_concurrent_workers=self.target_parallel_config. ##  target, draft 분리 필요??
-            max_parallel_loading_workers,
+            max_concurrent_workers=self.target_parallel_config.max_parallel_loading_workers,
         )
 
     def _init_workers_ray(self, placement_group: "PlacementGroup",
@@ -216,8 +217,7 @@ class SpSLLMEngine:
         self._run_workers(
             "load_model",
             get_all_outputs=True,
-            max_concurrent_workers=self.target_parallel_config. 
-            max_parallel_loading_workers,
+            max_concurrent_workers=self.target_parallel_config.max_parallel_loading_workers,
         )
 
     def _verify_args(self) -> None:
@@ -308,7 +308,7 @@ class SpSLLMEngine:
         # Create the sequences.
         block_size = self.cache_config.block_size
         seq_id = next(self.seq_counter)
-        seq = Sequence(seq_id, prompt, prompt_token_ids, block_size)
+        seq = Sequence(seq_id, prompt, prompt_token_ids, block_size, self.sps_config.draft_size)
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
@@ -341,7 +341,6 @@ class SpSLLMEngine:
         """Returns True if there are unfinished requests."""
         return self.scheduler.has_unfinished_seqs()
 
-## 여기 부터 수정 필요 ## 
     def _schedule(
         self
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs,
