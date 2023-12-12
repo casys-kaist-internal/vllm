@@ -1,28 +1,25 @@
 import torch
 
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size,
-    get_tensor_model_parallel_group,
-)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 
 
-def tensor_model_parallel_all_reduce(input_):
+def tensor_model_parallel_all_reduce(parallel_state: ParallelState, input_):
     """All-reduce the input tensor across model parallel group.
 
     NOTE: This operation is applied in-place on the input tensor.
     """
     # Bypass the function if we are using only 1 GPU.
-    if get_tensor_model_parallel_world_size() == 1:
+    if parallel_state.get_tensor_model_parallel_world_size() == 1:
         return input_
     # All-reduce.
     torch.distributed.all_reduce(input_,
-                                 group=get_tensor_model_parallel_group())
+                                 group=parallel_state.get_tensor_model_parallel_group())
     return input_
 
 
-def tensor_model_parallel_all_gather(input_, dim=-1):
+def tensor_model_parallel_all_gather(parallel_state: ParallelState, input_, dim=-1):
     """All-gather the input tensor across model parallel group."""
-    world_size = get_tensor_model_parallel_world_size()
+    world_size = parallel_state.get_tensor_model_parallel_world_size()
     # Bypass the function if we are using only 1 GPU.
     if world_size == 1:
         return input_
@@ -38,7 +35,7 @@ def tensor_model_parallel_all_gather(input_, dim=-1):
                                 device=input_.device)
     # All-gather.
     torch.distributed.all_gather_into_tensor(
-        output_tensor, input_, group=get_tensor_model_parallel_group())
+        output_tensor, input_, group=parallel_state.get_tensor_model_parallel_group())
     # Reshape
     output_tensor = output_tensor.movedim(0, dim)
     output_tensor = output_tensor.reshape(input_size[:dim] +

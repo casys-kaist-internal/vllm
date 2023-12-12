@@ -60,8 +60,8 @@ class SpSLLM:
     def __init__(
         self,
         target_model: str,
-        draft_model : str,
-        draft_size : int,
+        draft_model: str,
+        draft_size: int,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,

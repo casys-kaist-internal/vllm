@@ -34,8 +34,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -61,6 +60,7 @@ class OPTAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         embed_dim: int,
         num_heads: int,
         bias: bool = True,
@@ -69,7 +69,7 @@ class OPTAttention(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         total_num_heads = num_heads
         assert num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
@@ -77,6 +77,7 @@ class OPTAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
 
         self.qkv_proj = QKVParallelLinear(
+            parallel_state,
             embed_dim,
             self.head_dim,
             total_num_heads,
@@ -84,6 +85,7 @@ class OPTAttention(nn.Module):
             linear_method=linear_method,
         )
         self.out_proj = RowParallelLinear(
+            parallel_state,
             embed_dim,
             embed_dim,
             bias=bias,
@@ -113,6 +115,7 @@ class OPTDecoderLayer(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -120,6 +123,7 @@ class OPTDecoderLayer(nn.Module):
         self.config = config
         self.embed_dim = config.hidden_size
         self.self_attn = OPTAttention(
+            parallel_state=parallel_state,
             embed_dim=self.embed_dim,
             num_heads=config.num_attention_heads,
             bias=config.enable_bias,
@@ -131,6 +135,7 @@ class OPTDecoderLayer(nn.Module):
             self.embed_dim,
             elementwise_affine=config.layer_norm_elementwise_affine)
         self.fc1 = ColumnParallelLinear(
+            parallel_state,
             self.embed_dim,
             config.ffn_dim,
             bias=config.enable_bias,
@@ -140,6 +145,7 @@ class OPTDecoderLayer(nn.Module):
         self.activation_fn = get_act_fn(config.activation_function,
                                         quant_config, config.ffn_dim)
         self.fc2 = RowParallelLinear(
+            parallel_state,
             config.ffn_dim,
             self.embed_dim,
             bias=config.enable_bias,
@@ -189,6 +195,7 @@ class OPTDecoder(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -235,7 +242,7 @@ class OPTDecoder(nn.Module):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList([
-            OPTDecoderLayer(config, linear_method)
+            OPTDecoderLayer(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -270,11 +277,12 @@ class OPTModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
-        self.decoder = OPTDecoder(config, linear_method)
+        self.decoder = OPTDecoder(parallel_state, config, linear_method)
 
     def forward(
         self,
@@ -292,13 +300,14 @@ class OPTForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config,
+        parallel_state: ParallelState,
+        config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = OPTModel(config, linear_method)
+        self.model = OPTModel(parallel_state, config, linear_method)
         self.lm_head_weight = self.model.decoder.embed_tokens.weight
         self.sampler = Sampler(config.vocab_size)
 

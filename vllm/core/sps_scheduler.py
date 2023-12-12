@@ -2,12 +2,12 @@ import enum
 import time
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
-from vllm.config import CacheConfig, SchedulerConfig
-from vllm.core.block_manager import AllocStatus, BlockSpaceManager
+from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
+from vllm.core.sps_block_manager import SpSAllocStatus, SpSBlockSpaceManager
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
-                           SequenceGroupMetadata, SequenceStatus)
+                           SequenceGroupMetadata, SequenceStatus, SpSStage)
 
 logger = init_logger(__name__)
 
@@ -25,7 +25,7 @@ class PreemptionMode(enum.Enum):
     RECOMPUTE = enum.auto()
 
 
-class SchedulerOutputs:
+class SpSSchedulerOutputs:
 
     def __init__(
         self,
@@ -53,15 +53,17 @@ class SchedulerOutputs:
                 and not self.blocks_to_swap_out and not self.blocks_to_copy)
 
 
-class Scheduler:
+class SpSScheduler:
 
     def __init__(
         self,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
+        sps_config: SpSConfig,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
+        self.sps_config = sps_config
 
         self.prompt_limit = min(self.scheduler_config.max_model_len,
                                 self.scheduler_config.max_num_batched_tokens)
@@ -69,7 +71,7 @@ class Scheduler:
         # Instantiate the scheduling policy.
         self.policy = PolicyFactory.get_policy(policy_name="fcfs")
         # Create the block space manager.
-        self.block_manager = BlockSpaceManager(
+        self.block_manager = SpSBlockSpaceManager(
             block_size=self.cache_config.block_size,
             num_gpu_blocks=self.cache_config.num_gpu_blocks,
             num_cpu_blocks=self.cache_config.num_cpu_blocks,
@@ -114,7 +116,8 @@ class Scheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.running) + len(self.swapped)
 
-    def _schedule(self) -> SchedulerOutputs:
+    def _schedule(self) -> SpSSchedulerOutputs:
+
         # Blocks that need to be swaped or copied before model execution.
         blocks_to_swap_in: Dict[int, int] = {}
         blocks_to_swap_out: Dict[int, int] = {}
@@ -154,10 +157,10 @@ class Scheduler:
                     continue
 
                 # If the sequence group cannot be allocated, stop.
-                can_allocate = self.block_manager.can_allocate(seq_group)
-                if can_allocate == AllocStatus.LATER:
+                can_allocate = self.block_manager.can_allocate(seq_group, 1)
+                if can_allocate == SpSAllocStatus.LATER:
                     break
-                elif can_allocate == AllocStatus.NEVER:
+                elif can_allocate == SpSAllocStatus.NEVER:
                     logger.warning(
                         f"Input prompt ({num_prompt_tokens} tokens) is too long"
                         f" and exceeds the capacity of block_manager")
@@ -187,13 +190,13 @@ class Scheduler:
                 seq_lens = new_seq_lens
 
                 seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
+                self._allocate(seq_group, 1)
                 self.running.append(seq_group)
                 num_curr_seqs += num_new_seqs
                 scheduled.append(seq_group)
 
             if scheduled or ignored_seq_groups:
-                scheduler_outputs = SchedulerOutputs(
+                scheduler_outputs = SpSSchedulerOutputs(
                     scheduled_seq_groups=scheduled,
                     prompt_run=True,
                     num_batched_tokens=len(seq_lens) *
@@ -216,7 +219,7 @@ class Scheduler:
         preempted: List[SequenceGroup] = []
         while self.running:
             seq_group = self.running.pop(0)
-            while not self.block_manager.can_append_slot(seq_group):
+            while not self.block_manager.can_append_slots(seq_group, self.sps_config.draft_size):
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = self.running.pop(-1)
@@ -230,7 +233,7 @@ class Scheduler:
                     break
             else:
                 # Append new slots to the sequence group.
-                self._append_slot(seq_group, blocks_to_copy)
+                self._append_slots(seq_group, blocks_to_copy)
                 running.append(seq_group)
         self.running = running
 
@@ -243,7 +246,7 @@ class Scheduler:
             while self.swapped:
                 seq_group = self.swapped[0]
                 # If the sequence group cannot be swapped in, stop.
-                if not self.block_manager.can_swap_in(seq_group):
+                if not self.block_manager.can_swap_in(seq_group, self.sps_config.draft_size):
                     break
 
                 # The total number of sequences in the RUNNING state should not
@@ -255,7 +258,8 @@ class Scheduler:
 
                 seq_group = self.swapped.pop(0)
                 self._swap_in(seq_group, blocks_to_swap_in)
-                self._append_slot(seq_group, blocks_to_copy)
+                self._append_slots(
+                    seq_group, self.sps_config.draft_size, blocks_to_copy)
                 num_curr_seqs += num_new_seqs
                 self.running.append(seq_group)
 
@@ -266,7 +270,7 @@ class Scheduler:
             seq_group.num_seqs(status=SequenceStatus.RUNNING)
             for seq_group in self.running)
 
-        scheduler_outputs = SchedulerOutputs(
+        scheduler_outputs = SpSSchedulerOutputs(
             scheduled_seq_groups=self.running,
             prompt_run=False,
             num_batched_tokens=num_batched_tokens,
@@ -277,7 +281,7 @@ class Scheduler:
         )
         return scheduler_outputs
 
-    def schedule(self) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
+    def schedule(self) -> Tuple[List[SequenceGroupMetadata], SpSSchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
@@ -295,10 +299,10 @@ class Scheduler:
 
             seq_group_metadata = SequenceGroupMetadata(
                 request_id=seq_group.request_id,
-                is_prompt=scheduler_outputs.prompt_run,
                 seq_data=seq_data,
                 sampling_params=seq_group.sampling_params,
                 block_tables=block_tables,
+                sps_stage=SpSStage.PROMPT if scheduler_outputs.prompt_run else SpSStage.DRAFT_DECODE,
             )
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
@@ -315,18 +319,19 @@ class Scheduler:
             if not seq_group.is_finished()
         ]
 
-    def _allocate(self, seq_group: SequenceGroup) -> None:
-        self.block_manager.allocate(seq_group)
+    def _allocate(self, seq_group: SequenceGroup, size: int) -> None:
+        self.block_manager.allocate(seq_group, size)
         for seq in seq_group.get_seqs():
             seq.status = SequenceStatus.RUNNING
 
-    def _append_slot(
+    def _append_slots(
         self,
         seq_group: SequenceGroup,
+        size: int,
         blocks_to_copy: Dict[int, List[int]],
     ) -> None:
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-            ret = self.block_manager.append_slot(seq)
+            ret = self.block_manager.append_slots(seq, size)
             if ret is not None:
                 src_block, dst_block = ret
                 if src_block in blocks_to_copy:
@@ -396,7 +401,7 @@ class Scheduler:
 
     def _swap_out(
         self,
-        seq_group: SequenceGroup,
+        seq_group: SequenceStatus,
         blocks_to_swap_out: Dict[int, int],
     ) -> None:
         if not self.block_manager.can_swap_out(seq_group):

@@ -12,7 +12,6 @@ from vllm.model_executor.weight_utils import (get_quant_config,
                                               initialize_dummy_weights)
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 
-
 # TODO(woosuk): Lazy-load the model classes.
 _MODEL_REGISTRY = {
     "AquilaModel": AquilaForCausalLM,
@@ -90,7 +89,8 @@ def get_model(model_config: ModelConfig, parallel_state: ParallelState) -> nn.Mo
         # Create a model instance.
         # The weights will be initialized as empty tensors.
         with torch.device("cuda"):
-            model = model_class(model_config.hf_config, linear_method)
+            model = model_class(
+                parallel_state, model_config.hf_config, linear_method)
         if model_config.load_format == "dummy":
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.

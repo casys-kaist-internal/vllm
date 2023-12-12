@@ -8,8 +8,7 @@ import torch.nn.functional as F
 
 from vllm._C import ops
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.parallel_utils.utils import divide
 from vllm.model_executor.utils import set_weight_attrs
 
@@ -72,16 +71,18 @@ class ScaledActivation(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         act_module: nn.Module,
         intermediate_size: int,
         input_is_parallel: bool = True,
         params_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
+        self.parallel_state = parallel_state
         self.act = act_module
         self.input_is_parallel = input_is_parallel
         if input_is_parallel:
-            tp_size = get_tensor_model_parallel_world_size()
+            tp_size = self.parallel_state.get_tensor_model_parallel_world_size()
             intermediate_size_per_partition = divide(intermediate_size,
                                                      tp_size)
         else:
@@ -100,7 +101,7 @@ class ScaledActivation(nn.Module):
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         param_data = param.data
         if self.input_is_parallel:
-            tp_rank = get_tensor_model_parallel_rank()
+            tp_rank = self.parallel_state.get_tensor_model_parallel_rank()
             shard_size = param_data.shape[0]
             start_idx = tp_rank * shard_size
             loaded_weight = loaded_weight.narrow(0, start_idx, shard_size)
