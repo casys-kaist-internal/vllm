@@ -21,35 +21,18 @@ class InputMetadata:
         max_context_len: Optional[int],
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
+        draft_lens: Optional[List[int]],
     ) -> None:
         self.prompt_lens = prompt_lens
         self.max_context_len = max_context_len
         self.slot_mapping = slot_mapping
         self.context_lens = context_lens
         self.block_tables = block_tables
-        self.selected_token_indices = selected_token_indices
-        self.categorized_sample_indices = categorized_sample_indices
-
-        self.max_prompt_len = max(prompt_lens) if prompt_lens else 0
-        self.to_cache = None
-        if sliding_window is not None:
-            # We need to keep the positions of sliding windows within
-            # the key / value tables, this is helpful to know which
-            # elements we need to cache.
-            to_cache, start_idx = [], 0
-            for prompt_len in self.prompt_lens:
-                to_cache.extend(
-                    range(
-                        start_idx + max(0, prompt_len - sliding_window),
-                        start_idx + prompt_len,
-                    ))
-                start_idx += self.max_prompt_len
-            to_cache.extend(range(start_idx, slot_mapping.shape[0]))
-            self.to_cache = torch.tensor(to_cache,
-                                         dtype=torch.int32,
-                                         device=self.slot_mapping.device)
+        self.draft_lens = draft_lens
 
         self.is_prompt = len(prompt_lens) > 0
+        self.is_target_decode = (not self.is_prompt) and (
+            draft_lens is not None)
         # Set during the execution of the first attention op.
         # FIXME(woosuk): This is a hack.
         self.attn_bias = None

@@ -5,15 +5,16 @@ from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple, Union, D
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
-from vllm.core.scheduler import Scheduler, SchedulerOutputs
+from vllm.core.sps_scheduler import SpSScheduler, SpSSchedulerOutputs
 from vllm.engine.arg_utils import SpSEngineArgs
-from vllm.engine.ray_utils import RayWorker, initialize_cluster, ray
+from vllm.engine.metrics import record_metrics
+from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupOutput,
-                           SequenceOutput, SequenceStatus)
+                           SequenceOutput, SequenceStatus, SpSStage)
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter
@@ -31,7 +32,7 @@ _LOGGING_INTERVAL_SEC = 5
 
 
 class SpSLLMEngine:
-    """An LLM engine that receives requests and generates texts.
+    """A SpS LLM engine that receives requests and generates texts.
 
     This is the main class for the vLLM engine. It receives requests
     from clients and generates texts from the LLM. It includes a tokenizer, a
@@ -64,8 +65,7 @@ class SpSLLMEngine:
         target_model_config: ModelConfig,
         draft_model_config: ModelConfig,
         cache_config: CacheConfig,
-        target_parallel_config: ParallelConfig,
-        draft_parallel_config: ParallelConfig,
+        parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
         sps_config: SpSConfig,
         distributed_init_method: str,
@@ -73,7 +73,7 @@ class SpSLLMEngine:
         log_stats: bool,
     ) -> None:
         logger.info(
-            "Initializing an LLM engine with config: "
+            "Initializing an SpS LLM engine with config: "
             f"target_model={target_model_config.model!r}, "
             f"draft_model={draft_model_config.model!r}, "
             f"tokenizer={target_model_config.tokenizer!r}, "
@@ -86,19 +86,16 @@ class SpSLLMEngine:
             f"target_download_dir={target_model_config.download_dir!r}, "
             f"draft_download_dir={draft_model_config.download_dir!r}, "
             f"load_format={target_model_config.load_format}, "
-            f"target_tensor_parallel_size={target_parallel_config.tensor_parallel_size}, "
-            f"draft_tensor_parallel_size={draft_parallel_config.tensor_parallel_size}, "
-            f"quantization={target_model_config.quantization}, "
+            f"target_tensor_parallel_size={parallel_config.tensor_parallel_size}, "
+            f"target_model_quantization={target_model_config.quantization}, "
+            f"draft_model_quantization={target_model_config.quantization}, "
             f"seed={target_model_config.seed})")
         # TODO(woosuk): Print more configs in debug mode.
 
         self.target_model_config = target_model_config
         self.draft_model_config = draft_model_config
         self.cache_config = cache_config
-        assert self.cache_config.sliding_window == getattr(
-            self.target_model_config.hf_config, "sliding_window", None)
-        self.target_parallel_config = target_parallel_config
-        self.draft_parallel_config = draft_parallel_config
+        self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.sps_config = sps_config
         self.log_stats = log_stats
@@ -112,10 +109,8 @@ class SpSLLMEngine:
             revision=target_model_config.revision)
         self.seq_counter = Counter()
 
-        assert self.target_parallel_config.worker_use_ray == self.draft_parallel_config.worker_use_ray
-
         # Create the parallel GPU workers.
-        if self.target_parallel_config.worker_use_ray:
+        if self.parallel_config.worker_use_ray:
             self._init_workers_ray(placement_group)
         else:
             self._init_workers(distributed_init_method)
@@ -124,7 +119,8 @@ class SpSLLMEngine:
         self._init_cache()
 
         # Create the scheduler.
-        self.scheduler = Scheduler(scheduler_config, cache_config, sps_config)
+        self.scheduler = SpSScheduler(
+            scheduler_config, cache_config, sps_config)
 
         # Logging.
         self.last_logging_time = 0.0
@@ -138,34 +134,29 @@ class SpSLLMEngine:
         # before CUDA_VISIBLE_DEVICES is set in the Worker
         from vllm.worker.sps_worker import SpSWorker
 
-        assert self.target_parallel_config.world_size == 1, (
-            "Ray is required if parallel_config.world_size > 1.")
-
-        assert self.draft_parallel_config.world_size == 1, (
-            "Ray is required if parallel_config.world_size > 1.")
+        assert self.parallel_config.world_size == 1, (
+            "Ray is required if target_parallel_config.world_size > 1.")
 
         self.workers: List[SpSWorker] = []
         worker = SpSWorker(
             self.target_model_config,
             self.draft_model_config,
-            self.target_parallel_config,
-            self.draft_parallel_config,
+            self.parallel_config,
             self.scheduler_config,
             self.sps_config,
             0,
             distributed_init_method,
         )
         self.workers.append(worker)
-        
         self._run_workers(
             "init_model",
             get_all_outputs=True,
         )
-
         self._run_workers(
             "load_model",
             get_all_outputs=True,
-            max_concurrent_workers=self.target_parallel_config.max_parallel_loading_workers,
+            max_concurrent_workers=self.parallel_config.
+            max_parallel_loading_workers,
         )
 
     def _init_workers_ray(self, placement_group: "PlacementGroup",
@@ -178,32 +169,33 @@ class SpSLLMEngine:
         for bundle in placement_group.bundle_specs:
             if not bundle.get("GPU", 0):
                 continue
+            if self.parallel_config.tensor_parallel_size == 1:
+                num_gpus = self.cache_config.gpu_memory_utilization
+            else:
+                num_gpus = 1
             worker = ray.remote(
                 num_cpus=0,
-                num_gpus=1,
+                num_gpus=num_gpus,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=placement_group,
                     placement_group_capture_child_tasks=True),
                 **ray_remote_kwargs,
-            )(RayWorker).remote(self.target_model_config.trust_remote_code)
+            )(RayWorkerVllm).remote(self.target_model_config.trust_remote_code)
             self.workers.append(worker)
 
         # Initialize torch distributed process group for the workers.
         init_torch_dist_process_group(self.workers, backend="nccl")
         target_model_config = copy.deepcopy(self.target_model_config)
         draft_model_config = copy.deepcopy(self.draft_model_config)
-        target_parallel_config = copy.deepcopy(self.target_parallel_config)
-        draft_parallel_config = copy.deepcopy(self.draft_parallel_config)
+        parallel_config = copy.deepcopy(self.parallel_config)
         scheduler_config = copy.deepcopy(self.scheduler_config)
         sps_config = copy.deepcopy(self.sps_config)
-
         self._run_workers("init_worker",
                           get_all_outputs=True,
                           worker_init_fn=lambda: SpSWorker(
                               target_model_config,
                               draft_model_config,
-                              target_parallel_config,
-                              draft_parallel_config,
+                              parallel_config,
                               scheduler_config,
                               sps_config,
                               None,
@@ -213,20 +205,19 @@ class SpSLLMEngine:
             "init_model",
             get_all_outputs=True,
         )
-
         self._run_workers(
             "load_model",
             get_all_outputs=True,
-            max_concurrent_workers=self.target_parallel_config.max_parallel_loading_workers,
+            max_concurrent_workers=self.parallel_config.
+            max_parallel_loading_workers,
         )
 
     def _verify_args(self) -> None:
+        # NOTE(sjchoi): No need to verify draft model since draft model is
+        # copied to every GPU.
         self.target_model_config.verify_with_parallel_config(
-            self.target_parallel_config)
-        self.draft_model_config.verify_with_parallel_config(
-            self.draft_parallel_config)
-        self.cache_config.verify_with_parallel_config(
-            self.target_parallel_config)
+            self.parallel_config)
+        self.cache_config.verify_with_parallel_config(self.parallel_config)
 
     def _init_cache(self) -> None:
         """Profiles the memory usage and initializes the KV cache."""
@@ -264,7 +255,7 @@ class SpSLLMEngine:
         """Creates an LLM engine from the engine arguments."""
         # Create the engine configs.
         engine_configs = engine_args.create_engine_configs()
-        parallel_config = engine_configs[3]
+        parallel_config = engine_configs[3]  # parallel_config for target model
         # Initialize the cluster.
         distributed_init_method, placement_group = initialize_cluster(
             parallel_config)
@@ -308,7 +299,8 @@ class SpSLLMEngine:
         # Create the sequences.
         block_size = self.cache_config.block_size
         seq_id = next(self.seq_counter)
-        seq = Sequence(seq_id, prompt, prompt_token_ids, block_size, self.sps_config.draft_size)
+        seq = Sequence(seq_id, prompt, prompt_token_ids,
+                       block_size, self.sps_config.draft_size)
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
@@ -328,7 +320,7 @@ class SpSLLMEngine:
     def get_target_model_config(self) -> ModelConfig:
         """Gets the target model configuration."""
         return self.target_model_config
-    
+
     def get_draft_model_config(self) -> ModelConfig:
         """Gets the draft model configuration."""
         return self.draft_model_config
@@ -343,282 +335,21 @@ class SpSLLMEngine:
 
     def _schedule(
         self
-    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs,
+    ) -> Tuple[List[SequenceGroupMetadata], SpSSchedulerOutputs,
                List[RequestOutput]]:
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.sps_schedule(
-            self.sps_config.draft_size)
-        
+        seq_group_metadata_list, scheduler_outputs = self.scheduler._schedule()
         return seq_group_metadata_list, scheduler_outputs, [
             RequestOutput.from_seq_group(seq_group)
             for seq_group in scheduler_outputs.ignored_seq_groups
         ]
-    
-    def step(self) -> List[RequestOutput]:
-        seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
-        if scheduler_outputs.is_empty():
-            return ignored
-        
-        if scheduler_outputs.prompt_run:
-            output = self._run_workers(
-                # SJCHOI what should I name this method? execute target model for prompt.
-                "execute_target_model_for_prompt",
-                seq_group_metadata_list=seq_group_metadata_list,
-                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                blocks_to_copy=scheduler_outputs.blocks_to_copy,
-            )
-
-            self._run_workers(
-                "execute_draft_model_for_prompt",
-                seq_group_metadata_list=seq_group_metadata_list,
-                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                blocks_to_copy=scheduler_outputs.blocks_to_copy,
-            )
-
-            return self._process_model_outputs(output, scheduler_outputs)
-           
-
-        else:
-            draft_output_list: List[Dict[int, SequenceOutput]] = []
-            for _ in range(self.sps_config.draft_size):
-                draft_output = self._run_workers(
-                    "execute_draft_model",
-                    seq_group_metadata_list=seq_group_metadata_list,
-                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                )
-
-                # Update the scheduler with the model outputs.
-                seq_groups, draft_seq_output = self.scheduler.draft_update(draft_output)
-                draft_output_list.append(draft_seq_output)
-
-                scheduler_outputs.blocks_to_swap_in = None
-                scheduler_outputs.blocks_to_swap_out = None
-                scheduler_outputs.blocks_to_copy = None
-
-            # Execute the target model 1 time
-            target_output = self._run_workers(
-                "execute_target_model",
-                seq_group_metadata_list=seq_group_metadata_list,
-                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                blocks_to_copy=scheduler_outputs.blocks_to_copy,
-            )
-            # Update the scheduler with the model outputs.
-            seq_groups = self.scheduler.target_update(
-                draft_output_list, target_output)
-
-            request_outputs = self._process_target_outputs(seq_groups)
-
-            if self.log_stats:
-                # Log the system stats.
-                self._log_system_stats(scheduler_outputs.prompt_run,
-                                    scheduler_outputs.num_batched_tokens)
-
-            return request_outputs
-
-    def _decode_and_stop_target_output(
-        self,
-        seq_groups : List[SequenceGroup],
-    ) -> None:
-        ## 새롭게 정의된 함수들을 사용하려는 방향으로 작성
-        for seq_group in seq_groups:
-                child_seqs: List[Tuple[Sequence, Sequence]] = []
-                for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                    self._decode_sequence(seq, seq_group.sampling_params)
-                    self._check_stop(seq, seq_group.sampling_params)
-                    child_seqs.append(seq, seq)
-
-                ## same with the back of _process_sequence_group_outputs function
-                   
-                # Non-beam search case
-                if not seq_group.sampling_params.use_beam_search:
-                    # For newly created child sequences, add them to the sequence group
-                    # and fork them in block manager if they are not finished.
-                    for seq, parent in child_seqs:
-                        if seq is not parent:
-                            seq_group.add(seq)
-                            if not seq.is_finished():
-                                self.scheduler.fork_seq(parent, seq)
-
-                    # Free the finished and selected parent sequences' memory in block
-                    # manager. Keep them in the sequence group as candidate output.
-                    # NOTE: we need to fork the new sequences before freeing the
-                    # old sequences.
-                    for seq, parent in child_seqs:
-                        if seq is parent and seq.is_finished():
-                            self.scheduler.free_seq(seq)
-                    return
-
-                # Beam search case
-                # Select the child sequences to keep in the sequence group.
-                selected_child_seqs = []
-                unselected_child_seqs = []
-                beam_width = seq_group.sampling_params.best_of
-                length_penalty = seq_group.sampling_params.length_penalty
-
-                # Select the newly finished sequences with the highest scores
-                # to replace existing finished sequences.
-                # Tuple of (seq, parent, is_new)
-                existing_finished_seqs = [(seq, None, False)
-                                        for seq in existing_finished_seqs]
-                new_finished_seqs = [(seq, parent, True) for seq, parent in child_seqs
-                                    if seq.is_finished()]
-                all_finished_seqs = existing_finished_seqs + new_finished_seqs
-                # Sort the finished sequences by their scores.
-                all_finished_seqs.sort(key=lambda x: x[0].get_beam_search_score(
-                    length_penalty=length_penalty,
-                    eos_token_id=self.tokenizer.eos_token_id),
-                                    reverse=True)
-                for seq, parent, is_new in all_finished_seqs[:beam_width]:
-                    if is_new:
-                        # A newly generated child sequence finishes and has a high
-                        # score, so we will add it into the sequence group.
-                        selected_child_seqs.append((seq, parent))
-                for seq, parent, is_new in all_finished_seqs[beam_width:]:
-                    if is_new:
-                        # A newly generated child sequence finishes but has a low
-                        # score, so we will not add it into the sequence group.
-                        # Additionally, if this sequence is a continuation of a
-                        # parent sequence, we will need remove the parent sequence
-                        # from the sequence group.
-                        unselected_child_seqs.append((seq, parent))
-                    else:
-                        # An existing finished sequence has a low score, so we will
-                        # remove it from the sequence group.
-                        seq_group.remove(seq.seq_id)
-
-                # select the top beam_width sequences from the running
-                # sequences for the next iteration to continue the beam
-                # search.
-                running_child_seqs = [(seq, parent) for seq, parent in child_seqs
-                                    if not seq.is_finished()]
-                # Sort the running sequences by their scores.
-                running_child_seqs.sort(key=lambda x: x[0].get_beam_search_score(
-                    length_penalty=length_penalty,
-                    eos_token_id=self.tokenizer.eos_token_id),
-                                        reverse=True)
-
-                # Check if we can stop the beam search.
-                if len(running_child_seqs) == 0:
-                    # No running sequences, stop the beam search.
-                    stop_beam_search = True
-                elif len(all_finished_seqs) < beam_width:
-                    # Not enough finished sequences, continue the beam search.
-                    stop_beam_search = False
-                else:
-                    # Check the early stopping criteria
-                    best_running_seq = running_child_seqs[0][0]
-                    current_worst_seq = all_finished_seqs[beam_width - 1][0]
-                    stop_beam_search = self._check_beam_search_early_stopping(
-                        seq_group.sampling_params.early_stopping,
-                        seq_group.sampling_params, best_running_seq, current_worst_seq)
-
-                if stop_beam_search:
-                    # Stop the beam search and remove all the running sequences from
-                    # the sequence group.
-                    unselected_child_seqs.extend(running_child_seqs)
-                else:
-                    # Continue the beam search and select the top beam_width sequences
-                    # to continue the beam search.
-                    selected_child_seqs.extend(running_child_seqs[:beam_width])
-                    # The remaining running sequences will not be used in the next
-                    # iteration. Again, if these sequences are continuations of
-                    # parent sequences, we will need to remove the parent sequences
-                    # from the sequence group.
-                    unselected_child_seqs.extend(running_child_seqs[beam_width:])
-
-                # For newly created child sequences, add them to the sequence group
-                # and fork them in block manager if they are not finished.
-                for seq, parent in selected_child_seqs:
-                    if seq is not parent:
-                        seq_group.add(seq)
-                        if not seq.is_finished():
-                            self.scheduler.fork_seq(parent, seq)
-
-                # Free the finished and selected parent sequences' memory in block
-                # manager. Keep them in the sequence group as candidate output.
-                for seq, parent in selected_child_seqs:
-                    if seq is parent and seq.is_finished():
-                        self.scheduler.free_seq(seq)
-
-                # Remove the unselected parent sequences from the sequence group and
-                # free their memory in block manager.
-                for seq, parent in unselected_child_seqs:
-                    if seq is parent:
-                        # Remove the parent sequence if it is not selected for next
-                        # iteration
-                        seq_group.remove(seq.seq_id)
-                        self.scheduler.free_seq(seq)
-            
-
-    def _process_target_outputs(
-        self,
-        seq_groups : List[SequenceGroup],
-    ) -> List[RequestOutput]:
-        
-        # Decode and stop seqs from target output
-        self._decode_and_stop_target_output(seq_groups)
-
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
-
-        # Create the outputs.
-        request_outputs: List[RequestOutput] = []
-        for seq_group in seq_groups:
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
-
-        return request_outputs
-
-    def _check_beam_search_early_stopping(
-        self,
-        early_stopping: Union[bool, str],
-        sampling_params: SamplingParams,
-        best_running_seq: Sequence,
-        current_worst_seq: Sequence,
-    ) -> bool:
-        assert sampling_params.use_beam_search
-        length_penalty = sampling_params.length_penalty
-        if early_stopping is True:
-            return True
-
-        current_worst_score = (current_worst_seq.get_beam_search_score(
-            length_penalty=length_penalty,
-            eos_token_id=self.tokenizer.eos_token_id))
-        if early_stopping is False:
-            highest_attainable_score = (best_running_seq.get_beam_search_score(
-                length_penalty=length_penalty,
-                eos_token_id=self.tokenizer.eos_token_id))
-        else:
-            assert early_stopping == "never"
-            if length_penalty > 0.0:
-                # If length_penalty > 0.0, beam search will prefer longer
-                # sequences. The highest attainable score calculation is
-                # based on the longest possible sequence length in this case.
-                max_possible_length = max(
-                    best_running_seq.get_prompt_len() +
-                    sampling_params.max_tokens,
-                    self.scheduler_config.max_model_len)
-                highest_attainable_score = (
-                    best_running_seq.get_beam_search_score(
-                        length_penalty=length_penalty,
-                        eos_token_id=self.tokenizer.eos_token_id,
-                        seq_len=max_possible_length))
-            else:
-                # Otherwise, beam search will prefer shorter sequences. The
-                # highest attainable score calculation is based on the current
-                # sequence length.
-                highest_attainable_score = (
-                    best_running_seq.get_beam_search_score(
-                        length_penalty=length_penalty,
-                        eos_token_id=self.tokenizer.eos_token_id))
-        return current_worst_score >= highest_attainable_score
 
     def _process_sequence_group_outputs(self, seq_group: SequenceGroup,
-                                        outputs: SequenceGroupOutput) -> None:
+                                        outputs: SequenceGroupOutput,
+                                        sps_stage: SpSStage) -> None:
+
+        # We assume that SpS engine does not use beam search.
+        assert not seq_group.sampling_params.use_beam_search
+
         # Process prompt logprobs
         prompt_logprobs = outputs.prompt_logprobs
         if prompt_logprobs is not None:
@@ -627,7 +358,6 @@ class SpSLLMEngine:
         # Process samples
         samples = outputs.samples
         parent_seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-        existing_finished_seqs = seq_group.get_finished_seqs()
         parent_child_dict = {
             parent_seq.seq_id: []
             for parent_seq in parent_seqs
@@ -641,156 +371,70 @@ class SpSLLMEngine:
         for parent in parent_seqs:
             child_samples: List[SequenceOutput] = parent_child_dict[
                 parent.seq_id]
-            if len(child_samples) == 0:
-                # This parent sequence has no children samples. Remove
-                # the parent sequence from the sequence group since it will
-                # not be used in the future iterations.
-                parent.status = SequenceStatus.FINISHED_ABORTED
-                seq_group.remove(parent.seq_id)
-                self.scheduler.free_seq(parent)
-                continue
-            # Fork the parent sequence if there are multiple child samples.
-            for child_sample in child_samples[:-1]:
-                new_child_seq_id = next(self.seq_counter)
-                child = parent.fork(new_child_seq_id)
-                child.append_token_id(child_sample.output_token,
-                                      child_sample.logprobs)
-                child_seqs.append((child, parent))
-            # Continue the parent sequence for the last child sample.
-            # We reuse the parent sequence here to reduce redundant memory
-            # copies, especially when using non-beam search sampling methods.
-            last_child_sample = child_samples[-1]
-            parent.append_token_id(last_child_sample.output_token,
-                                   last_child_sample.logprobs)
+            assert len(child_samples) == 1, (
+                "SpS engine does not use beam search, so there should be "
+                "exactly one child sample for each parent sequence.")
+
+            child_sample = child_samples[0]
+
+            if sps_stage == SpSStage.PROMPT:
+                # Append the prompt token to the parent sequence.
+                parent.append_token_id(child_sample.output_token,
+                                       child_sample.logprobs)
+            elif sps_stage == SpSStage.DRAFT_DECODE:
+                # Append the draft token to the parent sequence.
+                parent.append_draft_token_id(child_sample.output_token,
+                                             child_sample.logprobs)
+            else:
+                # TARGET_DECODE stage does not call this function.
+                raise ValueError(f"Invalid SpS stage: {sps_stage}")
+
             child_seqs.append((parent, parent))
 
-        for seq, _ in child_seqs:
-            self._decode_sequence(seq, seq_group.sampling_params)
-            self._check_stop(seq, seq_group.sampling_params)
-
-        # Non-beam search case
-        if not seq_group.sampling_params.use_beam_search:
-            # For newly created child sequences, add them to the sequence group
-            # and fork them in block manager if they are not finished.
-            for seq, parent in child_seqs:
-                if seq is not parent:
-                    seq_group.add(seq)
-                    if not seq.is_finished():
-                        self.scheduler.fork_seq(parent, seq)
-
-            # Free the finished and selected parent sequences' memory in block
-            # manager. Keep them in the sequence group as candidate output.
-            # NOTE: we need to fork the new sequences before freeing the
-            # old sequences.
-            for seq, parent in child_seqs:
-                if seq is parent and seq.is_finished():
-                    self.scheduler.free_seq(seq)
-            return
-
-        # Beam search case
-        # Select the child sequences to keep in the sequence group.
-        selected_child_seqs = []
-        unselected_child_seqs = []
-        beam_width = seq_group.sampling_params.best_of
-        length_penalty = seq_group.sampling_params.length_penalty
-
-        # Select the newly finished sequences with the highest scores
-        # to replace existing finished sequences.
-        # Tuple of (seq, parent, is_new)
-        existing_finished_seqs = [(seq, None, False)
-                                  for seq in existing_finished_seqs]
-        new_finished_seqs = [(seq, parent, True) for seq, parent in child_seqs
-                             if seq.is_finished()]
-        all_finished_seqs = existing_finished_seqs + new_finished_seqs
-        # Sort the finished sequences by their scores.
-        all_finished_seqs.sort(key=lambda x: x[0].get_beam_search_score(
-            length_penalty=length_penalty,
-            eos_token_id=self.tokenizer.eos_token_id),
-                               reverse=True)
-        for seq, parent, is_new in all_finished_seqs[:beam_width]:
-            if is_new:
-                # A newly generated child sequence finishes and has a high
-                # score, so we will add it into the sequence group.
-                selected_child_seqs.append((seq, parent))
-        for seq, parent, is_new in all_finished_seqs[beam_width:]:
-            if is_new:
-                # A newly generated child sequence finishes but has a low
-                # score, so we will not add it into the sequence group.
-                # Additionally, if this sequence is a continuation of a
-                # parent sequence, we will need remove the parent sequence
-                # from the sequence group.
-                unselected_child_seqs.append((seq, parent))
-            else:
-                # An existing finished sequence has a low score, so we will
-                # remove it from the sequence group.
-                seq_group.remove(seq.seq_id)
-
-        # select the top beam_width sequences from the running
-        # sequences for the next iteration to continue the beam
-        # search.
-        running_child_seqs = [(seq, parent) for seq, parent in child_seqs
-                              if not seq.is_finished()]
-        # Sort the running sequences by their scores.
-        running_child_seqs.sort(key=lambda x: x[0].get_beam_search_score(
-            length_penalty=length_penalty,
-            eos_token_id=self.tokenizer.eos_token_id),
-                                reverse=True)
-
-        # Check if we can stop the beam search.
-        if len(running_child_seqs) == 0:
-            # No running sequences, stop the beam search.
-            stop_beam_search = True
-        elif len(all_finished_seqs) < beam_width:
-            # Not enough finished sequences, continue the beam search.
-            stop_beam_search = False
-        else:
-            # Check the early stopping criteria
-            best_running_seq = running_child_seqs[0][0]
-            current_worst_seq = all_finished_seqs[beam_width - 1][0]
-            stop_beam_search = self._check_beam_search_early_stopping(
-                seq_group.sampling_params.early_stopping,
-                seq_group.sampling_params, best_running_seq, current_worst_seq)
-
-        if stop_beam_search:
-            # Stop the beam search and remove all the running sequences from
-            # the sequence group.
-            unselected_child_seqs.extend(running_child_seqs)
-        else:
-            # Continue the beam search and select the top beam_width sequences
-            # to continue the beam search.
-            selected_child_seqs.extend(running_child_seqs[:beam_width])
-            # The remaining running sequences will not be used in the next
-            # iteration. Again, if these sequences are continuations of
-            # parent sequences, we will need to remove the parent sequences
-            # from the sequence group.
-            unselected_child_seqs.extend(running_child_seqs[beam_width:])
-
-        # For newly created child sequences, add them to the sequence group
-        # and fork them in block manager if they are not finished.
-        for seq, parent in selected_child_seqs:
-            if seq is not parent:
-                seq_group.add(seq)
-                if not seq.is_finished():
-                    self.scheduler.fork_seq(parent, seq)
+        # Decode and check stop only on PROMPT stage not DRAFT_DECODE stage.
+        # We decode and check stop after TARGET_DECODE stage.
+        if sps_stage == SpSStage.PROMPT:
+            for seq, _ in child_seqs:
+                self._decode_sequence(seq, seq_group.sampling_params)
+                self._check_stop(seq, seq_group.sampling_params)
 
         # Free the finished and selected parent sequences' memory in block
         # manager. Keep them in the sequence group as candidate output.
-        for seq, parent in selected_child_seqs:
+        # NOTE: we need to fork the new sequences before freeing the
+        # old sequences.
+        for seq, parent in child_seqs:
             if seq is parent and seq.is_finished():
                 self.scheduler.free_seq(seq)
-
-        # Remove the unselected parent sequences from the sequence group and
-        # free their memory in block manager.
-        for seq, parent in unselected_child_seqs:
-            if seq is parent:
-                # Remove the parent sequence if it is not selected for next
-                # iteration
-                seq_group.remove(seq.seq_id)
-                self.scheduler.free_seq(seq)
+        return
 
     def _process_model_outputs(
             self, output: SamplerOutput,
-            scheduler_outputs: SchedulerOutputs) -> List[RequestOutput]:
+            scheduler_outputs: SpSSchedulerOutputs,
+            sps_stage: SpSStage) -> List[RequestOutput]:
+        # Update the scheduled sequence groups with the model outputs.
+        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
+        for seq_group, outputs in zip(scheduled_seq_groups, output):
+            self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
+
+        # Free the finished sequence groups.
+        self.scheduler.free_finished_seq_groups()
+
+        # Create the outputs.
+        request_outputs: List[RequestOutput] = []
+        for seq_group in (scheduled_seq_groups +
+                          scheduler_outputs.ignored_seq_groups):
+            request_output = RequestOutput.from_seq_group(seq_group)
+            request_outputs.append(request_output)
+
+        if self.log_stats:
+            # Log the system stats.
+            self._log_system_stats(scheduler_outputs.prompt_run,
+                                   scheduler_outputs.num_batched_tokens)
+        return request_outputs
+
+    def _process_target_model_outputs(
+            self, output: SamplerOutput,
+            scheduler_outputs: SpSSchedulerOutputs) -> List[RequestOutput]:
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
@@ -812,6 +456,161 @@ class SpSLLMEngine:
                                    scheduler_outputs.num_batched_tokens)
         return request_outputs
 
+    def _process_target_outputs(
+        self,
+        seq_groups: List[SequenceGroup],
+    ) -> List[RequestOutput]:
+
+        # Decode and stop seqs from target output
+        self._decode_and_stop_target_output(seq_groups)
+
+        # Free the finished sequence groups.
+        self.scheduler.free_finished_seq_groups()
+
+        # Create the outputs.
+        request_outputs: List[RequestOutput] = []
+        for seq_group in seq_groups:
+            request_output = RequestOutput.from_seq_group(seq_group)
+            request_outputs.append(request_output)
+
+        return request_outputs
+
+    def target_update(
+        self,
+        draft_output_list: List[Dict[int, SequenceOutput]],
+        target_output: SamplerOutput,  # List[SequenceGroupOutput]
+        scheduler_output: SchedulerOutputs,
+    ) -> List[SequenceGroup]:
+        scheduled: List[SequenceGroup] = []
+        outputs: Dict[int, SequenceOutput]  # 기존 seq_outputs 역할
+
+        # List[SequenceGroup]
+        scheduler_seq_groups = scheduler_output.scheduled_seq_groups
+        # SequenceGroup, SequenceGroupOutput
+        for seq_group, output in zip(scheduler_seq_groups, target_output):
+            if seq_group in self.running:
+                for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                    scheduled.append(seq_group)
+                    outputs[seq.seq_id] = output[seq.seq_id]  # SequenceOutput
+                    break
+
+        # Verify and rollback
+        for seq_group in scheduled:
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                accept_cnt = 0
+                for i, draft_output in enumerate(draft_output_list):
+                    draft_seq_output = draft_output[seq.seq_id]
+                    token_id = draft_seq_output.output_token
+                    draft_prob = draft_seq_output.probs[token_id]
+                    target_prob = target_output[seq.seq_id].probs[i][token_id]
+                    r = torch.rand(1, device=draft_prob.device)
+
+                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
+                        # accept
+                        accept_cnt += 1
+                    else:
+                        # reject
+                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
+                                                                                         draft_seq_output.probs, seq_group.sampling_params)
+                        break
+
+                seq.accept_draft_tokens(accept_cnt)
+                # print("! accept_cnt", accept_cnt)
+
+                if accept_cnt != self.sps_config.draft_size:
+                    seq.append_token_id(resample_token_id, resample_logprobs)
+                # else:
+                #     # all accepted so sample additional token
+                #     seq.append_token_id(
+                #         target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
+
+                #     # Need to run draft model to cache kv for the additional token sampled by target model.
+
+        return scheduled
+
+    def step(self) -> List[RequestOutput]:
+        """Performs one decoding iteration and returns newly generated results.
+
+        This function performs one decoding iteration of the engine. It first
+        schedules the sequences to be executed in the next iteration and the
+        token blocks to be swapped in/out/copy. Then, it executes the model
+        and updates the scheduler with the model outputs. Finally, it decodes
+        the sequences and returns the newly generated results.
+        """
+        seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
+        if scheduler_outputs.is_empty():
+            return ignored
+
+        # NOTE: We assume that all sequences in the group are in the same stage.
+        sps_stage = seq_group_metadata_list[0].sps_stage
+
+        if scheduler_outputs.prompt_run:
+            assert sps_stage == SpSStage.PROMPT
+
+            # We should run both target and draft models for the prompt because of KV cache.
+            output = self._run_workers(
+                "execute_target_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
+
+            # Don't need output for draft model. Execution required only for draft KV cache.
+            self._run_workers(
+                "execute_draft_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
+
+            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+
+        else:
+            assert sps_stage == SpSStage.DRAFT_DECODE
+
+            draft_output_list: List[SamplerOutput] = []
+            # Iterate over the range of draft size
+            for draft_index in range(self.sps_config.draft_size):
+                # Only swap in/out/copy blocks for the first draft iteration
+                if draft_index == 0:
+                    draft_output = self._run_workers(
+                        "execute_draft_model",
+                        seq_group_metadata_list=seq_group_metadata_list,
+                        blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                        blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                        blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                    )
+                else:
+                    draft_output = self._run_workers(
+                        "execute_draft_model",
+                        seq_group_metadata_list=seq_group_metadata_list,
+                        blocks_to_swap_in=None,
+                        blocks_to_swap_out=None,
+                        blocks_to_copy=None,
+                    )
+
+                self._process_model_outputs(
+                    draft_output, scheduler_outputs, sps_stage)
+                draft_output_list.append(draft_output)
+
+            # Change to TARGET_DECODE stage
+            for seq_group_metadata in seq_group_metadata_list:
+                seq_group_metadata.sps_stage = SpSStage.TARGET_DECODE
+
+            # Execute the target model to score the draft outputs
+            # Need to swap in/out/copy blocks for target model
+            target_output = self._run_workers(
+                "execute_target_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
+
+            return self._process_target_model_outputs(target_output, scheduler_outputs)
+
     def _log_system_stats(
         self,
         prompt_run: bool,
@@ -824,8 +623,8 @@ class SpSLLMEngine:
         else:
             self.num_generation_tokens.append((now, num_batched_tokens))
 
-        elapsed_time = now - self.last_logging_time
-        if elapsed_time < _LOGGING_INTERVAL_SEC:
+        should_log = now - self.last_logging_time >= _LOGGING_INTERVAL_SEC
+        if not should_log:
             return
 
         # Discard the old stats.
@@ -864,6 +663,16 @@ class SpSLLMEngine:
         else:
             cpu_cache_usage = 0.0
 
+        record_metrics(
+            avg_prompt_throughput=avg_prompt_throughput,
+            avg_generation_throughput=avg_generation_throughput,
+            scheduler_running=len(self.scheduler.running),
+            scheduler_swapped=len(self.scheduler.swapped),
+            scheduler_waiting=len(self.scheduler.waiting),
+            gpu_cache_usage=gpu_cache_usage,
+            cpu_cache_usage=cpu_cache_usage,
+        )
+
         logger.info("Avg prompt throughput: "
                     f"{avg_prompt_throughput:.1f} tokens/s, "
                     "Avg generation throughput: "
@@ -886,7 +695,7 @@ class SpSLLMEngine:
              read_offset=seq.read_offset,
              skip_special_tokens=prms.skip_special_tokens,
              spaces_between_special_tokens=prms.spaces_between_special_tokens,
-         )
+        )
         if seq.tokens is None:
             seq.tokens = new_tokens
         else:

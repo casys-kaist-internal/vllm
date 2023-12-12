@@ -240,12 +240,6 @@ class AsyncEngineArgs(EngineArgs):
                             help='max number of prompt characters or prompt '
                             'ID numbers being printed in log. '
                             'Default: unlimited.')
-        parser.add_argument('--max-log-len',
-                            type=int,
-                            default=None,
-                            help='max number of prompt characters or prompt '
-                            'ID numbers being printed in log. '
-                            'Default: unlimited.')
         return parser
 
 
@@ -254,23 +248,18 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-    draft_size: int = 8
+    draft_size: int
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
-    target_download_dir: Optional[str] = None
-    draft_download_dir: Optional[str] = None
+    download_dir: Optional[str] = None
     load_format: str = 'auto'
     dtype: str = 'auto'
     seed: int = 0
     max_model_len: Optional[int] = None
     worker_use_ray: bool = False
-    target_data_parallel_size: int = 1
-    target_pipeline_parallel_size: int = 1
-    target_tensor_parallel_size: int = 1
-    draft_data_parallel_size: int = 1
-    draft_tensor_parallel_size: int = 1
-    draft_pipeline_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
@@ -306,7 +295,7 @@ class SpSEngineArgs:
             type=str,
             default='facebook/opt-125m',
             help='name or path of the huggingface model to use')
-        parser.add_argument('--window-size',
+        parser.add_argument('--draft-size',
                             type=int,
                             default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
@@ -339,15 +328,9 @@ class SpSEngineArgs:
         parser.add_argument('--trust-remote-code',
                             action='store_true',
                             help='trust remote code from huggingface')
-        parser.add_argument('--target-download-dir',
+        parser.add_argument('--download-dir',
                             type=str,
-                            default=SpSEngineArgs.target_download_dir,
-                            help='directory to download and load the weights, '
-                            'default to the default cache dir of '
-                            'huggingface')
-        parser.add_argument('--draft-download-dir',
-                            type=str,
-                            default=SpSEngineArgs.draft_download_dir,
+                            default=SpSEngineArgs.download_dir,
                             help='directory to download and load the weights, '
                             'default to the default cache dir of '
                             'huggingface')
@@ -388,25 +371,15 @@ class SpSEngineArgs:
                             help='use Ray for distributed serving, will be '
                             'automatically set when using more than 1 GPU')
         parser.add_argument('--target-pipeline-parallel-size',
-                            '-target-pp',
+                            '-tpp',
                             type=int,
-                            default=SpSEngineArgs.target_pipeline_parallel_size,
-                            help='number of pipeline stages')
+                            default=SpSEngineArgs.pipeline_parallel_size,
+                            help='number of pipeline stages for target model')
         parser.add_argument('--target-tensor-parallel-size',
-                            '-target-tp',
+                            '-ttp',
                             type=int,
-                            default=SpSEngineArgs.target_tensor_parallel_size,
-                            help='number of tensor parallel replicas')
-        parser.add_argument('--draft-tensor-parallel-size',
-                            '-draft-tp',
-                            type=int,
-                            default=SpSEngineArgs.draft_tensor_parallel_size,
-                            help='number of tensor parallel replicas')
-        parser.add_argument('--draft-data-parallel-size',
-                            '-draft-dp',
-                            type=int,
-                            default=SpSEngineArgs.draft_data_parallel_size,
-                            help='number of data parallel replicas')
+                            default=SpSEngineArgs.tensor_parallel_size,
+                            help='number of tensor parallel replicas for target model')
         parser.add_argument(
             '--max-parallel-loading-workers',
             type=int,
@@ -459,7 +432,7 @@ class SpSEngineArgs:
         return parser
 
     @classmethod
-    def from_cli_args(cls, args: argparse.Namespace) -> 'SpSEngineArgs':
+    def from_cli_args(cls, args: argparse.Namespace) -> 'EngineArgs':
         # Get the list of attributes of this dataclass.
         attrs = [attr.name for attr in dataclasses.fields(cls)]
         # Set the attributes from the parsed arguments.
@@ -468,33 +441,41 @@ class SpSEngineArgs:
 
     def create_engine_configs(
         self,
-    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, ParallelConfig, SchedulerConfig, SpSConfig]:
+    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, SchedulerConfig, SpSConfig]:
         target_model_config = ModelConfig(self.target_model, self.tokenizer,
                                           self.tokenizer_mode, self.trust_remote_code,
-                                          self.target_download_dir, self.load_format,
+                                          self.download_dir, self.load_format,
                                           self.dtype, self.seed, self.revision,
                                           self.tokenizer_revision, self.max_model_len,
                                           self.quantization)
         draft_model_config = ModelConfig(self.draft_model, self.tokenizer,
                                          self.tokenizer_mode, self.trust_remote_code,
-                                         self.draft_download_dir, self.load_format,
+                                         self.download_dir, self.load_format,
                                          self.dtype, self.seed, self.revision,
                                          self.tokenizer_revision, self.max_model_len,
                                          self.quantization)
-        cache_config = CacheConfig(
-            self.block_size, self.gpu_memory_utilization, self.swap_space,
-            getattr(target_model_config.hf_config, 'sliding_window', None))
-        target_parallel_config = ParallelConfig(self.target_pipeline_parallel_size,
-                                                self.target_tensor_parallel_size,
-                                                self.worker_use_ray,
-                                                self.max_parallel_loading_workers)
-        draft_parallel_config = ParallelConfig(self.draft_pipeline_parallel_size,
-                                               self.draft_tensor_parallel_size,
-                                               self.worker_use_ray,
-                                               self.max_parallel_loading_workers)
+        cache_config = CacheConfig(self.block_size,
+                                   self.gpu_memory_utilization,
+                                   self.swap_space,
+                                   target_model_config.get_sliding_window())
+        parallel_config = ParallelConfig(self.pipeline_parallel_size,
+                                         self.tensor_parallel_size,
+                                         self.worker_use_ray,
+                                         self.max_parallel_loading_workers)
+        # NOTE(sjchoi): We assume that draft model is always copied to every GPU.
+        # So, there is no need to get parallelism argument for draft model.
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.max_paddings)
         sps_config = SpSConfig(self.draft_size)
-        return target_model_config, draft_model_config, cache_config, target_parallel_config, draft_parallel_config, scheduler_config, sps_config
+
+        # Assertions for target model and draft model
+        assert (target_model_config.get_vocab_size()
+                == draft_model_config.get_vocab_size())
+        assert (target_model_config.get_sliding_window()
+                == draft_model_config.get_sliding_window())
+        assert (target_model_config.trust_remote_code ==
+                draft_model_config.trust_remote_code)
+
+        return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, sps_config
