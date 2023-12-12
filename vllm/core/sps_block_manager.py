@@ -10,7 +10,7 @@ from vllm.utils import Device
 BlockTable = List[PhysicalTokenBlock]
 
 
-class BlockAllocator:
+class SpSBlockAllocator:
     """Manages free physical token blocks for a device.
 
     The allocator maintains a list of free blocks and allocates a block when
@@ -54,7 +54,7 @@ class BlockAllocator:
         return len(self.free_blocks)
 
 
-class AllocStatus(enum.Enum):
+class SpSAllocStatus(enum.Enum):
     """Result for BlockSpaceManager.can_allocate
 
     1. Ok: seq_group can be allocated now.
@@ -68,7 +68,7 @@ class AllocStatus(enum.Enum):
     NEVER = enum.auto()
 
 
-class BlockSpaceManager:
+class SpSBlockSpaceManager:
     """Manages the mapping between logical and physical token blocks."""
 
     def __init__(
@@ -93,18 +93,19 @@ class BlockSpaceManager:
         assert watermark >= 0.0
 
         self.watermark_blocks = int(watermark * num_gpu_blocks)
-        self.gpu_allocator = BlockAllocator(Device.GPU, block_size,
-                                            num_gpu_blocks)
-        self.cpu_allocator = BlockAllocator(Device.CPU, block_size,
-                                            num_cpu_blocks)
+        self.gpu_allocator = SpSBlockAllocator(Device.GPU, block_size,
+                                               num_gpu_blocks)
+        self.cpu_allocator = SpSBlockAllocator(Device.CPU, block_size,
+                                               num_cpu_blocks)
         # Mapping: seq_id -> BlockTable.
         self.block_tables: Dict[int, BlockTable] = {}
 
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self, seq_group: SequenceGroup, size: int) -> SpSAllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
         seq = seq_group.get_seqs()[0]
-        num_required_blocks = len(seq.logical_token_blocks)
+        num_required_blocks = len(
+            seq.logical_token_blocks) + seq.get_num_additional_blocks(size)
         if self.block_sliding_window is not None:
             num_required_blocks = min(num_required_blocks,
                                       self.block_sliding_window)
@@ -113,20 +114,20 @@ class BlockSpaceManager:
         # Use watermark to avoid frequent cache eviction.
         if (self.num_total_gpu_blocks - num_required_blocks <
                 self.watermark_blocks):
-            return AllocStatus.NEVER
+            return SpSAllocStatus.NEVER
         if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
-            return AllocStatus.OK
+            return SpSAllocStatus.OK
         else:
-            return AllocStatus.LATER
+            return SpSAllocStatus.LATER
 
-    def allocate(self, seq_group: SequenceGroup) -> None:
+    def allocate(self, seq_group: SequenceGroup, size: int) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
         seq = seq_group.get_seqs()[0]
 
         # Allocate new physical token blocks that will store the prompt tokens.
         block_table: BlockTable = []
-        for logical_idx in range(len(seq.logical_token_blocks)):
+        for logical_idx in range(len(seq.logical_token_blocks) + seq.get_num_additional_blocks(size)):
             if (self.block_sliding_window is not None
                     and logical_idx >= self.block_sliding_window):
                 block = block_table[logical_idx % self.block_sliding_window]
@@ -140,30 +141,27 @@ class BlockSpaceManager:
         for seq in seq_group.get_seqs():
             self.block_tables[seq.seq_id] = block_table.copy()
 
-    def can_append_slot(self, seq_group: SequenceGroup) -> bool:
-        # Simple heuristic: If there is at least one free block
-        # for each sequence, we can append.
+    def can_append_slots(self, seq_group: SequenceGroup, size: int) -> bool:
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
-        num_seqs = seq_group.num_seqs(status=SequenceStatus.RUNNING)
-        return num_seqs <= num_free_gpu_blocks
+        num_additional_blocks = 0
+        for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+            num_additional_blocks += seq.get_num_additional_blocks(size)
 
-    def append_slot(self, seq: Sequence) -> Optional[Tuple[int, int]]:
-        """Allocate a physical slot for a new token."""
-        logical_blocks = seq.logical_token_blocks
+        return num_additional_blocks <= num_free_gpu_blocks
+
+    def append_slots(self, seq: Sequence, size: int) -> Optional[Tuple[int, int]]:
+        """Allocate a physical slot for new tokens."""
         block_table = self.block_tables[seq.seq_id]
 
-        if len(block_table) < len(logical_blocks):
+        for _ in range(seq.get_num_additional_blocks(size)):
             if (self.block_sliding_window
                     and len(block_table) >= self.block_sliding_window):
                 # re-use a block
                 block_table.append(block_table[len(block_table) %
                                                self.block_sliding_window])
             else:
-                # The sequence has a new logical block.
-                # Allocate a new physical block.
                 block = self.gpu_allocator.allocate()
                 block_table.append(block)
-                return None
 
         # We want to append the token to the last physical block.
         last_block = block_table[-1]
@@ -198,14 +196,14 @@ class BlockSpaceManager:
             blocks.update(self.block_tables[seq.seq_id])
         return list(blocks)
 
-    def can_swap_in(self, seq_group: SequenceGroup) -> bool:
+    def can_swap_in(self, seq_group: SequenceGroup, size: int) -> bool:
         blocks = self._get_physical_blocks(seq_group)
         num_swapped_seqs = seq_group.num_seqs(status=SequenceStatus.SWAPPED)
         num_free_blocks = self.gpu_allocator.get_num_free_blocks()
         # NOTE: Conservatively, we assume that every sequence will allocate
         # at least one free block right after the swap-in.
         # NOTE: This should match the logic in can_append_slot().
-        num_required_blocks = len(blocks) + num_swapped_seqs
+        num_required_blocks = len(blocks) + num_swapped_seqs * size
         return num_free_blocks - num_required_blocks >= self.watermark_blocks
 
     def swap_in(self, seq_group: SequenceGroup) -> Dict[int, int]:

@@ -47,8 +47,6 @@ class Worker:
         self.cache_events = None
         self.gpu_cache = None
 
-        self.parallel_state = ParallelState()
-
     def init_model(self):
         # This env var set by Ray causes exceptions with graph building.
         os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
@@ -64,7 +62,8 @@ class Worker:
         _check_if_gpu_supports_dtype(self.model_config.dtype)
 
         # Initialize the distributed environment.
-        self._init_distributed_environment()
+        _init_distributed_environment(self.parallel_config, self.rank,
+                                      self.distributed_init_method)
 
         # Initialize the model.
         set_random_seed(self.model_config.seed)
@@ -149,33 +148,36 @@ class Worker:
                                                  self.gpu_cache, cache_events)
         return output
 
-    def _init_distributed_environment(
-        self
-    ) -> None:
-        """Initialize the distributed environment."""
-        if torch.distributed.is_initialized():
-            torch_world_size = torch.distributed.get_world_size()
-            if torch_world_size != self.parallel_config.world_size:
-                raise RuntimeError(
-                    "torch.distributed is already initialized but the torch world "
-                    "size does not match parallel_config.world_size "
-                    f"({torch_world_size} vs. {self.parallel_config.world_size}).")
-        elif not self.distributed_init_method:
-            raise ValueError(
-                "distributed_init_method must be set if torch.distributed "
-                "is not already initialized")
-        else:
-            torch.distributed.init_process_group(
-                backend="nccl",
-                world_size=self.parallel_config.world_size,
-                rank=self.rank,
-                init_method=self.distributed_init_method,
-            )
 
-        # A small all_reduce for warmup.
-        torch.distributed.all_reduce(torch.zeros(1).cuda())
-        self.parallel_state.initialize_model_parallel(self.parallel_config.tensor_parallel_size,
-                                                      self.parallel_config.pipeline_parallel_size)
+def _init_distributed_environment(
+    parallel_config: ParallelConfig,
+    rank: int,
+    distributed_init_method: Optional[str] = None,
+) -> None:
+    """Initialize the distributed environment."""
+    if torch.distributed.is_initialized():
+        torch_world_size = torch.distributed.get_world_size()
+        if torch_world_size != parallel_config.world_size:
+            raise RuntimeError(
+                "torch.distributed is already initialized but the torch world "
+                "size does not match parallel_config.world_size "
+                f"({torch_world_size} vs. {parallel_config.world_size}).")
+    elif not distributed_init_method:
+        raise ValueError(
+            "distributed_init_method must be set if torch.distributed "
+            "is not already initialized")
+    else:
+        torch.distributed.init_process_group(
+            backend="nccl",
+            world_size=parallel_config.world_size,
+            rank=rank,
+            init_method=distributed_init_method,
+        )
+
+    # A small all_reduce for warmup.
+    torch.distributed.all_reduce(torch.zeros(1).cuda())
+    initialize_model_parallel(parallel_config.tensor_parallel_size,
+                              parallel_config.pipeline_parallel_size)
 
 
 def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):

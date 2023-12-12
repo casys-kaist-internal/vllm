@@ -3,13 +3,18 @@ import copy
 import enum
 from typing import Dict, List, Optional, Union
 
-import torch
-
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
+
+
+class SpSStage(enum.Enum):
+    """The stage of the speculative sampling process"""
+    PROMPT = enum.auto()
+    DRAFT_DECODE = enum.auto()
+    TARGET_DECODE = enum.auto()
 
 
 class SequenceStatus(enum.Enum):
@@ -71,7 +76,6 @@ class SequenceData:
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
         self.draft_cumulative_logprobs: List[float] = []
-        self.need_to_decode = 1
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -94,18 +98,23 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
-    def get_token_id_from_index(self, idx) -> int:
-        return self.output_token_ids[idx]
+    # SpS related methods start
+    def get_last_nth_token_id(self, idx) -> int:
+        assert idx > 0
+        if not self.output_token_ids:
+            return self.prompt_token_ids[-idx]
+        return self.output_token_ids[-idx]
 
-    # draft token related methods
+    def get_last_draft_token_id(self) -> int:
+        if not self.draft_token_ids:
+            return self.get_last_token_id()
+        return self.draft_token_ids[-1]
+
     def append_draft_token_id(self, token_id: int, logprob: float) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_cumulative_logprobs.append(logprob)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
-        # used for decoding sequence + 1 for the additional last token
-        self.need_to_decode = accept_cnt + 1
-
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
@@ -124,12 +133,13 @@ class SequenceData:
             return self.get_last_token_id()
 
         return self.draft_token_ids[-1]
+    # SpS related methods end
 
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob})"
+                f"cumulative_logprob={self.cumulative_logprob}), "
                 f"draft_token_ids={self.draft_token_ids}, "
                 f"draft_cumulative_logprobs={self.draft_cumulative_logprobs}")
 
@@ -170,6 +180,11 @@ class Sequence:
         # Used for incremental detokenization
         self.prefix_offset = 0
         self.read_offset = 0
+
+        # Used for decode assertion
+        self.none_token_cnt = 0
+        self.need_to_decode = 0
+
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
 
@@ -196,16 +211,6 @@ class Sequence:
                                                num_empty_slots])
             cursor += num_empty_slots
 
-    def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
-        assert len(self.logical_token_blocks) > 0
-
-        for _ in range(remove_cnt):
-            last_block = self.logical_token_blocks[-1]
-            last_block.remove_token()
-
-            if last_block.is_empty():
-                self.logical_token_blocks.pop()
-
     def append_token_id(
         self,
         token_id: int,
@@ -215,24 +220,6 @@ class Sequence:
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
-
-    def append_draft_token_id(
-        self,
-        token_id: int,
-        logprobs: Dict[int, float],
-    ) -> None:
-        assert token_id in logprobs
-        self._append_tokens_to_blocks([token_id])
-        self.output_logprobs.append(logprobs)
-        self.data.append_draft_token_id(token_id, logprobs[token_id])
-
-    def accept_draft_tokens(self, accept_cnt: int) -> None:
-        assert accept_cnt <= self.draft_size
-
-        reject_cnt = self.draft_size - accept_cnt
-        self.data.accept_draft_tokens(accept_cnt)
-        self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        self._remove_tokens_from_blocks(reject_cnt)
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -248,9 +235,6 @@ class Sequence:
 
     def get_last_token_id(self) -> int:
         return self.data.get_last_token_id()
-
-    def get_token_id_from_index(self, idx) -> int:
-        return self.data.get_token_id_from_index(idx)
 
     def get_output_token_ids(self) -> List[int]:
         return self.data.output_token_ids
@@ -285,29 +269,53 @@ class Sequence:
         new_seq.seq_id = new_seq_id
         return new_seq
 
-    def get_num_additional_blocks(self, draft_size) -> int:
+    # SpS related methods start
+    def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
+        assert len(self.logical_token_blocks) > 0
+
+        for _ in range(remove_cnt):
+            last_block = self.logical_token_blocks[-1]
+            last_block.remove_token()
+
+            if last_block.is_empty():
+                self.logical_token_blocks.pop()
+
+    def append_draft_token_id(
+        self,
+        token_id: int,
+        logprobs: Dict[int, float],
+    ) -> None:
+        assert token_id in logprobs
+        self._append_tokens_to_blocks([token_id])
+        self.output_logprobs.append(logprobs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id])
+
+    def accept_draft_tokens(self, accept_cnt: int) -> None:
+        assert accept_cnt <= self.draft_size
+        reject_cnt = self.draft_size - accept_cnt
+        self.data.accept_draft_tokens(accept_cnt)
+        self.output_logprobs = self.output_logprobs[:-reject_cnt]
+        self._remove_tokens_from_blocks(reject_cnt)
+
+    def get_last_nth_token_id(self, idx) -> int:
+        return self.data.get_last_nth_token_id(idx)
+
+    def get_num_additional_blocks(self, size: int) -> int:
         last_block = self.logical_token_blocks[-1]
         num_empty_slots = last_block.get_num_empty_slots()
 
-        if draft_size <= num_empty_slots:
+        if size <= num_empty_slots:
             return 0
 
-        num_additional_blocks = 1
-        remaining_slots = draft_size - num_empty_slots
+        num_blocks = 1
+        remaining_slots = size - num_empty_slots
 
         while remaining_slots > 0:
-            num_additional_blocks += 1
+            num_blocks += 1
             remaining_slots -= self.block_size
 
-        return num_additional_blocks
-
-        # num_additional_blocks = (
-        #     draft_size - num_empty_slots) // self.block_size
-
-        # if (draft_size - num_empty_slots) == num_additional_blocks * self.block_size:
-        #     return num_additional_blocks
-        # else:
-        #     return num_additional_blocks + 1
+        return num_blocks
+    # SpS related methods end
 
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "
@@ -439,12 +447,14 @@ class SequenceGroupMetadata:
         seq_data: Dict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
+        sps_stage: Optional[SpSStage] = None,
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
         self.seq_data = seq_data
         self.sampling_params = sampling_params
         self.block_tables = block_tables
+        self.sps_stage = sps_stage
 
 
 class SequenceOutput:
@@ -463,18 +473,15 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
-        probs: torch.Tensor  # for sps
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
-        self.probs = probs
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
                 f"output_token={self.output_token}, "
-                f"logprobs={self.logprobs})"
-                f"probs shape={self.probs.shape}")
+                f"logprobs={self.logprobs})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceOutput):
