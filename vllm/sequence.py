@@ -3,6 +3,7 @@ import copy
 import enum
 from typing import Dict, List, Optional, Union
 
+import torch
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
 
@@ -75,7 +76,8 @@ class SequenceData:
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
         self.draft_token_ids: List[int] = []
-        self.draft_cumulative_logprobs: List[float] = []
+        self.draft_logprobs: List[float] = []
+        self.draft_probs: List[torch.Tensor] = []
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -110,23 +112,28 @@ class SequenceData:
             return self.get_last_token_id()
         return self.draft_token_ids[-1]
 
-    def append_draft_token_id(self, token_id: int, logprob: float) -> None:
+    def append_draft_token_id(self, token_id: int, logprobs: float, probs: torch.Tensor) -> None:
         self.draft_token_ids.append(token_id)
-        self.draft_cumulative_logprobs.append(logprob)
+        self.draft_logprobs.append(logprobs)
+        self.draft_probs.append(probs)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
         for i in range(accept_cnt):
             self.append_token_id(
-                self.draft_token_ids[i], self.draft_cumulative_logprobs[i])
+                self.draft_token_ids[i], self.draft_logprobs[i])
 
         self.draft_token_ids.clear()
-        self.draft_cumulative_logprobs.clear()
+        self.draft_logprobs.clear()
+        self.draft_probs.clear()
 
     def get_draft_len(self) -> int:
         return len(self.draft_token_ids)
 
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
+
+    def get_draft_probs(self) -> List[torch.Tensor]:
+        return self.draft_probs
 
     def get_last_draft_token_id(self) -> int:
         if len(self.draft_token_ids) == 0:
@@ -141,7 +148,7 @@ class SequenceData:
                 f"output_token_ids={self.output_token_ids}, "
                 f"cumulative_logprob={self.cumulative_logprob}), "
                 f"draft_token_ids={self.draft_token_ids}, "
-                f"draft_cumulative_logprobs={self.draft_cumulative_logprobs}")
+                f"draft_cumulative_logprobs={self.draft_logprobs}")
 
 
 class Sequence:
@@ -180,10 +187,7 @@ class Sequence:
         # Used for incremental detokenization
         self.prefix_offset = 0
         self.read_offset = 0
-
-        # Used for decode assertion
-        self.none_token_cnt = 0
-        self.need_to_decode = 0
+        self.decode_offset = 0
 
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
@@ -280,15 +284,22 @@ class Sequence:
             if last_block.is_empty():
                 self.logical_token_blocks.pop()
 
+    def get_draft_token_ids(self) -> List[int]:
+        return self.data.get_draft_token_ids()
+
+    def get_draft_probs(self) -> List[torch.Tensor]:
+        return self.data.get_draft_probs()
+
     def append_draft_token_id(
         self,
         token_id: int,
         logprobs: Dict[int, float],
+        probs: torch.Tensor
     ) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_draft_token_id(token_id, logprobs[token_id])
+        self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
         assert accept_cnt <= self.draft_size
@@ -473,10 +484,12 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        probs: torch.Tensor,  # added for SpS
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.probs = probs
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
