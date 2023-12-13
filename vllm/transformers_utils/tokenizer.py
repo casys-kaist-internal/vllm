@@ -125,6 +125,7 @@ def detokenize_incrementally(
     prev_tokens: Optional[List[str]],
     prefix_offset: int = 0,
     read_offset: int = 0,
+    decode_offset: int = 0,
     skip_special_tokens: bool = False,
     spaces_between_special_tokens: bool = True,
 ) -> Tuple[List[str], str, int, int]:
@@ -134,6 +135,7 @@ def detokenize_incrementally(
         new_tokens = tokenizer.convert_ids_to_tokens(
             all_input_ids, skip_special_tokens=skip_special_tokens)
         output_tokens = new_tokens
+        decode_offset = len(all_input_ids)
         # 5 is an arbitrary value that should work for all
         # tokenizers (bigger = more conservative).
         # Subtract 1 extra to account for the generated token.
@@ -146,8 +148,9 @@ def detokenize_incrementally(
     else:
         # Put new_token_id in a list so skip_special_tokens is respected
         new_tokens = tokenizer.convert_ids_to_tokens(
-            [new_token_id], skip_special_tokens=skip_special_tokens)
+            all_input_ids[decode_offset:], skip_special_tokens=skip_special_tokens)
         output_tokens = prev_tokens + new_tokens
+        decode_offset += len(all_input_ids[decode_offset:])
 
     # The prefix text is necessary only to defeat cleanup algorithms in
     # the decode which decide to add a space or not depending on the
@@ -177,6 +180,6 @@ def detokenize_incrementally(
         # If it's in the middle, it's probably a real invalid id generated
         # by the model
         new_text = new_text[len(prefix_text):]
-        return new_tokens, new_text, read_offset, len(output_tokens)
+        return new_tokens, new_text, read_offset, len(output_tokens), decode_offset
     else:
-        return new_tokens, "", prefix_offset, read_offset
+        return new_tokens, "", prefix_offset, read_offset, decode_offset
