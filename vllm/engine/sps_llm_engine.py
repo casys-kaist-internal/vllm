@@ -3,6 +3,7 @@ import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple, Union, Dict
 
+import torch
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
 from vllm.core.sps_scheduler import SpSScheduler, SpSSchedulerOutputs
@@ -10,6 +11,7 @@ from vllm.engine.arg_utils import SpSEngineArgs
 from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
+from vllm.model_executor.layers.sampler import modified_rejection_sample
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup,
@@ -381,22 +383,61 @@ class SpSLLMEngine:
                 # Append the prompt token to the parent sequence.
                 parent.append_token_id(child_sample.output_token,
                                        child_sample.logprobs)
+
             elif sps_stage == SpSStage.DRAFT_DECODE:
                 # Append the draft token to the parent sequence.
                 parent.append_draft_token_id(child_sample.output_token,
-                                             child_sample.logprobs)
+                                             child_sample.logprobs,
+                                             child_sample.probs)
+
+            elif sps_stage == SpSStage.TARGET_DECODE:
+                # Accept a subset of draft tokens from left to right,
+                # recovering the distribution of the target model in process.
+                draft_token_ids = parent.get_draft_token_ids()
+                draft_probs = parent.get_draft_probs()
+                assert len(draft_token_ids) == len(draft_probs)
+
+                accept_cnt = 0
+                for draft_idx, draft_token_id in enumerate(draft_token_ids):
+                    draft_prob = draft_probs[draft_idx]
+                    target_prob = child_sample.probs[draft_idx][draft_token_id]
+                    r = torch.rand(1, device=draft_prob.device)
+
+                    if r < torch.min(torch.tensor([1], device=draft_prob.device),
+                                     target_prob / draft_prob):
+                        # accept
+                        accept_cnt += 1
+                    else:
+                        # reject
+                        resample_token_id, resample_logprobs = modified_rejection_sample(
+                            child_sample.probs[draft_idx],
+                            draft_prob, seq_group.sampling_params)
+                        break
+
+                parent.accept_draft_tokens(accept_cnt)
+
+                if accept_cnt != self.sps_config.draft_size:
+                    parent.append_token_id(
+                        resample_token_id, resample_logprobs)
+                else:
+                    # all accepted so sample additional token
+                    parent.append_token_id(
+                        child_sample.output_token, child_sample.logprobs)
+
+                    # FIXME Need to run draft model to cache kv for the additional
+                    # token sampled by target model.
             else:
-                # TARGET_DECODE stage does not call this function.
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
 
             child_seqs.append((parent, parent))
 
-        # Decode and check stop only on PROMPT stage not DRAFT_DECODE stage.
-        # We decode and check stop after TARGET_DECODE stage.
-        if sps_stage == SpSStage.PROMPT:
+        # Decode and check stop only on PROMPT stage and TARGET_DECODE stage.
+        if sps_stage == SpSStage.PROMPT or sps_stage == SpSStage.TARGET_DECODE:
             for seq, _ in child_seqs:
+                check_cnt = (seq.get_len() - seq.decode_offset
+                             if sps_stage == SpSStage.TARGET_DECODE else 1)
                 self._decode_sequence(seq, seq_group.sampling_params)
-                self._check_stop(seq, seq_group.sampling_params)
+                self._check_stop(seq, seq_group.sampling_params, check_cnt)
 
         # Free the finished and selected parent sequences' memory in block
         # manager. Keep them in the sequence group as candidate output.
@@ -432,102 +473,6 @@ class SpSLLMEngine:
                                    scheduler_outputs.num_batched_tokens)
         return request_outputs
 
-    def _process_target_model_outputs(
-            self, output: SamplerOutput,
-            scheduler_outputs: SpSSchedulerOutputs) -> List[RequestOutput]:
-        # Update the scheduled sequence groups with the model outputs.
-        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
-        for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_sequence_group_outputs(seq_group, outputs)
-
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
-
-        # Create the outputs.
-        request_outputs: List[RequestOutput] = []
-        for seq_group in (scheduled_seq_groups +
-                          scheduler_outputs.ignored_seq_groups):
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
-
-        if self.log_stats:
-            # Log the system stats.
-            self._log_system_stats(scheduler_outputs.prompt_run,
-                                   scheduler_outputs.num_batched_tokens)
-        return request_outputs
-
-    def _process_target_outputs(
-        self,
-        seq_groups: List[SequenceGroup],
-    ) -> List[RequestOutput]:
-
-        # Decode and stop seqs from target output
-        self._decode_and_stop_target_output(seq_groups)
-
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
-
-        # Create the outputs.
-        request_outputs: List[RequestOutput] = []
-        for seq_group in seq_groups:
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
-
-        return request_outputs
-
-    def target_update(
-        self,
-        draft_output_list: List[Dict[int, SequenceOutput]],
-        target_output: SamplerOutput,  # List[SequenceGroupOutput]
-        scheduler_output: SchedulerOutputs,
-    ) -> List[SequenceGroup]:
-        scheduled: List[SequenceGroup] = []
-        outputs: Dict[int, SequenceOutput]  # 기존 seq_outputs 역할
-
-        # List[SequenceGroup]
-        scheduler_seq_groups = scheduler_output.scheduled_seq_groups
-        # SequenceGroup, SequenceGroupOutput
-        for seq_group, output in zip(scheduler_seq_groups, target_output):
-            if seq_group in self.running:
-                for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                    scheduled.append(seq_group)
-                    outputs[seq.seq_id] = output[seq.seq_id]  # SequenceOutput
-                    break
-
-        # Verify and rollback
-        for seq_group in scheduled:
-            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                accept_cnt = 0
-                for i, draft_output in enumerate(draft_output_list):
-                    draft_seq_output = draft_output[seq.seq_id]
-                    token_id = draft_seq_output.output_token
-                    draft_prob = draft_seq_output.probs[token_id]
-                    target_prob = target_output[seq.seq_id].probs[i][token_id]
-                    r = torch.rand(1, device=draft_prob.device)
-
-                    if r < torch.min(torch.tensor([1], device=draft_prob.device), target_prob / draft_prob):
-                        # accept
-                        accept_cnt += 1
-                    else:
-                        # reject
-                        resample_token_id, resample_logprobs = modified_rejection_sample(target_output[seq.seq_id].probs[i],
-                                                                                         draft_seq_output.probs, seq_group.sampling_params)
-                        break
-
-                seq.accept_draft_tokens(accept_cnt)
-                # print("! accept_cnt", accept_cnt)
-
-                if accept_cnt != self.sps_config.draft_size:
-                    seq.append_token_id(resample_token_id, resample_logprobs)
-                # else:
-                #     # all accepted so sample additional token
-                #     seq.append_token_id(
-                #         target_output[seq.seq_id].output_token, target_output[seq.seq_id].logprobs)
-
-                #     # Need to run draft model to cache kv for the additional token sampled by target model.
-
-        return scheduled
-
     def step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
@@ -556,7 +501,7 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            # Don't need output for draft model. Execution required only for draft KV cache.
+            # Don't need output for draft model. Execution required for draft KV cache.
             self._run_workers(
                 "execute_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -565,12 +510,11 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            return self._process_model_outputs(output, scheduler_outputs, SpSStage.PROMPT)
 
         else:
             assert sps_stage == SpSStage.DRAFT_DECODE
 
-            draft_output_list: List[SamplerOutput] = []
             # Iterate over the range of draft size
             for draft_index in range(self.sps_config.draft_size):
                 # Only swap in/out/copy blocks for the first draft iteration
@@ -592,8 +536,7 @@ class SpSLLMEngine:
                     )
 
                 self._process_model_outputs(
-                    draft_output, scheduler_outputs, sps_stage)
-                draft_output_list.append(draft_output)
+                    draft_output, scheduler_outputs, SpSStage.DRAFT_DECODE)
 
             # Change to TARGET_DECODE stage
             for seq_group_metadata in seq_group_metadata_list:
@@ -609,7 +552,7 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            return self._process_target_model_outputs(target_output, scheduler_outputs)
+            return self._process_model_outputs(target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
 
     def _log_system_stats(
         self,
@@ -687,12 +630,13 @@ class SpSLLMEngine:
     def _decode_sequence(self, seq: Sequence, prms: SamplingParams) -> None:
         """Decodes the new token for a sequence."""
         (new_tokens, new_output_text, prefix_offset,
-         read_offset) = detokenize_incrementally(
+         read_offset, decode_offset) = detokenize_incrementally(
              self.tokenizer,
              all_input_ids=seq.get_token_ids(),
              prev_tokens=seq.tokens,
              prefix_offset=seq.prefix_offset,
              read_offset=seq.read_offset,
+             decode_offset=seq.decode_offset,
              skip_special_tokens=prms.skip_special_tokens,
              spaces_between_special_tokens=prms.spaces_between_special_tokens,
         )
@@ -702,21 +646,39 @@ class SpSLLMEngine:
             seq.tokens.extend(new_tokens)
         seq.prefix_offset = prefix_offset
         seq.read_offset = read_offset
+        seq.decode_offset = decode_offset
         seq.output_text += new_output_text
 
     def _check_stop(self, seq: Sequence,
-                    sampling_params: SamplingParams) -> None:
+                    sampling_params: SamplingParams,
+                    check_cnt: int) -> None:
         """Stop the finished sequences."""
         for stop_str in sampling_params.stop:
+            # Initialize the index to start checking from
+            idx = -check_cnt + 1
+
+            # Continue checking until we've checked all characters in the check count
+            while idx != 0:
+                if seq.output_text[:idx].endswith(stop_str):
+                    # Truncate the output text so that the stop string is
+                    # not included in the output.
+                    seq.output_text = (seq.output_text[:idx][:-len(stop_str)])
+                    seq.status = SequenceStatus.FINISHED_STOPPED
+                    return
+                idx += 1
+
+            # If the entire output text ends with the stop string
             if seq.output_text.endswith(stop_str):
                 # Truncate the output text so that the stop string is
                 # not included in the output.
-                seq.output_text = seq.output_text[:-len(stop_str)]
+                seq.output_text = (seq.output_text[:-len(stop_str)])
                 seq.status = SequenceStatus.FINISHED_STOPPED
                 return
-        if seq.get_last_token_id() in sampling_params.stop_token_ids:
-            seq.status = SequenceStatus.FINISHED_STOPPED
-            return
+
+        for idx in range(-check_cnt, 0):
+            if seq.get_last_nth_token_id(idx) in sampling_params.stop_token_ids:
+                seq.status = SequenceStatus.FINISHED_STOPPED
+                return
 
         # Check if the sequence has reached max_model_len.
         if seq.get_len() > self.scheduler_config.max_model_len:
@@ -724,15 +686,16 @@ class SpSLLMEngine:
             return
 
         # Check if the sequence has reached max_tokens.
-        if seq.get_output_len() == sampling_params.max_tokens:
+        if seq.get_output_len() >= sampling_params.max_tokens:
             seq.status = SequenceStatus.FINISHED_LENGTH_CAPPED
             return
 
         # Check if the sequence has generated the EOS token.
-        if ((not sampling_params.ignore_eos)
-                and seq.get_last_token_id() == self.tokenizer.eos_token_id):
-            seq.status = SequenceStatus.FINISHED_STOPPED
-            return
+        if idx in range(-check_cnt, 0):
+            if ((not sampling_params.ignore_eos)
+                    and seq.get_last_nth_token_id(idx) == self.tokenizer.eos_token_id):
+                seq.status = SequenceStatus.FINISHED_STOPPED
+                return
 
     def _run_workers_in_batch(
         self,
