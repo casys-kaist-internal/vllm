@@ -17,22 +17,28 @@ class InputMetadata:
     def __init__(
         self,
         prompt_lens: List[int],
+        draft_lens: List[int],
         slot_mapping: torch.Tensor,
         max_context_len: Optional[int],
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
-        draft_lens: Optional[List[int]],
     ) -> None:
         self.prompt_lens = prompt_lens
+        self.draft_lens = draft_lens
         self.max_context_len = max_context_len
         self.slot_mapping = slot_mapping
         self.context_lens = context_lens
         self.block_tables = block_tables
-        self.draft_lens = draft_lens
 
+        # SpS PROMPT: is_prompt == True
+        # SpS DRAFT_DECODE: is_prompt == False and is_target_decode == False
+        # SpS TARGET_DECODE: is_prompt == False and is_target_decode == True
         self.is_prompt = len(prompt_lens) > 0
-        self.is_target_decode = (not self.is_prompt) and (
-            draft_lens is not None)
+        self.is_target_decode = (not self.is_prompt) and (len(draft_lens) > 0)
+
+        if self.is_prompt:
+            assert self.is_target_decode == False
+
         # Set during the execution of the first attention op.
         # FIXME(woosuk): This is a hack.
         self.attn_bias = None
@@ -40,6 +46,7 @@ class InputMetadata:
     def __repr__(self) -> str:
         return ("InputMetadata("
                 f"prompt_lens={self.prompt_lens}, "
+                f"draft_lens={self.draft_lens}, "
                 f"max_context_len={self.max_context_len}, "
                 f"slot_mapping={self.slot_mapping}, "
                 f"context_lens={self.context_lens}, "
