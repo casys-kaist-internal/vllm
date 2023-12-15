@@ -5,6 +5,7 @@ import torch
 from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
 
@@ -32,8 +33,8 @@ class ModelRunner:
         self.model = None
         self.block_size = None  # Set after initial profiling.
 
-    def load_model(self) -> None:
-        self.model = get_model(self.model_config)
+    def load_model(self, parallel_state: ParallelState) -> None:
+        self.model = get_model(self.model_config, parallel_state)
 
     def set_block_size(self, block_size: int) -> None:
         self.block_size = block_size
