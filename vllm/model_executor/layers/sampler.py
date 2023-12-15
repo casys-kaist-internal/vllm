@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_all_gather)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import (PromptLogprobs, SampleLogprobs, SamplerOutput,
@@ -29,8 +30,9 @@ class Sampler(nn.Module):
     parameters (e.g., sampling method, temperature, top-p, top-k, etc.).
     """
 
-    def __init__(self, vocab_size: int) -> None:
+    def __init__(self, parallel_state: ParallelState, vocab_size: int) -> None:
         super().__init__()
+        self.parallel_state = parallel_state
         self.vocab_size = vocab_size
 
     def forward(
@@ -44,7 +46,7 @@ class Sampler(nn.Module):
         hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
 
         # Get the logits for the next tokens.
-        logits = _get_logits(hidden_states, embedding, embedding_bias,
+        logits = _get_logits(self.parallel_state, hidden_states, embedding, embedding_bias,
                              self.vocab_size)
 
         # Apply logits processors (if any).
@@ -89,23 +91,48 @@ class Sampler(nn.Module):
         # Use log_softmax to ensure numerical stability.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
-        # Sample the next tokens.
-        sample_results = _sample(probs, logprobs, sampling_metadata)
-        # Get the logprobs query results.
-        prompt_logprobs, sample_logprobs = _get_logprobs(
-            logprobs, sampling_metadata, sample_results)
+        # We only need last prob and logprob values for sampling the next token for target decode.
+        # Get prob and logprob for only last token for each seq_group (in case of all acceptance)
+        if sampling_metadata.is_target_decode:
+            prob = torch.empty(
+                (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
+            logprob = torch.empty(
+                (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
+
+            idx = 0
+            for seq_idx in range(len(sampling_metadata.seq_groups)):
+                prob[seq_idx] = probs[idx +
+                                      sampling_metadata.draft_lens[seq_idx] - 1, ]
+                logprob[seq_idx] = logprobs[idx +
+                                            sampling_metadata.draft_lens[seq_idx] - 1, ]
+                idx += sampling_metadata.draft_lens[seq_idx]
+
+            # Sample the next tokens.
+            sample_results = _sample(prob, logprob, sampling_metadata)
+            # Get the logprobs query results.
+            prompt_logprobs, sample_logprobs = _get_logprobs(
+                logprob, sampling_metadata, sample_results)
+
+        else:
+            # Sample the next tokens.
+            sample_results = _sample(probs, logprobs, sampling_metadata)
+            # Get the logprobs query results.
+            prompt_logprobs, sample_logprobs = _get_logprobs(
+                logprobs, sampling_metadata, sample_results)
+
         return _build_sampler_output(sample_results, sampling_metadata,
-                                     prompt_logprobs, sample_logprobs)
+                                     prompt_logprobs, sample_logprobs, probs)
 
 
-def _get_logits(hidden_states: torch.Tensor, embedding: torch.Tensor,
+def _get_logits(parallel_state: ParallelState,
+                hidden_states: torch.Tensor, embedding: torch.Tensor,
                 embedding_bias: Optional[torch.Tensor],
                 vocab_size: int) -> torch.Tensor:
     # Get the logits for the next tokens.
     logits = torch.matmul(hidden_states, embedding.t())
     if embedding_bias is not None:
         logits += embedding_bias
-    logits = tensor_model_parallel_all_gather(logits)
+    logits = tensor_model_parallel_all_gather(parallel_state, logits)
     # Remove paddings in vocab (if any).
     logits = logits[:, :vocab_size]
     return logits
@@ -140,9 +167,17 @@ def _get_penalties(
             presence_penalties += [0] * (prompt_len - 1)
             frequency_penalties += [0] * (prompt_len - 1)
             repetition_penalties += [1] * (prompt_len - 1)
-        presence_penalties += [p] * len(seq_ids)
-        frequency_penalties += [f] * len(seq_ids)
-        repetition_penalties += [r] * len(seq_ids)
+
+        if not sampling_metadata.is_target_decode:
+            presence_penalties += [p] * len(seq_ids)
+            frequency_penalties += [f] * len(seq_ids)
+            repetition_penalties += [r] * len(seq_ids)
+        else:
+            assert len(seq_ids) == 1
+            presence_penalties += [p] * sampling_metadata.draft_lens[i]
+            frequency_penalties += [f] * sampling_metadata.draft_lens[i]
+            repetition_penalties += [r] * sampling_metadata.draft_lens[i]
+
     return presence_penalties, frequency_penalties, repetition_penalties
 
 
@@ -284,7 +319,13 @@ def _get_temperatures(sampling_metadata: SamplingMetadata) -> List[float]:
                 and sampling_params.prompt_logprobs is not None):
             prompt_len = sampling_metadata.prompt_lens[i]
             temperatures += [temperature] * (prompt_len - 1)
-        temperatures += [temperature] * len(seq_ids)
+
+        if not sampling_metadata.is_target_decode:
+            temperatures += [temperature] * len(seq_ids)
+        else:
+            assert len(seq_ids) == 1
+            temperatures += [temperature] * sampling_metadata.draft_lens[i]
+
     return temperatures
 
 
@@ -309,9 +350,17 @@ def _get_top_p_top_k_min_p(
             top_ps += [top_p] * (prompt_len - 1)
             top_ks += [top_k] * (prompt_len - 1)
             min_ps += [min_p] * (prompt_len - 1)
-        top_ps += [top_p] * len(seq_ids)
-        top_ks += [top_k] * len(seq_ids)
-        min_ps += [min_p] * len(seq_ids)
+
+        if not sampling_metadata.is_target_decode:
+            top_ps += [top_p] * len(seq_ids)
+            top_ks += [top_k] * len(seq_ids)
+            min_ps += [min_p] * len(seq_ids)
+        else:
+            assert len(seq_ids) == 1
+            top_ps += [top_p] * sampling_metadata.draft_lens[i]
+            top_ks += [top_k] * sampling_metadata.draft_lens[i]
+            min_ps += [min_p] * sampling_metadata.draft_lens[i]
+
     return top_ps, top_ks, min_ps
 
 
@@ -633,20 +682,30 @@ def _build_sampler_output(
     sampling_metadata: SamplingMetadata,
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
+    probs: torch.Tensor,
 ) -> SamplerOutput:
     sampler_output = []
-    for (seq_group, sample_result, group_prompt_logprobs,
-         group_sample_logprobs) in zip(sampling_metadata.seq_groups,
-                                       sample_results, prompt_logprobs,
-                                       sample_logprobs):
+    pos = 0
+    for (idx, seq_group, sample_result, group_prompt_logprobs,
+         group_sample_logprobs) in enumerate(zip(sampling_metadata.seq_groups,
+                                                 sample_results, prompt_logprobs,
+                                                 sample_logprobs)):
         seq_ids, _ = seq_group
         next_token_ids, parent_ids = sample_result
         seq_outputs = []
         for parent_id, next_token_id, logprobs in zip(parent_ids,
                                                       next_token_ids,
                                                       group_sample_logprobs):
-            seq_outputs.append(
-                SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
+            if not sampling_metadata.is_target_decode:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id,
+                                   logprobs, probs[idx]))
+            else:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id,
+                                   logprobs, probs[pos:pos+sampling_metadata.draft_lens[idx]]))
+                pos += sampling_metadata.draft_lens[idx]
+
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
     return sampler_output

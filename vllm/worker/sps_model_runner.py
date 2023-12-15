@@ -34,7 +34,7 @@ class SpSModelRunner:
         self.block_size = None  # Set after initial profiling.
 
     def load_model(self, parallel_state: ParallelState) -> None:
-        self.model = get_model(self.model_config)
+        self.model = get_model(self.model_config, parallel_state)
 
     def set_block_size(self, block_size: int) -> None:
         self.block_size = block_size
@@ -109,6 +109,7 @@ class SpSModelRunner:
 
         input_metadata = InputMetadata(
             prompt_lens=prompt_lens,
+            draft_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -180,6 +181,7 @@ class SpSModelRunner:
 
         input_metadata = InputMetadata(
             prompt_lens=[],
+            draft_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -197,7 +199,6 @@ class SpSModelRunner:
         slot_mapping: List[List[int]] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
-        max_len = 0
 
         draft_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
@@ -209,7 +210,6 @@ class SpSModelRunner:
                 generation_tokens = [
                     seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
                 input_tokens.extend(generation_tokens)
-                max_len = max(max_len, len(generation_tokens))
 
                 draft_lens.append(len(generation_tokens))
                 for i in range(len(generation_tokens)):
@@ -222,29 +222,30 @@ class SpSModelRunner:
                 input_positions.extend(
                     range(position_start, position_start + len(generation_tokens)))
 
-                block_table = seq_group_metadata.block_tables[seq_id]
                 for position in range(position_start, position_start + len(generation_tokens)):
+                    block_table = seq_group_metadata.block_tables[seq_id]
                     block_number = block_table[position // self.block_size]
                     block_offset = position % self.block_size
                     slot = block_number * self.block_size + block_offset
                     slot_mapping.append([slot])
 
-                if self.sliding_window is not None:
-                    sliding_window_blocks = (self.sliding_window //
-                                             self.block_size)
-                    block_table = block_table[-sliding_window_blocks:]
-                block_tables.append(block_table)
+                    if self.sliding_window is not None:
+                        sliding_window_blocks = (self.sliding_window //
+                                                 self.block_size)
+                        block_table = block_table[-sliding_window_blocks:]
+
+                    block_tables.append(block_table)
 
         input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=max_len,
+                                             max_len=1,
                                              pad=0,
                                              dtype=torch.long)
         input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=max_len,
+                                                max_len=1,
                                                 pad=0,
                                                 dtype=torch.long)
         slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=max_len,
+                                             max_len=1,
                                              pad=_PAD_SLOT_ID,
                                              dtype=torch.long)
         max_context_len = max(context_lens)
@@ -259,34 +260,38 @@ class SpSModelRunner:
 
         input_metadata = InputMetadata(
             prompt_lens=[],
+            # NOTE(sjchoi): draft_lens only needed for target decode
+            draft_lens=draft_lens,
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
             block_tables=block_tables,
-            # NOTE(sjchoi): draft_lens only needed for target decode
-            draft_lens=draft_lens
         )
         return input_tokens, input_positions, input_metadata
 
     def _prepare_sample(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        prompt_lens: List[int],
+        input_metadata: InputMetadata,
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
         selected_token_start_idx = 0
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
+        prompt_lens: List[int] = input_metadata.prompt_lens
+        draft_lens: List[int] = input_metadata.draft_lens
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
         for i, seq_group_metadata in enumerate(seq_group_metadata_list):
             seq_ids = list(seq_group_metadata.seq_data.keys())
+            assert len(seq_ids) == 1, ("SpS does not support beam search, "
+                                       "so there should be one seq_id per seq_group_metadata.")
+
             sampling_params = seq_group_metadata.sampling_params
             seq_groups.append((seq_ids, sampling_params))
 
             if seq_group_metadata.sps_stage == SpSStage.PROMPT:
-                assert len(seq_ids) == 1
                 prompt_len = prompt_lens[i]
                 if sampling_params.prompt_logprobs is not None:
                     # NOTE: prompt token positions do not need sample, skip
@@ -318,16 +323,17 @@ class SpSModelRunner:
                 categorized_sample_indices_start_idx += num_seqs
             elif seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE:
                 num_seqs = len(seq_ids)
+                draft_len = draft_lens[i]
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
-                          selected_token_start_idx + num_seqs))
-                selected_token_start_idx += num_seqs
+                          selected_token_start_idx + draft_len))
+                selected_token_start_idx += draft_len
 
                 categorized_sample_indices[
                     sampling_params.sampling_type].extend(
                         range(categorized_sample_indices_start_idx,
-                              categorized_sample_indices_start_idx + num_seqs))
-                categorized_sample_indices_start_idx += num_seqs
+                              categorized_sample_indices_start_idx + draft_len))
+                categorized_sample_indices_start_idx += draft_len
             else:
                 raise ValueError(
                     f"Invalid SpS stage: {seq_group_metadata.sps_stage}")
@@ -348,6 +354,7 @@ class SpSModelRunner:
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=prompt_lens,
+            draft_lens=draft_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
         )
@@ -375,7 +382,7 @@ class SpSModelRunner:
 
         input_tokens, input_positions, input_metadata = inputs
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
-                                                 input_metadata.prompt_lens)
+                                                 input_metadata)
 
         # Execute the model.
         hidden_states = self.model(
