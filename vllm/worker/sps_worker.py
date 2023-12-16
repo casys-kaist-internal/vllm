@@ -233,8 +233,8 @@ class SpSWorker:
         torch.distributed.all_reduce(torch.zeros(1).cuda())
         self.target_parallel_state.initialize_model_parallel(self.parallel_config.tensor_parallel_size,
                                                              self.parallel_config.pipeline_parallel_size)
-        self.draft_parallel_state.initialize_model_parallel(tensor_model_parallel_size=1,
-                                                            pipeline_model_parallel_size=1)
+        self.draft_parallel_state.initialize_model_parallel(self.parallel_config.tensor_parallel_size,
+                                                            self.parallel_config.pipeline_parallel_size)
 
 
 def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
