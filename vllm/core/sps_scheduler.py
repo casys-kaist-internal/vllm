@@ -219,7 +219,7 @@ class SpSScheduler:
         preempted: List[SequenceGroup] = []
         while self.running:
             seq_group = self.running.pop(0)
-            while not self.block_manager.can_append_slots(seq_group, self.sps_config.draft_size):
+            while not self.block_manager.can_append_slots(seq_group, self.sps_config.draft_size + 1):
                 if self.running:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = self.running.pop(-1)
@@ -233,7 +233,8 @@ class SpSScheduler:
                     break
             else:
                 # Append new slots to the sequence group.
-                self._append_slots(seq_group, blocks_to_copy)
+                self._append_slots(
+                    seq_group, self.sps_config.draft_size + 1, blocks_to_copy)
                 running.append(seq_group)
         self.running = running
 
@@ -246,7 +247,7 @@ class SpSScheduler:
             while self.swapped:
                 seq_group = self.swapped[0]
                 # If the sequence group cannot be swapped in, stop.
-                if not self.block_manager.can_swap_in(seq_group, self.sps_config.draft_size):
+                if not self.block_manager.can_swap_in(seq_group, self.sps_config.draft_size + 1):
                     break
 
                 # The total number of sequences in the RUNNING state should not
@@ -259,7 +260,7 @@ class SpSScheduler:
                 seq_group = self.swapped.pop(0)
                 self._swap_in(seq_group, blocks_to_swap_in)
                 self._append_slots(
-                    seq_group, self.sps_config.draft_size, blocks_to_copy)
+                    seq_group, self.sps_config.draft_size + 1, blocks_to_copy)
                 num_curr_seqs += num_new_seqs
                 self.running.append(seq_group)
 
