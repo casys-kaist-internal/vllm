@@ -206,6 +206,7 @@ class OPTDecoder(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.word_embed_proj_dim,
         )

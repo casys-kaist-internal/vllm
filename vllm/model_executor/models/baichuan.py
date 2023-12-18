@@ -36,8 +36,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -76,6 +75,7 @@ class BaiChuanMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -83,10 +83,12 @@ class BaiChuanMLP(nn.Module):
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
+            parallel_state,
             hidden_size, [intermediate_size] * 2,
             bias=False,
             linear_method=linear_method)
-        self.down_proj = RowParallelLinear(intermediate_size,
+        self.down_proj = RowParallelLinear(parallel_state,
+                                           intermediate_size,
                                            hidden_size,
                                            bias=False,
                                            linear_method=linear_method)
@@ -107,6 +109,7 @@ class BaiChuanAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         hidden_size: int,
         num_heads: int,
         position_embedding: str,
@@ -116,7 +119,7 @@ class BaiChuanAttention(nn.Module):
     ):
         super().__init__()
         self.hidden_size = hidden_size
-        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
+        tensor_model_parallel_world_size = parallel_state.get_tensor_model_parallel_world_size(
         )
         self.total_num_heads = num_heads
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
@@ -129,6 +132,7 @@ class BaiChuanAttention(nn.Module):
 
         # pylint: disable=invalid-name
         self.W_pack = QKVParallelLinear(
+            parallel_state,
             hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -137,6 +141,7 @@ class BaiChuanAttention(nn.Module):
             linear_method=linear_method,
         )
         self.o_proj = RowParallelLinear(
+            parallel_state,
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -144,7 +149,7 @@ class BaiChuanAttention(nn.Module):
         )
         # Create the alibi slopes and slice them.
         if self.postion_embedding == "ALIBI":
-            tp_rank = get_tensor_model_parallel_rank()
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
             head_start = tp_rank * self.num_heads
             head_end = (tp_rank + 1) * self.num_heads
             alibi_slopes = _get_alibi_slopes(self.total_num_heads)
@@ -188,6 +193,7 @@ class BaiChuanAttention(nn.Module):
 class BaiChuanDecoderLayer(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: BaiChuanConfig,
                  position_embedding: str,
                  linear_method: Optional[LinearMethodBase] = None):
@@ -197,6 +203,7 @@ class BaiChuanDecoderLayer(nn.Module):
         max_position_embeddings = getattr(config, "max_position_embeddings",
                                           8192)
         self.self_attn = BaiChuanAttention(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             position_embedding=position_embedding,
@@ -205,6 +212,7 @@ class BaiChuanDecoderLayer(nn.Module):
             linear_method=linear_method,
         )
         self.mlp = BaiChuanMLP(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -249,6 +257,7 @@ class BaiChuanDecoderLayer(nn.Module):
 class BaiChuanModel(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: BaiChuanConfig,
                  position_embedding: str,
                  linear_method: Optional[LinearMethodBase] = None):
@@ -258,11 +267,13 @@ class BaiChuanModel(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            BaiChuanDecoderLayer(config, position_embedding, linear_method)
+            BaiChuanDecoderLayer(parallel_state, config,
+                                 position_embedding, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -295,15 +306,17 @@ class BaiChuanModel(nn.Module):
 class BaiChuanBaseForCausalLM(nn.Module):
 
     def __init__(self,
+                 parallel_state,
                  config,
                  position_embedding: str,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = BaiChuanModel(config, position_embedding, linear_method)
+        self.model = BaiChuanModel(
+            parallel_state, config, position_embedding, linear_method)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

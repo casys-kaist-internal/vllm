@@ -86,6 +86,7 @@ def run_vllm(
             trust_remote_code=trust_remote_code,
             dtype=dtype,
             max_model_len=max_model_len,
+            download_dir='./models'
         )
     elif engine == "sps":
         llm = SpSLLM(
@@ -99,6 +100,7 @@ def run_vllm(
             trust_remote_code=trust_remote_code,
             dtype=dtype,
             max_model_len=max_model_len,
+            download_dir='./models'
         )
     else:
         raise ValueError(f"Unknown engine: {engine}")

@@ -33,8 +33,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -47,6 +46,7 @@ class GPT2Attention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -54,13 +54,14 @@ class GPT2Attention(nn.Module):
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
         tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         assert total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
         self.head_dim = self.hidden_size // total_num_heads
         self.scale = self.head_dim**-0.5
 
         self.c_attn = QKVParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.head_dim,
             total_num_heads,
@@ -68,6 +69,7 @@ class GPT2Attention(nn.Module):
             linear_method=linear_method,
         )
         self.c_proj = RowParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.hidden_size,
             bias=True,
@@ -97,6 +99,7 @@ class GPT2MLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         intermediate_size: int,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
@@ -104,12 +107,14 @@ class GPT2MLP(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
         self.c_fc = ColumnParallelLinear(
+            parallel_state,
             hidden_size,
             intermediate_size,
             bias=True,
             linear_method=linear_method,
         )
         self.c_proj = RowParallelLinear(
+            parallel_state,
             intermediate_size,
             hidden_size,
             bias=True,
@@ -130,6 +135,7 @@ class GPT2Block(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -139,9 +145,9 @@ class GPT2Block(nn.Module):
                      hidden_size)
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = GPT2Attention(config, linear_method)
+        self.attn = GPT2Attention(parallel_state, config, linear_method)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = GPT2MLP(inner_dim, config, linear_method)
+        self.mlp = GPT2MLP(parallel_state, inner_dim, config, linear_method)
 
     def forward(
         self,
@@ -173,6 +179,7 @@ class GPT2Model(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -182,10 +189,11 @@ class GPT2Model(nn.Module):
         assert not config.scale_attn_by_inverse_layer_idx
         assert not config.reorder_and_upcast_attn
         self.embed_dim = config.hidden_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(
+            parallel_state, config.vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList([
-            GPT2Block(config, linear_method)
+            GPT2Block(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
@@ -216,15 +224,16 @@ class GPT2LMHeadModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.transformer = GPT2Model(config, linear_method)
+        self.transformer = GPT2Model(parallel_state, config, linear_method)
         self.lm_head_weight = self.transformer.wte.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

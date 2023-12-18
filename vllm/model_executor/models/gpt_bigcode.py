@@ -34,8 +34,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -48,6 +47,7 @@ class GPTBigCodeAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTBigCodeConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -55,7 +55,7 @@ class GPTBigCodeAttention(nn.Module):
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
         self.tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         assert total_num_heads % self.tensor_model_parallel_world_size == 0
         self.num_heads = (total_num_heads //
                           self.tensor_model_parallel_world_size)
@@ -71,6 +71,7 @@ class GPTBigCodeAttention(nn.Module):
             self.num_kv_heads = self.num_heads
         self.kv_dim = self.head_dim * self.num_kv_heads
         self.c_attn = QKVParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.head_dim,
             total_num_heads,
@@ -80,6 +81,7 @@ class GPTBigCodeAttention(nn.Module):
         )
 
         self.c_proj = RowParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.hidden_size,
             bias=True,
@@ -116,6 +118,7 @@ class GPTBigMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         intermediate_size: int,
         config: GPTBigCodeConfig,
         linear_method: Optional[LinearMethodBase] = None,
@@ -123,12 +126,14 @@ class GPTBigMLP(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
         self.c_fc = ColumnParallelLinear(
+            parallel_state,
             hidden_size,
             intermediate_size,
             bias=True,
             linear_method=linear_method,
         )
         self.c_proj = RowParallelLinear(
+            parallel_state,
             intermediate_size,
             hidden_size,
             bias=True,
@@ -149,6 +154,7 @@ class GPTBigCodeBlock(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTBigCodeConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -158,9 +164,9 @@ class GPTBigCodeBlock(nn.Module):
                      hidden_size)
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = GPTBigCodeAttention(config, linear_method)
+        self.attn = GPTBigCodeAttention(parallel_state, config, linear_method)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = GPTBigMLP(inner_dim, config, linear_method)
+        self.mlp = GPTBigMLP(parallel_state, inner_dim, config, linear_method)
 
     def forward(
         self,
@@ -192,6 +198,7 @@ class GPTBigCodeModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTBigCodeConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -201,10 +208,11 @@ class GPTBigCodeModel(nn.Module):
 
         self.embed_dim = config.hidden_size
 
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(
+            parallel_state, config.vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList([
-            GPTBigCodeBlock(config, linear_method)
+            GPTBigCodeBlock(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
@@ -235,15 +243,17 @@ class GPTBigCodeForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTBigCodeConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.transformer = GPTBigCodeModel(config, linear_method)
+        self.transformer = GPTBigCodeModel(
+            parallel_state, config, linear_method)
         self.lm_head_weight = self.transformer.wte.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

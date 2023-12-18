@@ -39,8 +39,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -53,6 +52,7 @@ class MistralMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -60,10 +60,12 @@ class MistralMLP(nn.Module):
     ) -> None:
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
+            parallel_state,
             hidden_size, [intermediate_size] * 2,
             bias=False,
             linear_method=linear_method)
-        self.down_proj = RowParallelLinear(intermediate_size,
+        self.down_proj = RowParallelLinear(parallel_state,
+                                           intermediate_size,
                                            hidden_size,
                                            bias=False,
                                            linear_method=linear_method)
@@ -82,6 +84,7 @@ class MistralMLP(nn.Module):
 class MistralAttention(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  hidden_size: int,
                  num_heads: int,
                  num_kv_heads: int,
@@ -91,7 +94,7 @@ class MistralAttention(nn.Module):
                  sliding_window: Optional[int] = None) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -113,6 +116,7 @@ class MistralAttention(nn.Module):
         self.sliding_window = sliding_window
 
         self.qkv_proj = QKVParallelLinear(
+            parallel_state,
             hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -121,6 +125,7 @@ class MistralAttention(nn.Module):
             linear_method=linear_method,
         )
         self.o_proj = RowParallelLinear(
+            parallel_state,
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -161,6 +166,7 @@ class MistralDecoderLayer(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
@@ -169,6 +175,7 @@ class MistralDecoderLayer(nn.Module):
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 10000)
         self.self_attn = MistralAttention(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             max_position=config.max_position_embeddings,
@@ -177,6 +184,7 @@ class MistralDecoderLayer(nn.Module):
             linear_method=linear_method,
             sliding_window=config.sliding_window)
         self.mlp = MistralMLP(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -222,6 +230,7 @@ class MistralModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
@@ -231,11 +240,12 @@ class MistralModel(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            MistralDecoderLayer(config, linear_method)
+            MistralDecoderLayer(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -269,15 +279,16 @@ class MistralForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = MistralModel(config, linear_method)
+        self.model = MistralModel(parallel_state, config, linear_method)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,
