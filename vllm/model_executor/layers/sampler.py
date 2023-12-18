@@ -686,10 +686,10 @@ def _build_sampler_output(
 ) -> SamplerOutput:
     sampler_output = []
     pos = 0
-    for (idx, seq_group, sample_result, group_prompt_logprobs,
-         group_sample_logprobs) in enumerate(zip(sampling_metadata.seq_groups,
-                                                 sample_results, prompt_logprobs,
-                                                 sample_logprobs)):
+    for (idx, (seq_group, sample_result, group_prompt_logprobs,
+         group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
+                                                  sample_results, prompt_logprobs,
+                                                  sample_logprobs)):
         seq_ids, _ = seq_group
         next_token_ids, parent_ids = sample_result
         seq_outputs = []

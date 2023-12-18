@@ -108,6 +108,7 @@ class ModelRunner:
 
         input_metadata = InputMetadata(
             prompt_lens=prompt_lens,
+            draft_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -179,6 +180,7 @@ class ModelRunner:
 
         input_metadata = InputMetadata(
             prompt_lens=[],
+            draft_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -251,6 +253,7 @@ class ModelRunner:
             seq_groups=seq_groups,
             seq_data=seq_data,
             prompt_lens=prompt_lens,
+            draft_lens=[],
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
         )

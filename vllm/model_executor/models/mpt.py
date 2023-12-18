@@ -16,8 +16,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -44,6 +43,7 @@ class MPTAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -58,6 +58,7 @@ class MPTAttention(nn.Module):
 
         # pylint: disable=invalid-name
         self.Wqkv = QKVParallelLinear(
+            parallel_state,
             self.d_model,
             self.d_model // self.total_num_heads,
             self.total_num_heads,
@@ -68,18 +69,19 @@ class MPTAttention(nn.Module):
             self.q_ln = nn.LayerNorm(self.d_model)
             self.k_ln = nn.LayerNorm(self.d_model)
         self.out_proj = RowParallelLinear(
+            parallel_state,
             self.d_model,
             self.d_model,
             bias=not config.no_bias,
             linear_method=linear_method,
         )
 
-        tp_world_size = get_tensor_model_parallel_world_size()
+        tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         assert self.total_num_heads % tp_world_size == 0
         self.num_heads = self.total_num_heads // tp_world_size
 
         # Create the alibi slopes and slice them.
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
         head_start = tp_rank * self.num_heads
         head_end = (tp_rank + 1) * self.num_heads
         alibi_slopes = _get_alibi_slopes(self.total_num_heads,
@@ -120,6 +122,7 @@ class MPTMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -128,6 +131,7 @@ class MPTMLP(nn.Module):
         expansion_ratio = config.expansion_ratio
         intermediate_size = expansion_ratio * hidden_size
         self.up_proj = ColumnParallelLinear(
+            parallel_state,
             hidden_size,
             intermediate_size,
             bias=not config.no_bias,
@@ -136,6 +140,7 @@ class MPTMLP(nn.Module):
         quant_config = getattr(linear_method, "quant_config", None)
         self.act = get_act_fn("gelu", quant_config, intermediate_size)
         self.down_proj = RowParallelLinear(
+            parallel_state,
             intermediate_size,
             hidden_size,
             bias=not config.no_bias,
@@ -153,15 +158,16 @@ class MPTBlock(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         hidden_size = config.d_model
         self.norm_1 = nn.LayerNorm(hidden_size)
-        self.attn = MPTAttention(config, linear_method)
+        self.attn = MPTAttention(parallel_state, config, linear_method)
         self.norm_2 = nn.LayerNorm(hidden_size)
-        self.ffn = MPTMLP(config, linear_method)
+        self.ffn = MPTMLP(parallel_state, config, linear_method)
 
     def forward(
         self,
@@ -190,6 +196,7 @@ class MPTModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -198,11 +205,12 @@ class MPTModel(nn.Module):
         assert config.norm_type == "low_precision_layernorm"
 
         self.wte = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.d_model,
         )
         self.blocks = nn.ModuleList(
-            [MPTBlock(config, linear_method) for _ in range(config.n_layers)])
+            [MPTBlock(parallel_state, config, linear_method) for _ in range(config.n_layers)])
         self.norm_f = nn.LayerNorm(config.d_model)
         if config.no_bias:
             for module in self.modules():
@@ -238,6 +246,7 @@ class MPTForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: MPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -246,9 +255,9 @@ class MPTForCausalLM(nn.Module):
         assert config.tie_word_embeddings
         self.linear_method = linear_method
 
-        self.transformer = MPTModel(config, linear_method)
+        self.transformer = MPTModel(parallel_state, config, linear_method)
         self.lm_head_weight = self.transformer.wte.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

@@ -23,6 +23,7 @@ def main(args: argparse.Namespace):
             tensor_parallel_size=args.tensor_parallel_size,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
+            download_dir='./models'
         )
     elif args.engine == "sps":
         llm = SpSLLM(
@@ -34,6 +35,7 @@ def main(args: argparse.Namespace):
             tensor_parallel_size=args.tensor_parallel_size,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
+            download_dir='./models'
         )
     else:
         raise ValueError(f"Unknown engine: {args.engine}")
@@ -71,16 +73,16 @@ def main(args: argparse.Namespace):
     print("Warming up...")
     run_to_completion(profile=False)
 
-    if args.profile:
-        print("Profiling...")
-        run_to_completion(profile=True)
-        return
+    # if args.profile:
+    #     print("Profiling...")
+    #     run_to_completion(profile=True)
+    #     return
 
-    # Benchmark.
-    latencies = []
-    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-        latencies.append(run_to_completion(profile=False))
-    print(f'Avg latency: {np.mean(latencies)} seconds')
+    # # Benchmark.
+    # latencies = []
+    # for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
+    #     latencies.append(run_to_completion(profile=False))
+    # print(f'Avg latency: {np.mean(latencies)} seconds')
 
 
 if __name__ == '__main__':

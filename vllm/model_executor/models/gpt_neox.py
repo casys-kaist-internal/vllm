@@ -33,8 +33,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -47,6 +46,7 @@ class GPTNeoXAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -56,18 +56,20 @@ class GPTNeoXAttention(nn.Module):
         self.head_size = self.hidden_size // self.total_num_heads
 
         tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = (self.total_num_heads //
                           tensor_model_parallel_world_size)
 
         self.query_key_value = QKVParallelLinear(
+            parallel_state,
             config.hidden_size,
             self.head_size,
             self.total_num_heads,
             linear_method=linear_method,
         )
         self.dense = RowParallelLinear(
+            parallel_state,
             config.hidden_size,
             config.hidden_size,
             linear_method=linear_method,
@@ -109,16 +111,19 @@ class GPTNeoXMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.dense_h_to_4h = ColumnParallelLinear(
+            parallel_state,
             config.hidden_size,
             config.intermediate_size,
             linear_method=linear_method,
         )
         self.dense_4h_to_h = RowParallelLinear(
+            parallel_state,
             config.intermediate_size,
             config.hidden_size,
             linear_method=linear_method,
@@ -138,6 +143,7 @@ class GPTNeoXLayer(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -147,8 +153,9 @@ class GPTNeoXLayer(nn.Module):
                                             eps=config.layer_norm_eps)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size,
                                                      eps=config.layer_norm_eps)
-        self.attention = GPTNeoXAttention(config, linear_method)
-        self.mlp = GPTNeoXMLP(config, linear_method)
+        self.attention = GPTNeoXAttention(
+            parallel_state, config, linear_method)
+        self.mlp = GPTNeoXMLP(parallel_state, config, linear_method)
 
     def forward(
         self,
@@ -188,6 +195,7 @@ class GPTNeoXModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -195,11 +203,12 @@ class GPTNeoXModel(nn.Module):
         self.config = config
 
         self.embed_in = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            GPTNeoXLayer(config, linear_method)
+            GPTNeoXLayer(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size,
@@ -232,18 +241,19 @@ class GPTNeoXForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.gpt_neox = GPTNeoXModel(config, linear_method)
+        self.gpt_neox = GPTNeoXModel(parallel_state, config, linear_method)
         self.embed_out = ParallelLMHead(
             config.vocab_size,
             config.hidden_size,
         )
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,
