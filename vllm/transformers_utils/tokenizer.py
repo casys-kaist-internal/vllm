@@ -146,6 +146,7 @@ def detokenize_incrementally(
         else:
             read_offset = max(len(output_tokens) - 1, 0)
     else:
+        # print(decode_offset, all_input_ids, all_input_ids[decode_offset:])
         # Put new_token_id in a list so skip_special_tokens is respected
         new_tokens = tokenizer.convert_ids_to_tokens(
             all_input_ids[decode_offset:], skip_special_tokens=skip_special_tokens)
@@ -156,6 +157,8 @@ def detokenize_incrementally(
     # the decode which decide to add a space or not depending on the
     # surrounding ids.
     if tokenizer.is_fast or not tokenizer.get_added_vocab():
+        print("prefix_offset", prefix_offset, "read_offset", read_offset,
+              output_tokens[prefix_offset:read_offset], output_tokens[prefix_offset:])
         prefix_text = tokenizer.convert_tokens_to_string(
             output_tokens[prefix_offset:read_offset])
         new_text = tokenizer.convert_tokens_to_string(

@@ -246,9 +246,9 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
     ):
         self.parallel_state = parallel_state
         self.output_sizes = output_sizes
-        tp_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
         assert all(output_size % tp_size == 0 for output_size in output_sizes)
-        super().__init__(input_size, sum(output_sizes), bias, gather_output,
+        super().__init__(parallel_state, input_size, sum(output_sizes), bias, gather_output,
                          skip_bias_add, params_dtype, linear_method)
 
     def weight_loader(self,
@@ -350,7 +350,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             total_num_kv_heads = total_num_heads
         self.total_num_kv_heads = total_num_kv_heads
         # Divide the weight matrix along the last dimension.
-        tp_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
         self.num_heads = divide(self.total_num_heads, tp_size)
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
@@ -362,7 +362,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         input_size = self.hidden_size
         output_size = (self.num_heads +
                        2 * self.num_kv_heads) * tp_size * self.head_size
-        super().__init__(input_size, output_size, bias, False, skip_bias_add,
+        super().__init__(parallel_state, input_size, output_size, bias, False, skip_bias_add,
                          params_dtype, linear_method)
 
     def weight_loader(self,

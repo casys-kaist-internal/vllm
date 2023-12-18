@@ -33,8 +33,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -72,6 +71,7 @@ class BloomAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: BloomConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -81,11 +81,12 @@ class BloomAttention(nn.Module):
         self.head_dim = self.hidden_size // self.total_num_heads
         assert self.head_dim * self.total_num_heads == self.hidden_size
 
-        tp_world_size = get_tensor_model_parallel_world_size()
+        tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         assert self.total_num_heads % tp_world_size == 0
         self.num_heads = self.total_num_heads // tp_world_size
 
         self.query_key_value = QKVParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -93,6 +94,7 @@ class BloomAttention(nn.Module):
             linear_method=linear_method,
         )
         self.dense = RowParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.hidden_size,
             bias=True,
@@ -100,7 +102,7 @@ class BloomAttention(nn.Module):
         )
 
         # Create the alibi slopes and slice them.
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
         head_start = tp_rank * self.num_heads
         head_end = (tp_rank + 1) * self.num_heads
         alibi_slopes = _get_alibi_slopes(self.total_num_heads)
@@ -134,12 +136,14 @@ class BloomMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: BloomConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         hidden_size = config.hidden_size
         self.dense_h_to_4h = ColumnParallelLinear(
+            parallel_state,
             hidden_size,
             4 * hidden_size,
             linear_method=linear_method,
@@ -147,6 +151,7 @@ class BloomMLP(nn.Module):
         quant_config = getattr(linear_method, "quant_config", None)
         self.gelu_impl = get_act_fn("gelu", quant_config, 4 * hidden_size)
         self.dense_4h_to_h = RowParallelLinear(
+            parallel_state,
             4 * hidden_size,
             hidden_size,
             linear_method=linear_method,
@@ -163,6 +168,7 @@ class BloomBlock(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: BloomConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -171,10 +177,11 @@ class BloomBlock(nn.Module):
 
         self.input_layernorm = nn.LayerNorm(hidden_size,
                                             eps=config.layer_norm_epsilon)
-        self.self_attention = BloomAttention(config, linear_method)
+        self.self_attention = BloomAttention(
+            parallel_state, config, linear_method)
         self.post_attention_layernorm = nn.LayerNorm(
             hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = BloomMLP(config, linear_method)
+        self.mlp = BloomMLP(parallel_state, config, linear_method)
         self.apply_residual_connection_post_layernorm = (
             config.apply_residual_connection_post_layernorm)
 
@@ -221,6 +228,7 @@ class BloomModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: BloomConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -229,6 +237,7 @@ class BloomModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             self.embed_dim,
         )
@@ -237,7 +246,7 @@ class BloomModel(nn.Module):
 
         # Transformer blocks
         self.h = nn.ModuleList([
-            BloomBlock(config, linear_method)
+            BloomBlock(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -272,15 +281,16 @@ class BloomForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: BloomConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.transformer = BloomModel(config, linear_method)
+        self.transformer = BloomModel(parallel_state, config, linear_method)
         self.lm_head_weight = self.transformer.word_embeddings.weight
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

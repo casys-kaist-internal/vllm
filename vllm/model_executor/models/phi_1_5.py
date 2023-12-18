@@ -52,8 +52,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -64,10 +63,13 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class PhiEmbedding(nn.Module):
 
-    def __init__(self, config: PretrainedConfig):
+    def __init__(self,
+                 parallel_state: ParallelState,
+                 config: PretrainedConfig):
         super().__init__()
 
         self.wte = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
@@ -79,6 +81,7 @@ class PhiEmbedding(nn.Module):
 class PhiAttention(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
@@ -87,19 +90,21 @@ class PhiAttention(nn.Module):
         self.head_size = self.hidden_size // self.total_num_heads
 
         tensor_model_parallel_world_size = (
-            get_tensor_model_parallel_world_size())
+            parallel_state.get_tensor_model_parallel_world_size())
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = (self.total_num_heads //
                           tensor_model_parallel_world_size)
 
         # pylint: disable=C0103
         self.Wqkv = QKVParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.head_size,
             self.total_num_heads,
             linear_method=linear_method,
         )
         self.qkv_proj = QKVParallelLinear(
+            parallel_state,
             config.hidden_size,
             self.head_size,
             self.total_num_heads,
@@ -107,6 +112,7 @@ class PhiAttention(nn.Module):
             linear_method=linear_method,
         )
         self.out_proj = RowParallelLinear(
+            parallel_state,
             self.hidden_size,
             self.hidden_size,
             linear_method=linear_method,
@@ -150,6 +156,7 @@ class PhiAttention(nn.Module):
 class PhiMLP(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
@@ -158,11 +165,13 @@ class PhiMLP(nn.Module):
         n_inner = n_inner if n_inner is not None else 4 * config.hidden_size
 
         self.fc1 = ColumnParallelLinear(
+            parallel_state,
             config.hidden_size,
             n_inner,
             linear_method=linear_method,
         )
         self.fc2 = RowParallelLinear(
+            parallel_state,
             n_inner,
             config.hidden_size,
             linear_method=linear_method,
@@ -181,13 +190,14 @@ class PhiMLP(nn.Module):
 class PhiLayer(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.ln = nn.LayerNorm(config.hidden_size,
                                eps=config.layer_norm_epsilon)
-        self.mixer = PhiAttention(config, linear_method)
-        self.mlp = PhiMLP(config, linear_method)
+        self.mixer = PhiAttention(parallel_state, config, linear_method)
+        self.mlp = PhiMLP(parallel_state, config, linear_method)
 
     def forward(
         self,
@@ -214,14 +224,15 @@ class PhiLayer(nn.Module):
 class PhiModel(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.embd = PhiEmbedding(config)
+        self.embd = PhiEmbedding(parallel_state, config)
         self.h = nn.ModuleList([
-            PhiLayer(config, linear_method)
+            PhiLayer(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -261,15 +272,16 @@ class PhiCausalLMHead(nn.Module):
 class PhiForCausalLM(nn.Module):
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
 
-        self.transformer = PhiModel(config, linear_method)
+        self.transformer = PhiModel(parallel_state, config, linear_method)
         self.lm_head = PhiCausalLMHead(config)
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,

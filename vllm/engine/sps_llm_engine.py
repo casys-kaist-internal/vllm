@@ -380,7 +380,7 @@ class SpSLLMEngine:
             child_sample = child_samples[0]
 
             if sps_stage == SpSStage.PROMPT:
-                # Append the prompt token to the parent sequence.
+                # Append the token to the parent sequence.
                 parent.append_token_id(child_sample.output_token,
                                        child_sample.logprobs)
 

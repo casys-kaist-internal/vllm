@@ -37,8 +37,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import (
-    get_tensor_model_parallel_world_size)
+from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -52,6 +51,7 @@ class AquilaMLP(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -59,10 +59,12 @@ class AquilaMLP(nn.Module):
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
+            parallel_state,
             hidden_size, [intermediate_size] * 2,
             bias=False,
             linear_method=linear_method)
-        self.down_proj = RowParallelLinear(intermediate_size,
+        self.down_proj = RowParallelLinear(parallel_state,
+                                           intermediate_size,
                                            hidden_size,
                                            bias=False,
                                            linear_method=linear_method)
@@ -102,6 +104,7 @@ class AquilaAttention(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -112,7 +115,7 @@ class AquilaAttention(nn.Module):
     ):
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -127,6 +130,7 @@ class AquilaAttention(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
         self.qkv_proj = QKVParallelLinear(
+            parallel_state,
             hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -135,6 +139,7 @@ class AquilaAttention(nn.Module):
             linear_method=linear_method,
         )
         self.o_proj = RowParallelLinear(
+            parallel_state,
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -174,6 +179,7 @@ class AquilaDecoderLayer(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: AquilaConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -184,6 +190,7 @@ class AquilaDecoderLayer(nn.Module):
         max_position_embeddings = getattr(config, "max_position_embeddings",
                                           8192)
         self.self_attn = AquilaAttention(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
@@ -193,6 +200,7 @@ class AquilaDecoderLayer(nn.Module):
             linear_method=linear_method,
         )
         self.mlp = AquilaMLP(
+            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -235,6 +243,7 @@ class AquilaModel(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config: AquilaConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -243,11 +252,12 @@ class AquilaModel(nn.Module):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.embed_tokens = VocabParallelEmbedding(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            AquilaDecoderLayer(config, linear_method)
+            AquilaDecoderLayer(parallel_state, config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = AquilaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -280,15 +290,16 @@ class AquilaForCausalLM(nn.Module):
 
     def __init__(
         self,
+        parallel_state: ParallelState,
         config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = AquilaModel(config, linear_method)
+        self.model = AquilaModel(parallel_state, config, linear_method)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        self.sampler = Sampler(config.vocab_size)
+        self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
         self,
