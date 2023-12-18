@@ -8,8 +8,11 @@ from tqdm import tqdm
 
 from vllm import LLM, SpSLLM, SamplingParams
 
+download_dir = '/home/sjchoi/workspace/models'
+
 
 def main(args: argparse.Namespace):
+    global download_dir
     print(args)
 
     # NOTE(woosuk): If the request cannot be processed in a single batch,
@@ -23,7 +26,7 @@ def main(args: argparse.Namespace):
             tensor_parallel_size=args.tensor_parallel_size,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
-            download_dir='./models'
+            download_dir=download_dir
         )
     elif args.engine == "sps":
         llm = SpSLLM(
@@ -35,7 +38,7 @@ def main(args: argparse.Namespace):
             tensor_parallel_size=args.tensor_parallel_size,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
-            download_dir='./models'
+            download_dir=download_dir
         )
     else:
         raise ValueError(f"Unknown engine: {args.engine}")

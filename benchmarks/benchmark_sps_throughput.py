@@ -10,6 +10,8 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 from tqdm import tqdm
 
+download_dir = '/home/sjchoi/workspace/models'
+
 
 def sample_requests(
     dataset_path: str,
@@ -75,6 +77,7 @@ def run_vllm(
     max_model_len: Optional[int] = None,
 ) -> float:
     from vllm import LLM, SpSLLM, SamplingParams
+    global download_dir
 
     if engine == "base":
         llm = LLM(
@@ -86,7 +89,7 @@ def run_vllm(
             trust_remote_code=trust_remote_code,
             dtype=dtype,
             max_model_len=max_model_len,
-            download_dir='./models'
+            download_dir=download_dir
         )
     elif engine == "sps":
         llm = SpSLLM(
@@ -100,7 +103,7 @@ def run_vllm(
             trust_remote_code=trust_remote_code,
             dtype=dtype,
             max_model_len=max_model_len,
-            download_dir='./models'
+            download_dir=download_dir
         )
     else:
         raise ValueError(f"Unknown engine: {engine}")
