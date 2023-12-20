@@ -102,10 +102,9 @@ class SequenceData:
 
     # SpS related methods start
     def get_last_nth_token_id(self, idx) -> int:
-        assert idx > 0
         if not self.output_token_ids:
-            return self.prompt_token_ids[-idx]
-        return self.output_token_ids[-idx]
+            return self.prompt_token_ids[idx]
+        return self.output_token_ids[idx]
 
     def get_last_draft_token_id(self) -> int:
         if not self.draft_token_ids:

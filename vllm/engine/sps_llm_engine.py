@@ -339,7 +339,7 @@ class SpSLLMEngine:
         self
     ) -> Tuple[List[SequenceGroupMetadata], SpSSchedulerOutputs,
                List[RequestOutput]]:
-        seq_group_metadata_list, scheduler_outputs = self.scheduler._schedule()
+        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
         return seq_group_metadata_list, scheduler_outputs, [
             RequestOutput.from_seq_group(seq_group)
             for seq_group in scheduler_outputs.ignored_seq_groups
@@ -426,6 +426,7 @@ class SpSLLMEngine:
 
                     # FIXME Need to run draft model to cache kv for the additional
                     # token sampled by target model.
+
             else:
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
 

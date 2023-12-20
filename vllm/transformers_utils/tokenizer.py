@@ -128,12 +128,14 @@ def detokenize_incrementally(
     decode_offset: int = 0,
     skip_special_tokens: bool = False,
     spaces_between_special_tokens: bool = True,
-) -> Tuple[List[str], str, int, int]:
+) -> Tuple[List[str], str, int, int, int]:
     new_token_id = all_input_ids[-1]
     # This is the first iteration for this sequence
     if prev_tokens is None:
         new_tokens = tokenizer.convert_ids_to_tokens(
             all_input_ids, skip_special_tokens=skip_special_tokens)
+        # SJCHOI added
+        new_tokens = ['NULL' if item is None else item for item in new_tokens]
         output_tokens = new_tokens
         decode_offset = len(all_input_ids)
         # 5 is an arbitrary value that should work for all
@@ -150,6 +152,8 @@ def detokenize_incrementally(
         # Put new_token_id in a list so skip_special_tokens is respected
         new_tokens = tokenizer.convert_ids_to_tokens(
             all_input_ids[decode_offset:], skip_special_tokens=skip_special_tokens)
+        # SJCHOI added
+        new_tokens = ['NULL' if item is None else item for item in new_tokens]
         output_tokens = prev_tokens + new_tokens
         decode_offset += len(all_input_ids[decode_offset:])
 
@@ -157,8 +161,6 @@ def detokenize_incrementally(
     # the decode which decide to add a space or not depending on the
     # surrounding ids.
     if tokenizer.is_fast or not tokenizer.get_added_vocab():
-        print("prefix_offset", prefix_offset, "read_offset", read_offset,
-              output_tokens[prefix_offset:read_offset], output_tokens[prefix_offset:])
         prefix_text = tokenizer.convert_tokens_to_string(
             output_tokens[prefix_offset:read_offset])
         new_text = tokenizer.convert_tokens_to_string(

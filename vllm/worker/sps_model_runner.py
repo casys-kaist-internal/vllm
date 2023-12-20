@@ -199,8 +199,8 @@ class SpSModelRunner:
         slot_mapping: List[List[int]] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
-
         draft_lens: List[int] = []
+
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE
 
@@ -209,9 +209,9 @@ class SpSModelRunner:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 generation_tokens = [
                     seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
-                input_tokens.extend(generation_tokens)
-
+                input_tokens.append(generation_tokens)
                 draft_lens.append(len(generation_tokens))
+
                 for i in range(len(generation_tokens)):
                     context_len = seq_data.get_len() + i
                     if self.sliding_window is not None:
@@ -219,11 +219,12 @@ class SpSModelRunner:
                     context_lens.append(context_len)
 
                 position_start = seq_data.get_len() - 1
-                input_positions.extend(
-                    range(position_start, position_start + len(generation_tokens)))
+                input_positions.append(
+                    list(range(position_start, position_start + len(generation_tokens))))
 
+                # slots: List[int] = []
+                block_table = seq_group_metadata.block_tables[seq_id]
                 for position in range(position_start, position_start + len(generation_tokens)):
-                    block_table = seq_group_metadata.block_tables[seq_id]
                     block_number = block_table[position // self.block_size]
                     block_offset = position % self.block_size
                     slot = block_number * self.block_size + block_offset
@@ -233,15 +234,15 @@ class SpSModelRunner:
                         sliding_window_blocks = (self.sliding_window //
                                                  self.block_size)
                         block_table = block_table[-sliding_window_blocks:]
-
                     block_tables.append(block_table)
 
+        max_draft_len = max(draft_lens)
         input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
+                                             max_len=max_draft_len,
                                              pad=0,
                                              dtype=torch.long)
         input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
+                                                max_len=max_draft_len,
                                                 pad=0,
                                                 dtype=torch.long)
         slot_mapping = _make_tensor_with_pad(slot_mapping,
@@ -417,6 +418,7 @@ class SpSModelRunner:
             seq_data = SequenceData([0] * seq_len)
             seq = SequenceGroupMetadata(
                 request_id=str(group_id),
+                is_prompt=True,
                 seq_data={group_id: seq_data},
                 sampling_params=sampling_params,
                 block_tables=None,
