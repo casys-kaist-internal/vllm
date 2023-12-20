@@ -76,16 +76,16 @@ def main(args: argparse.Namespace):
     print("Warming up...")
     run_to_completion(profile=False)
 
-    # if args.profile:
-    #     print("Profiling...")
-    #     run_to_completion(profile=True)
-    #     return
+    if args.profile:
+        print("Profiling...")
+        run_to_completion(profile=True)
+        return
 
-    # # Benchmark.
-    # latencies = []
-    # for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-    #     latencies.append(run_to_completion(profile=False))
-    # print(f'Avg latency: {np.mean(latencies)} seconds')
+    # Benchmark.
+    latencies = []
+    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
+        latencies.append(run_to_completion(profile=False))
+    print(f'Avg latency: {np.mean(latencies)} seconds')
 
 
 if __name__ == '__main__':
