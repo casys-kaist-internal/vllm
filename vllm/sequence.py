@@ -229,6 +229,15 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
 
+    def lazy_append_token_id(
+        self,
+        token_id: int,
+        logprobs: Dict[int, float],
+    ) -> None:
+        def lazy_append_token_id() -> None:
+            self.append_token_id(token_id, logprobs)
+        self.eval_lazy_append_token_id = lazy_append_token_id
+
     def get_len(self) -> int:
         return self.data.get_len()
 
