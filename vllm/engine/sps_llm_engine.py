@@ -413,16 +413,16 @@ class SpSLLMEngine:
                             child_sample.probs[draft_idx],
                             draft_probs[draft_idx], seq_group.sampling_params)
                         break
-                # print(parent.seq_id, accept_cnt)
+                print(parent.seq_id, accept_cnt)
                 parent.accept_draft_tokens(accept_cnt)
 
                 if accept_cnt != self.sps_config.draft_size:
                     parent.append_token_id(
                         resample_token_id, resample_logprobs)
-                else:
-                    # all accepted so sample additional token
-                    parent.append_token_id(
-                        child_sample.output_token, child_sample.logprobs)
+                # else:
+                #     # all accepted so sample additional token
+                #     parent.append_token_id(
+                #         child_sample.output_token, child_sample.logprobs)
 
                     # FIXME Need to run draft model to cache kv for the additional
                     # token sampled by target model.
@@ -553,7 +553,13 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            return self._process_model_outputs(target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
+            target_output = self._process_model_outputs(
+                target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
+
+            # If all accepted, need to run draft model to cache kv for the additional token sampled by target model.
+            # for seq_group_metadata in seq_group_metadata_list:
+
+            return target_output
 
     def _log_system_stats(
         self,
