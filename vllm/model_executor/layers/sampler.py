@@ -93,32 +93,34 @@ class Sampler(nn.Module):
 
         # We only need last prob and logprob values for sampling the next token for target decode.
         # Get prob and logprob for only last token for each seq_group (in case of all acceptance)
-        if sampling_metadata.is_target_decode:
-            prob = torch.empty(
-                (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
-            logprob = torch.empty(
-                (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
+        # if sampling_metadata.is_target_decode:
+        #     prob = torch.empty(
+        #         (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
+        #     logprob = torch.empty(
+        #         (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
 
-            idx = 0
-            for seq_idx in range(len(sampling_metadata.seq_groups)):
-                prob[seq_idx] = probs[idx +
-                                      sampling_metadata.draft_lens[seq_idx] - 1, ]
-                logprob[seq_idx] = logprobs[idx +
-                                            sampling_metadata.draft_lens[seq_idx] - 1, ]
-                idx += sampling_metadata.draft_lens[seq_idx]
+        #     idx = 0
+        #     for seq_idx in range(len(sampling_metadata.seq_groups)):
+        #         prob[seq_idx] = probs[idx +
+        #                               sampling_metadata.draft_lens[seq_idx] - 1, ]
+        #         logprob[seq_idx] = logprobs[idx +
+        #                                     sampling_metadata.draft_lens[seq_idx] - 1, ]
+        #         idx += sampling_metadata.draft_lens[seq_idx]
 
-            # Sample the next tokens.
-            sample_results = _sample(prob, logprob, sampling_metadata)
-            # Get the logprobs query results.
-            prompt_logprobs, sample_logprobs = _get_logprobs(
-                logprob, sampling_metadata, sample_results)
+        #     # Sample the next tokens.
+        #     sample_results = _sample(prob, logprob, sampling_metadata)
+        #     # Get the logprobs query results.
+        #     prompt_logprobs, sample_logprobs = _get_logprobs(
+        #         logprob, sampling_metadata, sample_results)
 
-        else:
-            # Sample the next tokens.
-            sample_results = _sample(probs, logprobs, sampling_metadata)
-            # Get the logprobs query results.
-            prompt_logprobs, sample_logprobs = _get_logprobs(
-                logprobs, sampling_metadata, sample_results)
+        # else:
+        # Sample the next tokens.
+        sample_results = _sample(probs, logprobs, sampling_metadata)
+        # Get the logprobs query results.
+        if sampling_metadata.selected_token_indices_for_logprob is not None:
+            logprobs = logprobs[sampling_metadata.selected_token_indices_for_logprob]
+        prompt_logprobs, sample_logprobs = _get_logprobs(
+            logprobs, sampling_metadata, sample_results)
 
         return _build_sampler_output(sample_results, sampling_metadata,
                                      prompt_logprobs, sample_logprobs, probs)
@@ -464,6 +466,7 @@ def _random_sample(
                                             num_parent_seqs, 0].tolist()
         results.append((next_token_ids, parent_ids))
         sample_idx += num_parent_seqs
+
     assert sample_idx == probs.size(0)
     return results
 
@@ -542,6 +545,7 @@ def _sample(
         num_tokens = len(sample_indices)
         if num_tokens == 0:
             continue
+
         if sampling_type == SamplingType.GREEDY:
             category_logprobs = logprobs[sample_indices]
             sample_results = _greedy_sample(seq_groups, category_logprobs)
@@ -600,6 +604,7 @@ def _get_logprobs(
             largest_num_logprobs = max(largest_num_logprobs,
                                        sampling_params.logprobs)
         sample_idx += num_parent_seqs
+
     assert sample_idx == logprobs.size(0)
 
     # Batched query for logprobs of selected token
