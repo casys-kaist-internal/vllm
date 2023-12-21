@@ -131,9 +131,9 @@ def main(args: argparse.Namespace):
             end_time = time.perf_counter()
             latency = end_time - start_time
             latencies.append(latency)
-            # print(output[0].prompt)
-            # print("!!!! output !!!!")
-            # print(output[0].outputs[0].text)
+            print(output[0].prompt)
+            print("!!!! output !!!!")
+            print(output[0].outputs[0].text)
 
         return np.mean(latencies)
 
@@ -163,7 +163,7 @@ if __name__ == '__main__':
                         default=None,
                         help="Path to the dataset.")
     parser.add_argument('--target-model', type=str,
-                        default='facebook/opt-6.7b')
+                        default='facebook/opt-125m')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument('--tokenizer', type=str, default=None)
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-beam-search', action='store_true')
     parser.add_argument("--num-prompts",
                         type=int,
-                        default=10,
+                        default=1,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument('--num-iters',
