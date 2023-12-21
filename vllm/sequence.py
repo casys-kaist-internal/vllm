@@ -191,6 +191,10 @@ class Sequence:
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
 
+        # SpS related debugging (Hyunjae)
+        self.debug_rejection_positions : List[int] = []
+        self.debug_accept_probabiliteis : List[float] = []
+
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
             block_number=len(self.logical_token_blocks),
@@ -300,12 +304,15 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
-    def accept_draft_tokens(self, accept_cnt: int) -> None:
+    def accept_draft_tokens(self, accept_cnt: int, accept_probabilities : List[float]) -> None:
         assert accept_cnt <= self.draft_size
         reject_cnt = self.draft_size - accept_cnt
+        if reject_cnt > 0:
+            self.debug_rejection_positions.append(self.get_len() + reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
+        self.debug_accept_probabiliteis.extend(accept_probabilities)
 
     def get_last_nth_token_id(self, idx) -> int:
         return self.data.get_last_nth_token_id(idx)
