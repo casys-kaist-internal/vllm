@@ -118,3 +118,82 @@ class RequestOutput:
                 f"prompt_logprobs={self.prompt_logprobs}, "
                 f"outputs={self.outputs}, "
                 f"finished={self.finished})")
+
+class SpSCompletionOutput(CompletionOutput):
+    """CompletionOutput modified to get debug infos from Speculative Sampling
+
+    Args:
+        index: The index of the output in the request.
+        text: The generated output text.
+        token_ids: The token IDs of the generated output text.
+        cumulative_logprob: The cumulative log probability of the generated
+            output text.
+        logprobs: The log probabilities of the top probability words at each
+            position if the logprobs are requested.
+        finish_reason: The reason why the sequence is finished.
+        accept_probabilities: The acceptance probabilities of tokens w.r.t SpS
+        reject_positions: Positions where tokens where rejected
+    """
+
+    def __init__(
+        self,
+        index: int,
+        text: str,
+        token_ids: List[int],
+        cumulative_logprob: float,
+        logprobs: Optional[SampleLogprobs],
+        finish_reason: Optional[str] = None,
+        accept_probabilities: Optional[List[float]] = None,
+        reject_positions : Optional[List[int]] = None,
+    ) -> None:
+        super().__init__(index, text, token_ids, cumulative_logprob, logprobs,
+                         finish_reason)
+        self.accept_probabilities = accept_probabilities
+        self.reject_positions = reject_positions
+
+    def finished(self) -> bool:
+        return self.finish_reason is not None
+
+    def __repr__(self) -> str:
+        return (super().__repr__() + ", "
+                f"accept_probabilities={self.accept_probabilities}, "
+                f"reject_positions={self.reject_positions})")
+
+class SpSRequestOutput(RequestOutput):
+    @classmethod
+    def from_seq_group(cls, seq_group: SequenceGroup) -> "RequestOutput":
+        # Get the top-n sequences.
+        n = seq_group.sampling_params.n
+        seqs = seq_group.get_seqs()
+        if seq_group.sampling_params.use_beam_search:
+            sorting_key = lambda seq: seq.get_beam_search_score(
+                seq_group.sampling_params.length_penalty)
+        else:
+            sorting_key = lambda seq: seq.get_cumulative_logprob()
+        sorted_seqs = sorted(seqs, key=sorting_key, reverse=True)
+        top_n_seqs = sorted_seqs[:n]
+
+        # Create the outputs.
+        outputs: List[CompletionOutput] = []
+        for seq in top_n_seqs:
+            logprobs = seq.output_logprobs
+            if seq_group.sampling_params.logprobs is None:
+                # NOTE: We need to take care of this case because the sequence
+                # always has the logprobs of the sampled tokens even if the
+                # logprobs are not requested.
+                logprobs = None
+            finshed_reason = SequenceStatus.get_finished_reason(seq.status)
+            output = SpSCompletionOutput(seqs.index(seq), seq.output_text,
+                                      seq.get_output_token_ids(),
+                                      seq.get_cumulative_logprob(), logprobs,
+                                      finshed_reason, seq.debug_accept_probabiliteis,
+                                      seq.debug_rejection_positions)
+            outputs.append(output)
+
+        # Every sequence in the sequence group should have the same prompt.
+        prompt = seq_group.prompt
+        prompt_token_ids = seq_group.prompt_token_ids
+        prompt_logprobs = seq_group.prompt_logprobs
+        finished = seq_group.is_finished()
+        return cls(seq_group.request_id, prompt, prompt_token_ids,
+                   prompt_logprobs, outputs, finished)
