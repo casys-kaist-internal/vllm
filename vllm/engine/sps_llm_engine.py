@@ -399,7 +399,7 @@ class SpSLLMEngine:
 
                 accept_cnt = 0
                 for draft_idx, draft_token_id in enumerate(draft_token_ids):
-                    draft_prob = draft_probs[draft_idx]
+                    draft_prob = draft_probs[draft_idx][draft_token_id]
                     target_prob = child_sample.probs[draft_idx][draft_token_id]
                     r = torch.rand(1, device=draft_prob.device)
 
@@ -411,9 +411,9 @@ class SpSLLMEngine:
                         # reject
                         resample_token_id, resample_logprobs = modified_rejection_sample(
                             child_sample.probs[draft_idx],
-                            draft_prob, seq_group.sampling_params)
+                            draft_probs[draft_idx], seq_group.sampling_params)
                         break
-
+                # print(parent.seq_id, accept_cnt)
                 parent.accept_draft_tokens(accept_cnt)
 
                 if accept_cnt != self.sps_config.draft_size:

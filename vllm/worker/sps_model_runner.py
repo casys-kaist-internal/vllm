@@ -209,6 +209,9 @@ class SpSModelRunner:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 generation_tokens = [
                     seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
+
+                # for token in generation_tokens:
+                #     input_tokens.append([token])
                 input_tokens.append(generation_tokens)
                 draft_lens.append(len(generation_tokens))
 
@@ -219,6 +222,9 @@ class SpSModelRunner:
                     context_lens.append(context_len)
 
                 position_start = seq_data.get_len() - 1
+                # for i in range(len(generation_tokens)):
+                #     position = position_start + i
+                #     input_positions.append([position])
                 input_positions.append(
                     list(range(position_start, position_start + len(generation_tokens))))
 
@@ -277,6 +283,7 @@ class SpSModelRunner:
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
+        selected_token_indices_for_logprob: List[int] = []
         selected_token_start_idx = 0
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
@@ -310,6 +317,7 @@ class SpSModelRunner:
                 selected_token_indices.append(selected_token_start_idx +
                                               prompt_len - 1)
                 selected_token_start_idx += max_prompt_len
+
             elif seq_group_metadata.sps_stage == SpSStage.DRAFT_DECODE:
                 num_seqs = len(seq_ids)
                 selected_token_indices.extend(
@@ -322,18 +330,21 @@ class SpSModelRunner:
                         range(categorized_sample_indices_start_idx,
                               categorized_sample_indices_start_idx + num_seqs))
                 categorized_sample_indices_start_idx += num_seqs
+
             elif seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE:
                 num_seqs = len(seq_ids)
                 draft_len = draft_lens[i]
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
                           selected_token_start_idx + draft_len))
+                selected_token_indices_for_logprob.append(
+                    selected_token_start_idx + draft_len - 1)
                 selected_token_start_idx += draft_len
 
                 categorized_sample_indices[
-                    sampling_params.sampling_type].extend(
-                        range(categorized_sample_indices_start_idx,
-                              categorized_sample_indices_start_idx + draft_len))
+                    sampling_params.sampling_type].append(
+                        categorized_sample_indices_start_idx + draft_len - 1)
+
                 categorized_sample_indices_start_idx += draft_len
             else:
                 raise ValueError(
@@ -342,6 +353,14 @@ class SpSModelRunner:
         selected_token_indices = torch.tensor(selected_token_indices,
                                               dtype=torch.long,
                                               device="cuda")
+
+        if selected_token_indices_for_logprob:
+            selected_token_indices_for_logprob = torch.tensor(selected_token_indices_for_logprob,
+                                                              dtype=torch.long,
+                                                              device="cuda")
+        else:
+            selected_token_indices_for_logprob = None
+
         categorized_sample_indices = {
             t: torch.tensor(seq_ids, dtype=torch.int, device="cuda")
             for t, seq_ids in categorized_sample_indices.items()
@@ -357,6 +376,7 @@ class SpSModelRunner:
             prompt_lens=prompt_lens,
             draft_lens=draft_lens,
             selected_token_indices=selected_token_indices,
+            selected_token_indices_for_logprob=selected_token_indices_for_logprob,
             categorized_sample_indices=categorized_sample_indices,
         )
         return sampling_metadata
