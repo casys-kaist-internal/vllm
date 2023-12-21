@@ -27,6 +27,7 @@ class SequenceStatus(enum.Enum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
+    SPS_ALL_ACCEPT = enum.auto()  # SpS related status
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
