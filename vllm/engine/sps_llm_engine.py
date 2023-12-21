@@ -14,7 +14,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import modified_rejection_sample
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup,
+from vllm.sequence import (SamplerOutput, Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupOutput,
                            SequenceOutput, SequenceStatus, SpSStage)
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
+
+SPS_ALL_ACCEPT = True
+# SPS_ALL_ACCEPT = False
 
 
 class SpSLLMEngine:
@@ -397,6 +400,7 @@ class SpSLLMEngine:
                 draft_probs = parent.get_draft_probs()
                 assert len(draft_token_ids) == len(draft_probs)
 
+                print("!!!", len(draft_token_ids))
                 accept_cnt = 0
                 for draft_idx, draft_token_id in enumerate(draft_token_ids):
                     draft_prob = draft_probs[draft_idx][draft_token_id]
@@ -413,19 +417,18 @@ class SpSLLMEngine:
                             child_sample.probs[draft_idx],
                             draft_probs[draft_idx], seq_group.sampling_params)
                         break
-                print(parent.seq_id, accept_cnt)
+                # print("accept_cnt ", accept_cnt)
                 parent.accept_draft_tokens(accept_cnt)
 
                 if accept_cnt != self.sps_config.draft_size:
                     parent.append_token_id(
                         resample_token_id, resample_logprobs)
-                # else:
-                #     # all accepted so sample additional token
-                #     parent.append_token_id(
-                #         child_sample.output_token, child_sample.logprobs)
-
-                    # FIXME Need to run draft model to cache kv for the additional
-                    # token sampled by target model.
+                else:
+                    if SPS_ALL_ACCEPT:
+                        # all accepted so sample additional token
+                        parent.append_token_id(
+                            child_sample.output_token, child_sample.logprobs)
+                        parent.status = SequenceStatus.SPS_ALL_ACCEPT
 
             else:
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
@@ -556,8 +559,42 @@ class SpSLLMEngine:
             target_output = self._process_model_outputs(
                 target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
 
-            # If all accepted, need to run draft model to cache kv for the additional token sampled by target model.
-            # for seq_group_metadata in seq_group_metadata_list:
+            if SPS_ALL_ACCEPT:
+                # If all accepted, need to run draft model to cache kv for the
+                # additional token sampled by target model.
+                seq_group_metadata_list: List[SequenceGroupMetadata] = []
+                for seq_group in scheduler_outputs.scheduled_seq_groups:
+                    seq_data: Dict[int, SequenceData] = {}
+                    block_tables: Dict[int, List[int]] = {}
+                    for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+                        # Change back to original RUNNING status
+                        seq.status = SequenceStatus.RUNNING
+                        seq_id = seq.seq_id
+                        seq_data[seq_id] = seq.data
+                        block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
+                            seq)
+
+                    if seq_data:
+                        seq_group_metadata = SequenceGroupMetadata(
+                            request_id=seq_group.request_id,
+                            is_prompt=False,
+                            seq_data=seq_data,
+                            sampling_params=seq_group.sampling_params,
+                            block_tables=block_tables,
+                            sps_stage=SpSStage.DRAFT_DECODE,
+                        )
+                        seq_group_metadata_list.append(seq_group_metadata)
+
+                # We already considered all accept case in scheduler so no need to swap in/out/copy blocks
+                # Don't need output for draft model. Execution required for draft KV cache.
+                if seq_group_metadata_list:
+                    self._run_workers(
+                        "execute_draft_model",
+                        seq_group_metadata_list=seq_group_metadata_list,
+                        blocks_to_swap_in=None,
+                        blocks_to_swap_out=None,
+                        blocks_to_copy=None,
+                    )
 
             return target_output
 
