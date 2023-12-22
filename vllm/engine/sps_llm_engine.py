@@ -13,7 +13,7 @@ from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import modified_rejection_sample
-from vllm.outputs import RequestOutput
+from vllm.outputs import SpSRequestOutput as RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupOutput,
@@ -400,15 +400,18 @@ class SpSLLMEngine:
                 draft_token_ids = parent.get_draft_token_ids()
                 draft_probs = parent.get_draft_probs()
                 assert len(draft_token_ids) == len(draft_probs)
+                accept_probabilities = []
 
                 accept_cnt = 0
                 for draft_idx, draft_token_id in enumerate(draft_token_ids):
                     draft_prob = draft_probs[draft_idx][draft_token_id]
                     target_prob = child_sample.probs[draft_idx][draft_token_id]
                     r = torch.rand(1, device=draft_prob.device)
+                    accept_probability = target_prob / draft_prob
+                    accept_probabilities.append(accept_probability.item())
 
                     if r < torch.min(torch.tensor([1], device=draft_prob.device),
-                                     target_prob / draft_prob):
+                                     accept_probability):
                         # accept
                         accept_cnt += 1
                     else:
@@ -417,8 +420,7 @@ class SpSLLMEngine:
                             child_sample.probs[draft_idx],
                             draft_probs[draft_idx], seq_group.sampling_params)
                         break
-                # print("accept_cnt ", accept_cnt)
-                parent.accept_draft_tokens(accept_cnt)
+                parent.accept_draft_tokens(accept_cnt, accept_probabilities)
 
                 if accept_cnt != self.sps_config.draft_size:
                     parent.append_token_id(
