@@ -113,7 +113,7 @@ def main(args: argparse.Namespace):
         for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
                 n=1,
-                temperature=0,
+                temperature=0.5,
                 top_p=1.0,
                 ignore_eos=True,
                 max_tokens=output_len,
@@ -143,9 +143,9 @@ def main(args: argparse.Namespace):
         top_p=1.0,
         use_beam_search=args.use_beam_search,
         ignore_eos=True,
-        max_tokens=args.output_len,
+        max_tokens=100,
     )
-    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
+    dummy_prompt_token_ids = [[0] * 10] * 10
     llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                  sampling_params=sampling_params,
                  use_tqdm=False)
@@ -178,6 +178,11 @@ if __name__ == '__main__':
     parser.add_argument('--input-len', type=int, default=32)
     parser.add_argument('--output-len', type=int, default=1024)
     parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--temperature',
+                        '-t',
+                        type=float,
+                        default=1.0,
+                        help='Sampling temperature.')
     parser.add_argument('--n',
                         type=int,
                         default=1,
