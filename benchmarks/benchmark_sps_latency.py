@@ -56,7 +56,6 @@ def sample_requests(
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
-    print(len(filtered_dataset))
     # Sample the requests.
     sampled_requests = random.sample(filtered_dataset, num_requests)
     return sampled_requests
@@ -110,8 +109,8 @@ def main(args: argparse.Namespace):
     def run_to_completion(profile: bool = False):
         latencies = []
         # Add the requests to the engine.
-        print(len(requests))
-        for prompt, _, output_len in requests:
+        # print(len(requests))
+        for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
                 n=1,
                 temperature=0,
@@ -127,29 +126,33 @@ def main(args: argparse.Namespace):
             )
 
             start_time = time.perf_counter()
-            output = llm._run_engine(use_tqdm=True)
+            output = llm._run_engine(use_tqdm=False)
             end_time = time.perf_counter()
             latency = end_time - start_time
             latencies.append(latency)
-            print(output[0].prompt)
-            print("!!!! output !!!!")
-            print(output[0].outputs[0].text)
+            # print(output[0].prompt)
+            # print("!!!! output !!!!")
+            # print(output[0].outputs[0].text)
 
         return np.mean(latencies)
 
-    # print("Warming up...")
-    # run_to_completion(profile=False)
-
-    # if args.profile:
-    #     print("Profiling...")
-    #     run_to_completion(profile=True)
-    #     return
+    print("Warming up...")
+    sampling_params = SamplingParams(
+        n=args.n,
+        temperature=0.0 if args.use_beam_search else 1.0,
+        top_p=1.0,
+        use_beam_search=args.use_beam_search,
+        ignore_eos=True,
+        max_tokens=args.output_len,
+    )
+    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
+    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                 sampling_params=sampling_params,
+                 use_tqdm=False)
 
     # Benchmark.
-    latencies = []
-    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-        latencies.append(run_to_completion(profile=False))
-    print(f'Avg latency: {np.mean(latencies)} seconds')
+    avg_latency = run_to_completion(profile=False)
+    print(f'Avg latency: {avg_latency} seconds')
 
 
 if __name__ == '__main__':
@@ -163,7 +166,7 @@ if __name__ == '__main__':
                         default=None,
                         help="Path to the dataset.")
     parser.add_argument('--target-model', type=str,
-                        default='facebook/opt-125m')
+                        default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument('--tokenizer', type=str, default=None)
@@ -182,7 +185,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-beam-search', action='store_true')
     parser.add_argument("--num-prompts",
                         type=int,
-                        default=1,
+                        default=10,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument('--num-iters',
