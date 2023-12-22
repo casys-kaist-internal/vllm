@@ -595,12 +595,6 @@ class SpSLLMEngine:
                         blocks_to_swap_out=None,
                         blocks_to_copy=None,
                     )
-                    for seq_group in scheduler_outputs.scheduled_seq_groups:
-                        for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
-                            # Change back to original RUNNING status
-                            seq.status = SequenceStatus.RUNNING
-                            # Append the lazy token saved in all accept case for target decode
-                            seq.append_lazy_token_id()
 
                     for seq_group in scheduler_outputs.scheduled_seq_groups:
                         for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
