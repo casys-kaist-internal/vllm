@@ -1,3 +1,4 @@
+import os
 import copy
 import time
 from functools import partial
@@ -401,7 +402,6 @@ class SpSLLMEngine:
                 assert len(draft_token_ids) == len(draft_probs)
                 accept_probabilities = []
 
-                # print("!!!", len(draft_token_ids))
                 accept_cnt = 0
                 for draft_idx, draft_token_id in enumerate(draft_token_ids):
                     draft_prob = draft_probs[draft_idx][draft_token_id]
@@ -427,8 +427,8 @@ class SpSLLMEngine:
                         resample_token_id, resample_logprobs)
                 else:
                     if SPS_ALL_ACCEPT:
-                        # all accepted so sample additional token
-                        parent.lazy_append_token_id(
+                        # all accepted so sample additional token and save it for lazy append
+                        parent.save_lazy_token_id(
                             child_sample.output_token, child_sample.logprobs)
                         parent.status = SequenceStatus.SPS_ALL_ACCEPT
 
@@ -569,8 +569,6 @@ class SpSLLMEngine:
                     seq_data: Dict[int, SequenceData] = {}
                     block_tables: Dict[int, List[int]] = {}
                     for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
-                        # Change back to original RUNNING status
-                        seq.status = SequenceStatus.RUNNING
                         seq_id = seq.seq_id
                         seq_data[seq_id] = seq.data
                         block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
@@ -599,7 +597,10 @@ class SpSLLMEngine:
                     )
                     for seq_group in scheduler_outputs.scheduled_seq_groups:
                         for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
-                            seq.eval_lazy_append_token_id()
+                            # Change back to original RUNNING status
+                            seq.status = SequenceStatus.RUNNING
+                            # Append the lazy token saved in all accept case for target decode
+                            seq.append_lazy_token_id()
 
             return target_output
 
