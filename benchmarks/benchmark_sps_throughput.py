@@ -127,8 +127,34 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    llm._run_engine(use_tqdm=True)
+    outputs = llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
+
+    # (Hyunjae) Save debuggable outputs as JSON
+    import json
+    outputs_json = []
+    for output in outputs:
+
+        assert len(output.outputs) == 1, "Beam Search not supported in SpS for now.."
+        completion_output = output.outputs[0]
+
+        prompt = output.prompt
+        output_str = completion_output.text
+        rejection_positions = completion_output.reject_positions
+        accept_probabilities = completion_output.accept_probabilities
+        num_output_tokens = len(completion_output.token_ids)
+        outputs_json.append({
+            'prompt': prompt,
+            'output_str': output_str,
+            'rejection_positions': rejection_positions,
+            'accept_probabilities': accept_probabilities,
+            'num_output_tokens': num_output_tokens,
+        })
+    with open('outputs.json', 'w') as f:
+        json.dump(outputs_json, f, indent=2)
+
+
+
     return end - start
 
 
