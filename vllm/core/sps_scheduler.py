@@ -288,6 +288,9 @@ class SpSScheduler:
         # such as self.running, self.swapped, and self.waiting.
         scheduler_outputs = self._schedule()
 
+        # print("Number of scheduled seq groups: ", len(
+        #     scheduler_outputs.scheduled_seq_groups))
+
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
