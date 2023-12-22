@@ -74,6 +74,7 @@ def run_vllm(
     use_beam_search: bool,
     trust_remote_code: bool,
     dtype: str,
+    temperature: float,
     max_model_len: Optional[int] = None,
 ) -> float:
     from vllm import LLM, SpSLLM, SamplingParams
@@ -112,7 +113,7 @@ def run_vllm(
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
             n=n,
-            temperature=0.0 if use_beam_search else 1.0,
+            temperature=0.0 if use_beam_search else temperature,
             top_p=1.0,
             use_beam_search=use_beam_search,
             ignore_eos=True,
@@ -127,8 +128,38 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    llm._run_engine(use_tqdm=True)
+    outputs = llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
+
+    # (Hyunjae) Save debuggable outputs as JSON
+    import json
+    outputs_json = []
+    for output in outputs:
+
+        assert len(output.outputs) == 1, "Beam Search not supported in SpS for now.."
+        completion_output = output.outputs[0]
+
+        prompt = output.prompt
+        output_str = completion_output.text
+        rejection_positions = completion_output.reject_positions
+        accept_probabilities = completion_output.accept_probabilities
+        num_output_tokens = len(completion_output.token_ids)
+        outputs_json.append({
+            'prompt': prompt,
+            'output_str': output_str,
+            'rejection_positions': rejection_positions,
+            'accept_probabilities': accept_probabilities,
+            'num_output_tokens': num_output_tokens,
+        })
+
+
+    file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
+    file_name = file_name.replace('/', '_')
+    with open(file_name, 'w') as f:
+        json.dump(outputs_json, f, indent=2)
+
+
+
     return end - start
 
 
@@ -229,7 +260,7 @@ def main(args: argparse.Namespace):
                                 args.draft_size, args.tokenizer, args.quantization,
                                 args.tensor_parallel_size, args.seed, args.n,
                                 args.use_beam_search, args.trust_remote_code, args.dtype,
-                                args.max_model_len)
+                                args.temperature, args.max_model_len)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.target_model, tokenizer, args.n,
@@ -294,6 +325,8 @@ if __name__ == "__main__":
     parser.add_argument('--trust-remote-code',
                         action='store_true',
                         help='trust remote code from huggingface')
+    
+    parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument(
         '--max-model-len',
         type=int,
