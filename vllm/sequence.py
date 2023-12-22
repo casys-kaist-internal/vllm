@@ -274,6 +274,21 @@ class Sequence:
         return new_seq
 
     # SpS related methods start
+    def save_lazy_token_id(
+        self,
+        token_id: int,
+        logprobs: Dict[int, float],
+    ) -> None:
+        assert token_id in logprobs
+        self.lazy_token_id = token_id
+        self.lazy_logprobs = logprobs
+
+    def append_lazy_token_id(self) -> None:
+        self.append_token_id(self.lazy_token_id,
+                             self.lazy_logprobs)
+        self.lazy_token_id = None
+        self.lazy_logprobs = None
+
     def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
         assert len(self.logical_token_blocks) > 0
 
