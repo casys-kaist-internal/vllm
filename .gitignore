@@ -177,3 +177,8 @@ _build/
 # vim swap files
 *.swo
 *.swp
+
+# nsight systems
+*.nsys
+benchmarks/nsight/*
+benchmarks/*.json
