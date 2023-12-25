@@ -36,6 +36,9 @@ class BlockAllocator:
                                        block_size=block_size)
             self.free_blocks.append(block)
 
+        import random
+        random.shuffle(self.free_blocks)
+
     def allocate(self) -> PhysicalTokenBlock:
         if not self.free_blocks:
             raise ValueError("Out of memory! No free blocks are available.")

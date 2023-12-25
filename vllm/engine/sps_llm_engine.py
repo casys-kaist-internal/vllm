@@ -3,8 +3,11 @@ import copy
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple, Union, Dict
+import itertools
 
 import torch
+from torch.cuda import nvtx
+
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
 from vllm.core.sps_scheduler import SpSScheduler, SpSSchedulerOutputs
@@ -12,7 +15,6 @@ from vllm.engine.arg_utils import SpSEngineArgs
 from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
-from vllm.model_executor.layers.sampler import modified_rejection_sample
 from vllm.outputs import SpSRequestOutput as RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, Sequence, SequenceData, SequenceGroup,
@@ -395,36 +397,12 @@ class SpSLLMEngine:
                                              child_sample.probs)
 
             elif sps_stage == SpSStage.TARGET_DECODE:
-                # Accept a subset of draft tokens from left to right,
-                # recovering the distribution of the target model in process.
-                draft_token_ids = parent.get_draft_token_ids()
-                draft_probs = parent.get_draft_probs()
-                assert len(draft_token_ids) == len(draft_probs)
-                accept_probabilities = []
+                parent.accept_draft_tokens(
+                    child_sample.accept_cnt, child_sample.accept_probs)
 
-                accept_cnt = 0
-                for draft_idx, draft_token_id in enumerate(draft_token_ids):
-                    draft_prob = draft_probs[draft_idx][draft_token_id]
-                    target_prob = child_sample.probs[draft_idx][draft_token_id]
-                    r = torch.rand(1, device=draft_prob.device)
-                    accept_probability = target_prob / draft_prob
-                    accept_probabilities.append(accept_probability.item())
-
-                    if r < torch.min(torch.tensor([1], device=draft_prob.device),
-                                     accept_probability):
-                        # accept
-                        accept_cnt += 1
-                    else:
-                        # reject
-                        resample_token_id, resample_logprobs = modified_rejection_sample(
-                            child_sample.probs[draft_idx],
-                            draft_probs[draft_idx], seq_group.sampling_params)
-                        break
-                parent.accept_draft_tokens(accept_cnt, accept_probabilities)
-
-                if accept_cnt != self.sps_config.draft_size:
+                if child_sample.accept_cnt != self.sps_config.draft_size:
                     parent.append_token_id(
-                        resample_token_id, resample_logprobs)
+                        child_sample.output_token, child_sample.logprobs)
                 else:
                     if SPS_ALL_ACCEPT:
                         # all accepted so sample additional token and save it for lazy append
@@ -432,6 +410,56 @@ class SpSLLMEngine:
                             child_sample.output_token, child_sample.logprobs)
                         parent.status = SequenceStatus.SPS_ALL_ACCEPT
 
+                # nvtx.range_push("TARGET_DECODE")
+                # # Accept a subset of draft tokens from left to right,
+                # # recovering the distribution of the target model in process.
+                # draft_token_ids = parent.get_draft_token_ids()
+                # draft_probs = parent.get_draft_probs()
+                # assert len(draft_token_ids) == len(draft_probs)
+                # accept_probabilities = []
+
+                # # For draft_probs_tensor
+                # draft_probs_list = []
+                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
+                #     draft_probs_list.append(
+                #         draft_probs[draft_idx][draft_token_id])
+                # draft_probs_tensor = torch.stack(draft_probs_list)
+
+                # # For target_probs_tensor
+                # target_probs_list = []
+                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
+                #     target_probs_list.append(
+                #         child_sample.probs[draft_idx][draft_token_id])
+                # target_probs_tensor = torch.stack(target_probs_list)
+
+                # accept_probabilities = target_probs_tensor / draft_probs_tensor
+                # r = torch.rand_like(accept_probabilities)
+                # accept = r < torch.min(torch.ones_like(
+                #     accept_probabilities), accept_probabilities)
+
+                # accept_cnt = 0
+                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
+                #     if accept[draft_idx]:
+                #         accept_cnt += 1
+                #     else:
+                #         resample_token_id, resample_logprobs = modified_rejection_sample(
+                #             child_sample.probs[draft_idx],
+                #             draft_probs[draft_idx], seq_group.sampling_params)
+                #         break
+
+                # parent.accept_draft_tokens(accept_cnt, accept_probabilities)
+
+                # if accept_cnt != self.sps_config.draft_size:
+                #     parent.append_token_id(
+                #         resample_token_id, resample_logprobs)
+                # else:
+                #     if SPS_ALL_ACCEPT:
+                #         # all accepted so sample additional token and save it for lazy append
+                #         parent.save_lazy_token_id(
+                #             child_sample.output_token, child_sample.logprobs)
+                #         parent.status = SequenceStatus.SPS_ALL_ACCEPT
+
+                # nvtx.range_pop()
             else:
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
 
@@ -458,6 +486,7 @@ class SpSLLMEngine:
             self, output: SamplerOutput,
             scheduler_outputs: SpSSchedulerOutputs,
             sps_stage: SpSStage) -> List[RequestOutput]:
+        nvtx.range_push("process_model_outputs")
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
@@ -477,6 +506,7 @@ class SpSLLMEngine:
             # Log the system stats.
             self._log_system_stats(scheduler_outputs.prompt_run,
                                    scheduler_outputs.num_batched_tokens)
+        nvtx.range_pop()
         return request_outputs
 
     def step(self) -> List[RequestOutput]:
@@ -488,9 +518,13 @@ class SpSLLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
+        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
         if scheduler_outputs.is_empty():
             return ignored
+        nvtx.range_pop()
+
+        num_batched_tokens = scheduler_outputs.num_batched_tokens
 
         # NOTE: We assume that all sequences in the group are in the same stage.
         sps_stage = seq_group_metadata_list[0].sps_stage
@@ -498,6 +532,7 @@ class SpSLLMEngine:
         if scheduler_outputs.prompt_run:
             assert sps_stage == SpSStage.PROMPT
 
+            nvtx.range_push("PROMPT_TARGET " + str(num_batched_tokens))
             # We should run both target and draft models for the prompt because of KV cache.
             output = self._run_workers(
                 "execute_target_model",
@@ -506,7 +541,9 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
+            nvtx.range_push("PROMPT_DRAFT " + str(num_batched_tokens))
             # Don't need output for draft model. Execution required for draft KV cache.
             self._run_workers(
                 "execute_draft_model",
@@ -515,14 +552,17 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
             return self._process_model_outputs(output, scheduler_outputs, SpSStage.PROMPT)
 
         else:
             assert sps_stage == SpSStage.DRAFT_DECODE
 
+            nvtx.range_push("DRAFT_DECODE " + str(num_batched_tokens))
             # Iterate over the range of draft size
             for draft_index in range(self.sps_config.draft_size):
+                nvtx.range_push(str(draft_index))
                 # Only swap in/out/copy blocks for the first draft iteration
                 if draft_index == 0:
                     draft_output = self._run_workers(
@@ -540,14 +580,16 @@ class SpSLLMEngine:
                         blocks_to_swap_out=None,
                         blocks_to_copy=None,
                     )
-
+                nvtx.range_pop()
                 self._process_model_outputs(
                     draft_output, scheduler_outputs, SpSStage.DRAFT_DECODE)
+            nvtx.range_pop()
 
             # Change to TARGET_DECODE stage
             for seq_group_metadata in seq_group_metadata_list:
                 seq_group_metadata.sps_stage = SpSStage.TARGET_DECODE
 
+            nvtx.range_push("TARGET_DECODE " + str(num_batched_tokens))
             # Execute the target model to score the draft outputs
             # Need to swap in/out/copy blocks for target model
             target_output = self._run_workers(
@@ -557,6 +599,7 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
             target_output = self._process_model_outputs(
                 target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
@@ -588,6 +631,7 @@ class SpSLLMEngine:
                 # We already considered all accept case in scheduler so no need to swap in/out/copy blocks
                 # Don't need output for draft model. Execution required for draft KV cache.
                 if seq_group_metadata_list:
+                    nvtx.range_push("ALL_ACCEPT")
                     self._run_workers(
                         "execute_draft_model",
                         seq_group_metadata_list=seq_group_metadata_list,
@@ -595,6 +639,7 @@ class SpSLLMEngine:
                         blocks_to_swap_out=None,
                         blocks_to_copy=None,
                     )
+                    nvtx.range_pop()
 
                     for seq_group in scheduler_outputs.scheduled_seq_groups:
                         for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):

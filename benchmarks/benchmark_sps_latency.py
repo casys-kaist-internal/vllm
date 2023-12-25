@@ -57,7 +57,8 @@ def sample_requests(
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # Sample the requests.
-    sampled_requests = random.sample(filtered_dataset, num_requests)
+    sampled_requests = filtered_dataset[:num_requests]
+    # sampled_requests = random.sample(filtered_dataset, num_requests)
     return sampled_requests
 
 
@@ -110,6 +111,7 @@ def main(args: argparse.Namespace):
         latencies = []
         # Add the requests to the engine.
         # print(len(requests))
+
         for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
                 n=1,
@@ -118,6 +120,9 @@ def main(args: argparse.Namespace):
                 ignore_eos=True,
                 max_tokens=output_len,
             )
+
+            # prompt = "Alan turing is the comuter scientist who invented the turing machine."
+
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(
                 prompt=prompt,
@@ -134,24 +139,24 @@ def main(args: argparse.Namespace):
             # print("!!!! output !!!!")
             # print(output[0].outputs[0].text)
 
-        return np.mean(latencies)
+            return np.mean(latencies)
 
     print("Warming up...")
-    sampling_params = SamplingParams(
-        n=args.n,
-        temperature=0.0 if args.use_beam_search else 1.0,
-        top_p=1.0,
-        use_beam_search=args.use_beam_search,
-        ignore_eos=True,
-        max_tokens=100,
-    )
-    dummy_prompt_token_ids = [[0] * 10] * 10
-    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-                 sampling_params=sampling_params,
-                 use_tqdm=False)
+    # sampling_params = SamplingParams(
+    #     n=args.n,
+    #     temperature=0.0 if args.use_beam_search else 1.0,
+    #     top_p=1.0,
+    #     use_beam_search=args.use_beam_search,
+    #     ignore_eos=True,
+    #     max_tokens=100,
+    # )
+    # dummy_prompt_token_ids = [[0] * 10] * 10
+    # llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+    #              sampling_params=sampling_params,
+    #              use_tqdm=False)
 
     # Benchmark.
-    avg_latency = run_to_completion(profile=False)
+    avg_latency = run_to_completion()
     print(f'Avg latency: {avg_latency} seconds')
 
 

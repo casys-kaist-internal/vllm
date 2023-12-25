@@ -80,10 +80,10 @@ class RequestOutput:
         n = seq_group.sampling_params.n
         seqs = seq_group.get_seqs()
         if seq_group.sampling_params.use_beam_search:
-            sorting_key = lambda seq: seq.get_beam_search_score(
+            def sorting_key(seq): return seq.get_beam_search_score(
                 seq_group.sampling_params.length_penalty)
         else:
-            sorting_key = lambda seq: seq.get_cumulative_logprob()
+            def sorting_key(seq): return seq.get_cumulative_logprob()
         sorted_seqs = sorted(seqs, key=sorting_key, reverse=True)
         top_n_seqs = sorted_seqs[:n]
 
@@ -119,6 +119,7 @@ class RequestOutput:
                 f"outputs={self.outputs}, "
                 f"finished={self.finished})")
 
+
 class SpSCompletionOutput(CompletionOutput):
     """CompletionOutput modified to get debug infos from Speculative Sampling
 
@@ -143,21 +144,22 @@ class SpSCompletionOutput(CompletionOutput):
         cumulative_logprob: float,
         logprobs: Optional[SampleLogprobs],
         finish_reason: Optional[str] = None,
-        accept_probabilities: Optional[List[float]] = None,
-        reject_positions : Optional[List[int]] = None,
+        accept_probs: Optional[List[float]] = None,
+        reject_pos: Optional[List[int]] = None,
     ) -> None:
         super().__init__(index, text, token_ids, cumulative_logprob, logprobs,
                          finish_reason)
-        self.accept_probabilities = accept_probabilities
-        self.reject_positions = reject_positions
+        self.accept_probs = accept_probs
+        self.reject_pos = reject_pos
 
     def finished(self) -> bool:
         return self.finish_reason is not None
 
     def __repr__(self) -> str:
         return (super().__repr__() + ", "
-                f"accept_probabilities={self.accept_probabilities}, "
-                f"reject_positions={self.reject_positions})")
+                f"accept_probabilities={self.accept_probs}, "
+                f"reject_positions={self.reject_pos})")
+
 
 class SpSRequestOutput(RequestOutput):
     @classmethod
@@ -166,10 +168,10 @@ class SpSRequestOutput(RequestOutput):
         n = seq_group.sampling_params.n
         seqs = seq_group.get_seqs()
         if seq_group.sampling_params.use_beam_search:
-            sorting_key = lambda seq: seq.get_beam_search_score(
+            def sorting_key(seq): return seq.get_beam_search_score(
                 seq_group.sampling_params.length_penalty)
         else:
-            sorting_key = lambda seq: seq.get_cumulative_logprob()
+            def sorting_key(seq): return seq.get_cumulative_logprob()
         sorted_seqs = sorted(seqs, key=sorting_key, reverse=True)
         top_n_seqs = sorted_seqs[:n]
 
@@ -184,10 +186,10 @@ class SpSRequestOutput(RequestOutput):
                 logprobs = None
             finshed_reason = SequenceStatus.get_finished_reason(seq.status)
             output = SpSCompletionOutput(seqs.index(seq), seq.output_text,
-                                      seq.get_output_token_ids(),
-                                      seq.get_cumulative_logprob(), logprobs,
-                                      finshed_reason, seq.debug_accept_probabiliteis,
-                                      seq.debug_rejection_positions)
+                                         seq.get_output_token_ids(),
+                                         seq.get_cumulative_logprob(), logprobs,
+                                         finshed_reason, seq.accept_probs,
+                                         seq.reject_pos)
             outputs.append(output)
 
         # Every sequence in the sequence group should have the same prompt.

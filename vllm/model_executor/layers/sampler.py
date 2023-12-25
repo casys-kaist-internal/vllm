@@ -91,39 +91,22 @@ class Sampler(nn.Module):
         # Use log_softmax to ensure numerical stability.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
-        # We only need last prob and logprob values for sampling the next token for target decode.
-        # Get prob and logprob for only last token for each seq_group (in case of all acceptance)
-        # if sampling_metadata.is_target_decode:
-        #     prob = torch.empty(
-        #         (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
-        #     logprob = torch.empty(
-        #         (len(sampling_metadata.seq_groups), probs.shape[-1]), device='cuda')
-
-        #     idx = 0
-        #     for seq_idx in range(len(sampling_metadata.seq_groups)):
-        #         prob[seq_idx] = probs[idx +
-        #                               sampling_metadata.draft_lens[seq_idx] - 1, ]
-        #         logprob[seq_idx] = logprobs[idx +
-        #                                     sampling_metadata.draft_lens[seq_idx] - 1, ]
-        #         idx += sampling_metadata.draft_lens[seq_idx]
-
-        #     # Sample the next tokens.
-        #     sample_results = _sample(prob, logprob, sampling_metadata)
-        #     # Get the logprobs query results.
-        #     prompt_logprobs, sample_logprobs = _get_logprobs(
-        #         logprob, sampling_metadata, sample_results)
-
-        # else:
         # Sample the next tokens.
-        sample_results = _sample(probs, logprobs, sampling_metadata)
+        # For speculative sampling, score the draft with the target model.
+        if not sampling_metadata.is_target_decode:
+            sample_results = _sample(probs, logprobs, sampling_metadata)
+            sps_results = None
+        else:
+            sample_results, sps_results, probs, logprobs = _sps_sample(
+                probs, sampling_metadata)
+
         # Get the logprobs query results.
-        if sampling_metadata.selected_token_indices_for_logprob is not None:
-            logprobs = logprobs[sampling_metadata.selected_token_indices_for_logprob]
         prompt_logprobs, sample_logprobs = _get_logprobs(
             logprobs, sampling_metadata, sample_results)
 
         return _build_sampler_output(sample_results, sampling_metadata,
-                                     prompt_logprobs, sample_logprobs, probs)
+                                     prompt_logprobs, sample_logprobs,
+                                     probs, sps_results)  # last two args for sps
 
 
 def _get_logits(parallel_state: ParallelState,
@@ -569,6 +552,96 @@ def _sample(
     return sample_results
 
 
+def _sps_sample(
+    probs: torch.Tensor,
+    sampling_metadata: SamplingMetadata,
+) -> Tuple[List[Tuple[List[int], List[int]]], List[Tuple[int, int]], torch.Tensor, torch.Tensor]:
+    # draft_lens: List[int]
+    # draft includes one additional token before draft tokens and draft tokens so we subtract 1
+    draft_lens = sampling_metadata.draft_lens
+    adjusted_draft_lens = [length - 1 for length in draft_lens]
+
+    # draft_token_ids: [seq_idx, max_draft_len]
+    sampled_draft_token_ids = sampling_metadata.sampled_draft_token_ids
+
+    # target_probs: [seq_len, vocab_size] -> [seq_idx, max_draft_len, vocab_size]
+    target_probs = _reshape_and_pad(probs, draft_lens)
+    del probs
+
+    # target_prob_for_draft_token_id: [seq_idx, max_draft_len]
+    target_prob_for_sampled_draft_token = torch.gather(
+        target_probs[:, :-1, :], 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_draft_len, vocab_size]
+    draft_probs = _reshape_and_pad(
+        sampling_metadata.draft_probs, adjusted_draft_lens)
+
+    # draft_prob_for_draft_token_id: [seq_idx, max_draft_len]
+    draft_prob_for_sampled_draft_token = torch.gather(
+        draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # accept_prob: [seq_idx, max_draft_len]
+    accept_prob = target_prob_for_sampled_draft_token.div_(
+        draft_prob_for_sampled_draft_token)
+    del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
+
+    # accept is 0 and reject is 1
+    accepted = torch.where(
+        torch.rand_like(accept_prob) < accept_prob,
+        torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
+
+    # cumulative sum
+    accepted.cumsum_(dim=1)
+
+    # Create a mask that contains 1 until the first reject
+    accepted = (accepted == 0)
+
+    # accept_cnt: [seq_idx]
+    accept_cnt = torch.sum(accepted, dim=1)
+    del accepted
+
+    # rejected_draft_idx: [seq_idx]
+    draft_lens_tensor = torch.tensor(
+        adjusted_draft_lens, device=accept_cnt.device)
+    all_accept_mask = (accept_cnt == draft_lens_tensor)
+    del draft_lens_tensor
+
+    # make accept_cnt 0 for all accepted sequences.
+    masked_accept_cnt = accept_cnt.clone()
+    masked_accept_cnt[all_accept_mask] = 0
+
+    # target_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
+    # draft_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
+    indices = torch.arange(masked_accept_cnt.size(
+        0)).long().to(masked_accept_cnt.device)
+    target_prob_at_reject_idx = target_probs[indices,
+                                             masked_accept_cnt, :].squeeze(1)
+    draft_prob_at_reject_idx = draft_probs[indices, masked_accept_cnt, :].squeeze(
+        1)
+    del masked_accept_cnt
+
+    # modified_rejection_prob: [seq_idx, vocab_size]
+    modified_rejection_prob = _get_modified_rejection_prob(
+        target_prob_at_reject_idx, draft_prob_at_reject_idx)
+    del target_prob_at_reject_idx, draft_prob_at_reject_idx
+
+    # recover to original probability for all accepted sequences
+    modified_rejection_prob[all_accept_mask,
+                            :] = target_probs[all_accept_mask, -1, :].squeeze(1)
+    modified_rejection_logprobs = torch.log(modified_rejection_prob)
+    del target_probs, draft_probs
+
+    sample_results = _sample(modified_rejection_prob,
+                             modified_rejection_logprobs, sampling_metadata)
+
+    sps_results = []
+    assert len(sample_results) == accept_prob.size(0)
+    for i in range(len(sample_results)):
+        sps_results.append((accept_cnt[i].item(), accept_prob[i].tolist()))
+
+    return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
+
+
 def _get_logprobs(
     logprobs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
@@ -688,9 +761,9 @@ def _build_sampler_output(
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
     probs: torch.Tensor,
+    sps_results: Optional[List[Tuple[int, int]]],
 ) -> SamplerOutput:
     sampler_output = []
-    pos = 0
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
                                                   sample_results, prompt_logprobs,
@@ -701,43 +774,47 @@ def _build_sampler_output(
         for parent_id, next_token_id, logprobs in zip(parent_ids,
                                                       next_token_ids,
                                                       group_sample_logprobs):
-            if not sampling_metadata.is_target_decode:
+            if sampling_metadata.is_prompt:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id,
+                                   logprobs))
+            elif not sampling_metadata.is_target_decode:
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id,
                                    logprobs, probs[idx]))
             else:
                 seq_outputs.append(
-                    SequenceOutput(seq_ids[parent_id], next_token_id,
-                                   logprobs, probs[pos:pos+sampling_metadata.draft_lens[idx]]))
-                pos += sampling_metadata.draft_lens[idx]
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
+                                   accept_cnt=sps_results[idx][0],
+                                   accept_probs=sps_results[idx][1]))
 
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
     return sampler_output
 
 
-def modified_rejection_sample(
+def _get_modified_rejection_prob(
     target_prob: torch.Tensor,
-    draft_prob: torch.Tensor,
-    sampling_params: SamplingParams
-) -> Tuple[int, Dict[int, float]]:
-    x = target_prob - draft_prob
-    x_max = torch.where(x > 0, x, torch.zeros_like(x))
-    x_max_sum = torch.sum(x_max, dim=-1, keepdim=True)
-    resample_prob = x_max / x_max_sum
-    resample_logprob = torch.log(resample_prob)
+    draft_prob: torch.Tensor
+) -> torch.Tensor:
+    target_prob.sub_(draft_prob)
+    target_prob.clamp_(min=0)
+    x_max_sum = target_prob.sum(dim=-1, keepdim=True)
+    target_prob.div_(x_max_sum)
 
-    # naive greedy sampling
-    if sampling_params.temperature < _SAMPLING_EPS:
-        resample_token_id = torch.argmax(resample_prob).item()
+    return target_prob
 
-    else:
-        resample_token_id = torch.multinomial(resample_prob,
-                                              num_samples=1,
-                                              replacement=True).item()
 
-    resample_output_logprobs: Dict[int, float] = {}
-    resample_output_logprobs[resample_token_id] = resample_logprob[
-        resample_token_id].item()
+def _reshape_and_pad(
+        x: torch.Tensor,
+        lens: List[int]
+):
+    max_size = max(lens)
+    padded_x = torch.zeros((len(lens), max_size, x.size(1)), device=x.device)
 
-    return resample_token_id, resample_output_logprobs
+    idx = 0
+    for i, size in enumerate(lens):
+        padded_x[i, :size, :] = x[idx:idx + size]
+        idx += size
+
+    return padded_x

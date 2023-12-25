@@ -26,18 +26,27 @@ class SamplingMetadata:
         draft_lens: List[int],
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Dict[SamplingType, torch.Tensor],
-        selected_token_indices_for_logprob: Optional[torch.Tensor] = None,
+        sampled_draft_token_ids: Optional[torch.Tensor] = None,
+        draft_probs: Optional[torch.Tensor] = None,
     ) -> None:
         self.seq_groups = seq_groups
         self.seq_data = seq_data
         self.prompt_lens = prompt_lens
         self.draft_lens = draft_lens
         self.selected_token_indices = selected_token_indices
-        self.selected_token_indices_for_logprob = selected_token_indices_for_logprob
         self.categorized_sample_indices = categorized_sample_indices
-
         self.num_prompts = len(prompt_lens)
+        self.is_prompt = len(prompt_lens) > 0
+
+        # SpS related attributes start
+        self.sampled_draft_token_ids = sampled_draft_token_ids
+        self.draft_probs = draft_probs
         self.is_target_decode = len(draft_lens) > 0
+        # SpS related attributes end
+
+        if self.is_target_decode:
+            assert self.sampled_draft_token_ids is not None
+            assert self.draft_probs is not None
 
     def __repr__(self) -> str:
         return (

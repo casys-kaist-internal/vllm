@@ -1,0 +1,6 @@
+#!/bin/bash
+
+OUTFILE=$(date '+%Y-%m-%d_%H-%M-%S')'_malus07'
+nsys profile --gpu-metrics-device=all --delay=1 --output=${OUTFILE} $@
+scp "${OUTFILE}.nsys-rep" sjchoi@143.248.138.9:/Users/sjchoi/Desktop/nsight
+rm ${OUTFILE}.nsys-rep

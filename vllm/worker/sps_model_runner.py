@@ -283,19 +283,20 @@ class SpSModelRunner:
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
-        selected_token_indices_for_logprob: List[int] = []
         selected_token_start_idx = 0
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
         prompt_lens: List[int] = input_metadata.prompt_lens
         draft_lens: List[int] = input_metadata.draft_lens
+        sampled_draft_token_ids: List[List[int]] = []
+        draft_probs: List[torch.Tensor] = []
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
         for i, seq_group_metadata in enumerate(seq_group_metadata_list):
             seq_ids = list(seq_group_metadata.seq_data.keys())
             assert len(seq_ids) == 1, ("SpS does not support beam search, "
                                        "so there should be one seq_id per seq_group_metadata.")
-
+            seq_data = seq_group_metadata.seq_data[seq_ids[0]]
             sampling_params = seq_group_metadata.sampling_params
             seq_groups.append((seq_ids, sampling_params))
 
@@ -337,15 +338,21 @@ class SpSModelRunner:
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
                           selected_token_start_idx + draft_len))
-                selected_token_indices_for_logprob.append(
-                    selected_token_start_idx + draft_len - 1)
                 selected_token_start_idx += draft_len
 
                 categorized_sample_indices[
-                    sampling_params.sampling_type].append(
-                        categorized_sample_indices_start_idx + draft_len - 1)
+                    sampling_params.sampling_type].extend(
+                        range(categorized_sample_indices_start_idx,
+                              categorized_sample_indices_start_idx + num_seqs))
+                categorized_sample_indices_start_idx += num_seqs
 
-                categorized_sample_indices_start_idx += draft_len
+                # NOTE: draft len includes the last token of the sequence just before draft tokens
+                # so get_draft_token_ids is one less than draft_len
+                draft_token_ids = seq_data.get_draft_token_ids()
+                assert len(draft_token_ids) == draft_len - 1
+                sampled_draft_token_ids.append(draft_token_ids)
+                draft_probs.extend(seq_data.get_draft_probs())
+
             else:
                 raise ValueError(
                     f"Invalid SpS stage: {seq_group_metadata.sps_stage}")
@@ -354,12 +361,16 @@ class SpSModelRunner:
                                               dtype=torch.long,
                                               device="cuda")
 
-        if selected_token_indices_for_logprob:
-            selected_token_indices_for_logprob = torch.tensor(selected_token_indices_for_logprob,
-                                                              dtype=torch.long,
-                                                              device="cuda")
+        if sampled_draft_token_ids:
+            sampled_draft_token_ids = _make_tensor_with_pad(sampled_draft_token_ids,
+                                                            max_len=max(
+                                                                draft_lens) - 1,
+                                                            pad=0,
+                                                            dtype=torch.long)
+            draft_probs = torch.stack(draft_probs, dim=0)
         else:
-            selected_token_indices_for_logprob = None
+            sampled_draft_token_ids = None
+            draft_probs = None
 
         categorized_sample_indices = {
             t: torch.tensor(seq_ids, dtype=torch.int, device="cuda")
@@ -376,8 +387,9 @@ class SpSModelRunner:
             prompt_lens=prompt_lens,
             draft_lens=draft_lens,
             selected_token_indices=selected_token_indices,
-            selected_token_indices_for_logprob=selected_token_indices_for_logprob,
             categorized_sample_indices=categorized_sample_indices,
+            sampled_draft_token_ids=sampled_draft_token_ids,
+            draft_probs=draft_probs
         )
         return sampling_metadata
 
