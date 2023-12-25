@@ -142,8 +142,8 @@ def run_vllm(
 
         prompt = output.prompt
         output_str = completion_output.text
-        rejection_positions = completion_output.reject_positions
-        accept_probabilities = completion_output.accept_probabilities
+        rejection_positions = completion_output.reject_pos
+        accept_probabilities = completion_output.accept_probs
         num_output_tokens = len(completion_output.token_ids)
         outputs_json.append({
             'prompt': prompt,
