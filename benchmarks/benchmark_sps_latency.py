@@ -111,17 +111,16 @@ def main(args: argparse.Namespace):
         latencies = []
         # Add the requests to the engine.
         # print(len(requests))
+        print(args.temperature)
 
         for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
                 n=1,
-                temperature=0.5,
+                temperature=args.temperature,
                 top_p=1.0,
                 ignore_eos=True,
                 max_tokens=output_len,
             )
-
-            # prompt = "Alan turing is the comuter scientist who invented the turing machine."
 
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(

@@ -7,7 +7,7 @@ dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
 output_file="/home/sjchoi/workspace/vllm/benchmarks/results.csv"
 
 # Set the number of prompts
-num_prompts=10
+num_prompts=100
 
 rm $output_file
 
@@ -40,3 +40,5 @@ for temperature in $(seq 0 0.1 1); do
         slack "$temperature, SpS $window_size, $latency"
     done
 done
+
+slack "Done"
