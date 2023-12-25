@@ -116,7 +116,7 @@ def run_vllm(
             temperature=0.0 if use_beam_search else temperature,
             top_p=1.0,
             use_beam_search=use_beam_search,
-            ignore_eos=True,
+            ignore_eos=False,
             max_tokens=output_len,
         )
         # FIXME(woosuk): Do not use internal method.
@@ -136,7 +136,8 @@ def run_vllm(
     outputs_json = []
     for output in outputs:
 
-        assert len(output.outputs) == 1, "Beam Search not supported in SpS for now.."
+        assert len(
+            output.outputs) == 1, "Beam Search not supported in SpS for now.."
         completion_output = output.outputs[0]
 
         prompt = output.prompt
@@ -152,13 +153,10 @@ def run_vllm(
             'num_output_tokens': num_output_tokens,
         })
 
-
     file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
     file_name = file_name.replace('/', '_')
     with open(file_name, 'w') as f:
         json.dump(outputs_json, f, indent=2)
-
-
 
     return end - start
 
@@ -325,7 +323,7 @@ if __name__ == "__main__":
     parser.add_argument('--trust-remote-code',
                         action='store_true',
                         help='trust remote code from huggingface')
-    
+
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument(
         '--max-model-len',

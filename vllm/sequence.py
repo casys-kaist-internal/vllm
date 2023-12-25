@@ -193,8 +193,8 @@ class Sequence:
         self.tokens: Optional[List[str]] = None
 
         # SpS related debugging (Hyunjae)
-        self.debug_rejection_positions : List[int] = []
-        self.debug_accept_probabiliteis : List[float] = []
+        self.reject_pos: List[int] = []
+        self.accept_probs: List[float] = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -320,15 +320,15 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
-    def accept_draft_tokens(self, accept_cnt: int, accept_probabilities : List[float]) -> None:
+    def accept_draft_tokens(self, accept_cnt: int, accept_probs: List[float]) -> None:
         assert accept_cnt <= self.draft_size
         reject_cnt = self.draft_size - accept_cnt
         if reject_cnt > 0:
-            self.debug_rejection_positions.append(self.get_len() + reject_cnt)
+            self.reject_pos.append(self.get_len() + reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
-        self.debug_accept_probabiliteis.extend(accept_probabilities)
+        self.accept_probs.extend(accept_probs)
 
     def get_last_nth_token_id(self, idx) -> int:
         return self.data.get_last_nth_token_id(idx)
@@ -348,6 +348,7 @@ class Sequence:
             remaining_slots -= self.block_size
 
         return num_blocks
+
     # SpS related methods end
 
     def __repr__(self) -> str:
@@ -506,12 +507,19 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
-        probs: torch.Tensor,  # added for SpS
+        probs: Optional[torch.Tensor] = None,
+        accept_cnt: Optional[int] = 0,
+        accept_probs: Optional[List[float]] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+
+        # SpS related start
         self.probs = probs
+        self.accept_cnt = accept_cnt
+        self.accept_probs = accept_probs
+        # SpS related end
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
