@@ -56,7 +56,8 @@ def sample_requests(
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # Sample the requests.
-    sampled_requests = random.sample(filtered_dataset, num_requests)
+    sampled_requests = filtered_dataset[:num_requests]
+    # sampled_requests = random.sample(filtered_dataset, num_requests)
     return sampled_requests
 
 
@@ -113,7 +114,7 @@ def run_vllm(
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
             n=n,
-            temperature=0.0 if use_beam_search else temperature,
+            temperature=0.5,
             top_p=1.0,
             use_beam_search=use_beam_search,
             ignore_eos=False,
@@ -128,35 +129,36 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    outputs = llm._run_engine(use_tqdm=True)
+    outputs = llm._run_engine(use_tqdm=False)
     end = time.perf_counter()
 
     # (Hyunjae) Save debuggable outputs as JSON
-    import json
-    outputs_json = []
-    for output in outputs:
+    if engine == 'sps':
+        import json
+        outputs_json = []
+        for output in outputs:
 
-        assert len(
-            output.outputs) == 1, "Beam Search not supported in SpS for now.."
-        completion_output = output.outputs[0]
+            assert len(
+                output.outputs) == 1, "Beam Search not supported in SpS for now.."
+            completion_output = output.outputs[0]
 
-        prompt = output.prompt
-        output_str = completion_output.text
-        rejection_positions = completion_output.reject_pos
-        accept_probabilities = completion_output.accept_probs
-        num_output_tokens = len(completion_output.token_ids)
-        outputs_json.append({
-            'prompt': prompt,
-            'output_str': output_str,
-            'rejection_positions': rejection_positions,
-            'accept_probabilities': accept_probabilities,
-            'num_output_tokens': num_output_tokens,
-        })
+            prompt = output.prompt
+            output_str = completion_output.text
+            rejection_positions = completion_output.reject_pos
+            accept_probabilities = completion_output.accept_probs
+            num_output_tokens = len(completion_output.token_ids)
+            outputs_json.append({
+                'prompt': prompt,
+                'output_str': output_str,
+                'rejection_positions': rejection_positions,
+                'accept_probabilities': accept_probabilities,
+                'num_output_tokens': num_output_tokens,
+            })
 
-    file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
-    file_name = file_name.replace('/', '_')
-    with open(file_name, 'w') as f:
-        json.dump(outputs_json, f, indent=2)
+        file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
+        file_name = file_name.replace('/', '_')
+        with open(file_name, 'w') as f:
+            json.dump(outputs_json, f, indent=2)
 
     return end - start
 

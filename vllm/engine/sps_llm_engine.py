@@ -410,56 +410,6 @@ class SpSLLMEngine:
                             child_sample.output_token, child_sample.logprobs)
                         parent.status = SequenceStatus.SPS_ALL_ACCEPT
 
-                # nvtx.range_push("TARGET_DECODE")
-                # # Accept a subset of draft tokens from left to right,
-                # # recovering the distribution of the target model in process.
-                # draft_token_ids = parent.get_draft_token_ids()
-                # draft_probs = parent.get_draft_probs()
-                # assert len(draft_token_ids) == len(draft_probs)
-                # accept_probabilities = []
-
-                # # For draft_probs_tensor
-                # draft_probs_list = []
-                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
-                #     draft_probs_list.append(
-                #         draft_probs[draft_idx][draft_token_id])
-                # draft_probs_tensor = torch.stack(draft_probs_list)
-
-                # # For target_probs_tensor
-                # target_probs_list = []
-                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
-                #     target_probs_list.append(
-                #         child_sample.probs[draft_idx][draft_token_id])
-                # target_probs_tensor = torch.stack(target_probs_list)
-
-                # accept_probabilities = target_probs_tensor / draft_probs_tensor
-                # r = torch.rand_like(accept_probabilities)
-                # accept = r < torch.min(torch.ones_like(
-                #     accept_probabilities), accept_probabilities)
-
-                # accept_cnt = 0
-                # for draft_idx, draft_token_id in enumerate(draft_token_ids):
-                #     if accept[draft_idx]:
-                #         accept_cnt += 1
-                #     else:
-                #         resample_token_id, resample_logprobs = modified_rejection_sample(
-                #             child_sample.probs[draft_idx],
-                #             draft_probs[draft_idx], seq_group.sampling_params)
-                #         break
-
-                # parent.accept_draft_tokens(accept_cnt, accept_probabilities)
-
-                # if accept_cnt != self.sps_config.draft_size:
-                #     parent.append_token_id(
-                #         resample_token_id, resample_logprobs)
-                # else:
-                #     if SPS_ALL_ACCEPT:
-                #         # all accepted so sample additional token and save it for lazy append
-                #         parent.save_lazy_token_id(
-                #             child_sample.output_token, child_sample.logprobs)
-                #         parent.status = SequenceStatus.SPS_ALL_ACCEPT
-
-                # nvtx.range_pop()
             else:
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
 
@@ -525,6 +475,10 @@ class SpSLLMEngine:
         nvtx.range_pop()
 
         num_batched_tokens = scheduler_outputs.num_batched_tokens
+
+        # if not seq_group_metadata_list[0].is_prompt:
+        #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
+        #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
 
         # NOTE: We assume that all sequences in the group are in the same stage.
         sps_stage = seq_group_metadata_list[0].sps_stage

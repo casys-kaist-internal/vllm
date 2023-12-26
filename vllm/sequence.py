@@ -342,10 +342,8 @@ class Sequence:
 
         num_blocks = 1
         remaining_slots = size - num_empty_slots
-
-        while remaining_slots > 0:
-            num_blocks += 1
-            remaining_slots -= self.block_size
+        num_blocks += (remaining_slots + self.block_size -
+                       1) // self.block_size
 
         return num_blocks
 

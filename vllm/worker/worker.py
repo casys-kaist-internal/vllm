@@ -102,6 +102,12 @@ class Worker:
         num_cpu_blocks = max(num_cpu_blocks, 0)
         torch.cuda.empty_cache()
 
+        print("block_size", block_size)
+        print("peak_memory", peak_memory)
+        print("total_gpu_memory", total_gpu_memory)
+        print("cache_block_size", cache_block_size)
+        print("num_gpu_blocks", num_gpu_blocks)
+
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
