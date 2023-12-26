@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.cuda import nvtx
 
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_all_gather)
@@ -94,11 +95,15 @@ class Sampler(nn.Module):
         # Sample the next tokens.
         # For speculative sampling, score the draft with the target model.
         if not sampling_metadata.is_target_decode:
+            nvtx.range_push("_sample")
             sample_results = _sample(probs, logprobs, sampling_metadata)
             sps_results = None
+            nvtx.range_pop()
         else:
+            nvtx.range_push("_sps_sample")
             sample_results, sps_results, probs, logprobs = _sps_sample(
                 probs, sampling_metadata)
+            nvtx.range_pop()
 
         # Get the logprobs query results.
         prompt_logprobs, sample_logprobs = _get_logprobs(

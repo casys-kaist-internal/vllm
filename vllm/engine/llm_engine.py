@@ -573,6 +573,10 @@ class LLMEngine:
         if scheduler_outputs.is_empty():
             return ignored
 
+        # if not seq_group_metadata_list[0].is_prompt:
+        #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
+        #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
+
         # Execute the model.
         output = self._run_workers(
             "execute_model",
