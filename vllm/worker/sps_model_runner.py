@@ -434,30 +434,7 @@ class SpSModelRunner:
         return output
 
     @torch.inference_mode()
-    def profile_run(self) -> None:
-        # Enable top-k sampling to reflect the accurate memory usage.
-        vocab_size = self.model_config.get_vocab_size()
-        sampling_params = SamplingParams(top_p=0.99, top_k=vocab_size - 1)
-        max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
-        max_num_seqs = self.scheduler_config.max_num_seqs
-
-        # Profile memory usage with max_num_sequences sequences and the total
-        # number of tokens equal to max_num_batched_tokens.
-        seqs: List[SequenceGroupMetadata] = []
-        for group_id in range(max_num_seqs):
-            seq_len = (max_num_batched_tokens // max_num_seqs +
-                       (group_id < max_num_batched_tokens % max_num_seqs))
-            seq_data = SequenceData([0] * seq_len)
-            seq = SequenceGroupMetadata(
-                request_id=str(group_id),
-                is_prompt=True,
-                seq_data={group_id: seq_data},
-                sampling_params=sampling_params,
-                block_tables=None,
-                sps_stage=SpSStage.PROMPT,
-            )
-            seqs.append(seq)
-
+    def profile_run(self, seqs: List[SequenceGroupMetadata]) -> None:
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [(None, None)] * num_layers

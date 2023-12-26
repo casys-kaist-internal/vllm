@@ -145,15 +145,19 @@ class SpSBlockSpaceManager:
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
         num_additional_blocks = 0
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-            num_additional_blocks += seq.get_num_additional_blocks(size)
+            logical_blocks = seq.logical_token_blocks
+            block_table = self.block_tables[seq.seq_id]
+            num_additional_blocks += len(logical_blocks) + \
+                seq.get_num_additional_blocks(size) - len(block_table)
 
         return num_additional_blocks <= num_free_gpu_blocks
 
     def append_slots(self, seq: Sequence, size: int) -> Optional[Tuple[int, int]]:
         """Allocate a physical slot for new tokens."""
+        logical_blocks = seq.logical_token_blocks
         block_table = self.block_tables[seq.seq_id]
 
-        for _ in range(seq.get_num_additional_blocks(size)):
+        while len(block_table) < len(logical_blocks) + seq.get_num_additional_blocks(size):
             if (self.block_sliding_window
                     and len(block_table) >= self.block_sliding_window):
                 # re-use a block
