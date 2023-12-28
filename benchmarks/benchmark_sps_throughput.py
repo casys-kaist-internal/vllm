@@ -295,7 +295,7 @@ if __name__ == "__main__":
                         help="Input prompt length for each request")
     parser.add_argument("--output-len",
                         type=int,
-                        default=1024,
+                        default=128,
                         help="Output length for each request. Overrides the "
                         "output length from the dataset.")
     parser.add_argument("--target-model", type=str,

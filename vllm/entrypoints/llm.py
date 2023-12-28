@@ -70,6 +70,7 @@ class LLM:
         tokenizer_revision: Optional[str] = None,
         seed: int = 0,
         gpu_memory_utilization: float = 0.9,
+        max_num_batched_tokens: int = None,
         swap_space: int = 4,
         **kwargs,
     ) -> None:
@@ -87,6 +88,7 @@ class LLM:
             tokenizer_revision=tokenizer_revision,
             seed=seed,
             gpu_memory_utilization=gpu_memory_utilization,
+            max_num_batched_tokens=max_num_batched_tokens,
             swap_space=swap_space,
             **kwargs,
         )

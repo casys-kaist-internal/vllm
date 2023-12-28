@@ -107,7 +107,7 @@ def main(args: argparse.Namespace):
         requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
                                    args.output_len)
 
-    def run_to_completion(profile: bool = False):
+    def run_to_completion():
         latencies = []
         # Add the requests to the engine.
         # print(len(requests))
@@ -134,9 +134,9 @@ def main(args: argparse.Namespace):
             end_time = time.perf_counter()
             latency = end_time - start_time
             latencies.append(latency)
-            # print(output[0].prompt)
-            # print("!!!! output !!!!")
-            # print(output[0].outputs[0].text)
+            print(output[0].prompt)
+            print("!!!! output !!!!")
+            print(output[0].outputs[0].text)
 
             return np.mean(latencies)
 
@@ -180,7 +180,7 @@ if __name__ == '__main__':
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
-    parser.add_argument('--output-len', type=int, default=1024)
+    parser.add_argument('--output-len', type=int, default=128)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--temperature',
                         '-t',

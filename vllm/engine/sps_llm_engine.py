@@ -260,7 +260,7 @@ class SpSLLMEngine:
 
     @classmethod
     def from_engine_args(cls, engine_args: SpSEngineArgs) -> "SpSLLMEngine":
-        """Creates an LLM engine from the engine arguments."""
+        """Creates an SpS LLM engine from the engine arguments."""
         # Create the engine configs.
         engine_configs = engine_args.create_engine_configs()
         parallel_config = engine_configs[3]  # parallel_config for target model
