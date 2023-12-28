@@ -141,6 +141,7 @@ class SpSWorker:
         num_cpu_blocks = max(num_cpu_blocks, 0)
         torch.cuda.empty_cache()
 
+        print("gpu_mem_util", gpu_memory_utilization)
         print("peak_memory", peak_memory)
         print("total_gpu_memory", total_gpu_memory)
         print("target_cache_block_size", target_cache_block_size)
