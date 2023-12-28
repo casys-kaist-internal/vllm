@@ -102,7 +102,7 @@ class Worker:
         num_cpu_blocks = max(num_cpu_blocks, 0)
         torch.cuda.empty_cache()
 
-        print("block_size", block_size)
+        print("gpu_mem_util", gpu_memory_utilization)
         print("peak_memory", peak_memory)
         print("total_gpu_memory", total_gpu_memory)
         print("cache_block_size", cache_block_size)

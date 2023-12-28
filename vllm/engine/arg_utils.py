@@ -25,7 +25,7 @@ class EngineArgs:
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
-    gpu_memory_utilization: float = 0.90
+    gpu_memory_utilization: float = 0.9
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: int = 256
     max_paddings: int = 256
@@ -248,8 +248,8 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-    draft_size: int
     tokenizer: Optional[str] = None
+    draft_size: int = 4
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
@@ -370,13 +370,13 @@ class SpSEngineArgs:
                             action='store_true',
                             help='use Ray for distributed serving, will be '
                             'automatically set when using more than 1 GPU')
-        parser.add_argument('--target-pipeline-parallel-size',
-                            '-tpp',
+        parser.add_argument('--pipeline-parallel-size',
+                            '-pp',
                             type=int,
                             default=SpSEngineArgs.pipeline_parallel_size,
                             help='number of pipeline stages for target model')
-        parser.add_argument('--target-tensor-parallel-size',
-                            '-ttp',
+        parser.add_argument('--tensor-parallel-size',
+                            '-tp',
                             type=int,
                             default=SpSEngineArgs.tensor_parallel_size,
                             help='number of tensor parallel replicas for target model')
@@ -479,3 +479,30 @@ class SpSEngineArgs:
                 draft_model_config.trust_remote_code)
 
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, sps_config
+
+
+@dataclass
+class AsyncSpSEngineArgs(SpSEngineArgs):
+    """Arguments for asynchronous vLLM SpS engine."""
+    engine_use_ray: bool = False
+    disable_log_requests: bool = False
+    max_log_len: Optional[int] = None
+
+    @staticmethod
+    def add_cli_args(
+            parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        parser = SpSEngineArgs.add_cli_args(parser)
+        parser.add_argument('--engine-use-ray',
+                            action='store_true',
+                            help='use Ray to start the LLM engine in a '
+                            'separate process as the server process.')
+        parser.add_argument('--disable-log-requests',
+                            action='store_true',
+                            help='disable logging requests')
+        parser.add_argument('--max-log-len',
+                            type=int,
+                            default=None,
+                            help='max number of prompt characters or prompt '
+                            'ID numbers being printed in log. '
+                            'Default: unlimited.')
+        return parser
