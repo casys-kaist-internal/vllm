@@ -75,7 +75,8 @@ def sample_requests(
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # Sample the requests.
-    sampled_requests = random.sample(filtered_dataset, num_requests)
+    sampled_requests = filtered_dataset[:num_requests]
+    # sampled_requests = random.sample(filtered_dataset, num_requests)
     return sampled_requests
 
 
@@ -177,7 +178,8 @@ def main(args: argparse.Namespace):
     np.random.seed(args.seed)
 
     api_url = f"http://{args.host}:{args.port}/generate"
-    tokenizer = get_tokenizer(args.tokenizer, trust_remote_code=args.trust_remote_code)
+    tokenizer = get_tokenizer(
+        args.tokenizer, trust_remote_code=args.trust_remote_code)
     input_requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
 
     benchmark_start_time = time.perf_counter()
