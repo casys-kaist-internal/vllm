@@ -4,7 +4,7 @@
 dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # Set the window size
-window_size=4
+window_size=5
 
 python3 benchmark_sps_latency.py \
 --dataset "$dataset" \

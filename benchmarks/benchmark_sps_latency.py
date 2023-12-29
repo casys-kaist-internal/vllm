@@ -17,11 +17,8 @@ download_dir = '/home/sjchoi/workspace/models'
 def sample_requests(
     dataset_path: str,
     num_requests: int,
-    tokenizer: PreTrainedTokenizerBase,
-    fixed_output_len: Optional[int],
+    tokenizer: PreTrainedTokenizerBase
 ) -> List[Tuple[str, int, int]]:
-    if fixed_output_len is not None and fixed_output_len < 4:
-        raise ValueError("output_len too small")
 
     # Load the dataset.
     with open(dataset_path) as f:
@@ -40,8 +37,6 @@ def sample_requests(
     tokenized_dataset = []
     for i in range(len(dataset)):
         output_len = len(completion_token_ids[i])
-        if fixed_output_len is not None:
-            output_len = fixed_output_len
         tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
 
     # Filter out too long sequences.
@@ -104,14 +99,12 @@ def main(args: argparse.Namespace):
         requests = [(prompt, args.input_len, args.output_len)
                     for _ in range(args.num_prompts)]
     else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
-                                   args.output_len)
+        requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
 
     def run_to_completion():
         latencies = []
         # Add the requests to the engine.
         # print(len(requests))
-        print(args.temperature)
 
         for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
@@ -134,8 +127,6 @@ def main(args: argparse.Namespace):
             end_time = time.perf_counter()
             latency = end_time - start_time
             latencies.append(latency)
-            print(output[0].prompt)
-            print("!!!! output !!!!")
             print(output[0].outputs[0].text)
 
             return np.mean(latencies)
@@ -185,7 +176,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=1.0,
+                        default=0,
                         help='Sampling temperature.')
     parser.add_argument('--n',
                         type=int,

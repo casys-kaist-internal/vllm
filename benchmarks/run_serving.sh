@@ -14,7 +14,7 @@ output_file="/home/sjchoi/workspace/vllm/benchmarks/results_serving.csv"
 rm $output_file
 
 # request rate list 
-request_rate_list=(1 2 4 8 16 32 64 100)
+request_rate_list=(4 8 16 32 64 inf)
 
 echo "Engine, Request rate (req/s), Total time (s), Throughput (req/s), Average latency (s), Average latency per token (s), Average latency per output token (s)" >> $output_file
 
@@ -44,7 +44,7 @@ kill $(ps aux | grep '[p]ython3 -m vllm.entrypoints.api_server' | awk '{print $2
 slack "Base Done"
 
 # Loop through draft size from 2 to 8
-for draft_size in {2..8}; do
+for draft_size in {2..4}; do
     # run server with sps engine
     ./run_server.sh sps $port $draft_size &
     sleep 30
