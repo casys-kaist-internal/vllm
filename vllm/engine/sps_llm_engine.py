@@ -35,8 +35,8 @@ logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
 
-SPS_ALL_ACCEPT = True
-# SPS_ALL_ACCEPT = False
+# SPS_ALL_ACCEPT = True
+SPS_ALL_ACCEPT = False
 
 
 class SpSLLMEngine:

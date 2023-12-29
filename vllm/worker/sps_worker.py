@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Optional
 
 import torch
 import torch.distributed
+from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
@@ -141,12 +142,21 @@ class SpSWorker:
         num_cpu_blocks = max(num_cpu_blocks, 0)
         torch.cuda.empty_cache()
 
-        print("gpu_mem_util", gpu_memory_utilization)
-        print("peak_memory", peak_memory)
-        print("total_gpu_memory", total_gpu_memory)
-        print("target_cache_block_size", target_cache_block_size)
-        print("draft_cache_block_size", draft_cache_block_size)
-        print("num_gpu_blocks", num_gpu_blocks)
+        # Create a list of lists to store the data for the table
+        table_data = [
+            ["gpu_mem_util (%)", gpu_memory_utilization * 100],
+            ["total_gpu_memory (GiB)", format(
+                total_gpu_memory / 1024 ** 3, ".1f")],
+            ["peak_memory (GiB)", format(peak_memory / 1024 ** 3, ".1f")],
+            ["target_cache_block_size (KiB)", target_cache_block_size / 1024],
+            ["draft_cache_block_size (KiB)", draft_cache_block_size / 1024],
+            ["block_size", block_size],
+            ["num_gpu_blocks", num_gpu_blocks]
+        ]
+
+        # Print the table using the tabulate function
+        print(tabulate(table_data, headers=[
+              "Parameter", "Value"], tablefmt="grid"))
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
