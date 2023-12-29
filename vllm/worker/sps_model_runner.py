@@ -210,9 +210,9 @@ class SpSModelRunner:
                 generation_tokens = [
                     seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
 
-                # for token in generation_tokens:
-                #     input_tokens.append([token])
-                input_tokens.append(generation_tokens)
+                for token in generation_tokens:
+                    input_tokens.append([token])
+                # input_tokens.append(generation_tokens)
                 draft_lens.append(len(generation_tokens))
 
                 for i in range(len(generation_tokens)):
@@ -222,11 +222,11 @@ class SpSModelRunner:
                     context_lens.append(context_len)
 
                 position_start = seq_data.get_len() - 1
-                # for i in range(len(generation_tokens)):
-                #     position = position_start + i
-                #     input_positions.append([position])
-                input_positions.append(
-                    list(range(position_start, position_start + len(generation_tokens))))
+                for i in range(len(generation_tokens)):
+                    position = position_start + i
+                    input_positions.append([position])
+                # input_positions.append(
+                #     list(range(position_start, position_start + len(generation_tokens))))
 
                 # slots: List[int] = []
                 block_table = seq_group_metadata.block_tables[seq_id]
@@ -244,11 +244,11 @@ class SpSModelRunner:
 
         max_draft_len = max(draft_lens)
         input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=max_draft_len,
+                                             max_len=1,
                                              pad=0,
                                              dtype=torch.long)
         input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=max_draft_len,
+                                                max_len=1,
                                                 pad=0,
                                                 dtype=torch.long)
         slot_mapping = _make_tensor_with_pad(slot_mapping,
