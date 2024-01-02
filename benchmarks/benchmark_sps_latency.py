@@ -115,19 +115,20 @@ def main(args: argparse.Namespace):
                 max_tokens=output_len,
             )
 
-            # FIXME(woosuk): Do not use internal method.
-            llm._add_request(
-                prompt=prompt,
-                prompt_token_ids=None,
-                sampling_params=sampling_params,
-            )
+            for _ in range(args.batch_size):
+                # FIXME(woosuk): Do not use internal method.
+                llm._add_request(
+                    prompt=prompt,
+                    prompt_token_ids=None,
+                    sampling_params=sampling_params,
+                )
 
             start_time = time.perf_counter()
             output = llm._run_engine(use_tqdm=False)
             end_time = time.perf_counter()
             latency = end_time - start_time
             latencies.append(latency)
-            print(output[0].outputs[0].text)
+            # print(output[0].outputs[0].text)
 
             return np.mean(latencies)
 
@@ -172,7 +173,7 @@ if __name__ == '__main__':
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
     parser.add_argument('--output-len', type=int, default=128)
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
@@ -185,7 +186,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-beam-search', action='store_true')
     parser.add_argument("--num-prompts",
                         type=int,
-                        default=10,
+                        default=1,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument('--num-iters',

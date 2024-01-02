@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional, Tuple
+import time
 
 import torch
 
@@ -279,6 +280,9 @@ class ModelRunner:
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                  input_metadata.prompt_lens)
 
+        torch.cuda.synchronize()
+        start = time.monotonic()
+
         # Execute the model.
         hidden_states = self.model(
             input_ids=input_tokens,
@@ -293,6 +297,14 @@ class ModelRunner:
             hidden_states=hidden_states,
             sampling_metadata=sampling_metadata,
         )
+
+        torch.cuda.synchronize()
+        if not is_prompt:
+            latency = time.monotonic() - start
+            input_tokens = input_tokens.size(0)
+            context_len = torch.sum(input_metadata.context_lens).item()
+            print(f"profile, {input_tokens}, {context_len}, {latency:.6f}")
+
         return output
 
     @torch.inference_mode()
