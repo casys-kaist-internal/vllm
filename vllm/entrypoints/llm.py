@@ -173,6 +173,10 @@ class LLM:
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
+            free_blocks = self.llm_engine.scheduler.block_manager.gpu_allocator.get_num_free_blocks()
+            if (free_blocks < 100):
+                self.llm_engine.abort_all_requests()
+                return outputs
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

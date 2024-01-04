@@ -271,6 +271,9 @@ class ModelRunner:
         # all decodes.
         # Prepare input tensors.
         is_prompt = seq_group_metadata_list[0].is_prompt
+        if not is_prompt:
+            start = time.monotonic()
+
         if is_prompt:
             inputs = self._prepare_prompt(seq_group_metadata_list)
             input_tokens, input_positions, input_metadata = inputs
@@ -279,9 +282,6 @@ class ModelRunner:
             input_tokens, input_positions, input_metadata = inputs
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                  input_metadata.prompt_lens)
-
-        torch.cuda.synchronize()
-        start = time.monotonic()
 
         # Execute the model.
         hidden_states = self.model(
@@ -298,12 +298,12 @@ class ModelRunner:
             sampling_metadata=sampling_metadata,
         )
 
-        torch.cuda.synchronize()
         if not is_prompt:
+            torch.cuda.synchronize()
             latency = time.monotonic() - start
-            input_tokens = input_tokens.size(0)
-            context_len = torch.sum(input_metadata.context_lens).item()
-            print(f"profile, {input_tokens}, {context_len}, {latency:.6f}")
+            input_tokens = len(seq_group_metadata_list)
+            sum_context_len = sum(input_metadata.context_lens)
+            print(f"profile, {input_tokens}, {sum_context_len}, {latency:.4f}")
 
         return output
 

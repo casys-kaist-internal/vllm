@@ -3,6 +3,7 @@ import time
 from functools import partial
 from typing import (Any, Dict, Iterable, List, Optional, Set, Tuple, Type,
                     Union)
+from torch.cuda import nvtx
 
 from vllm.config import ModelConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
@@ -183,10 +184,15 @@ class _AsyncLLMEngine(LLMEngine):
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
+        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
         if scheduler_outputs.is_empty():
             return ignored
+        nvtx.range_pop()
 
+        num_batched_tokens = scheduler_outputs.num_batched_tokens
+
+        nvtx.range_push("EXECUTE_MODEL" + str(num_batched_tokens))
         # Execute the model.
         output = await self._run_workers_async(
             "execute_model",
@@ -195,6 +201,7 @@ class _AsyncLLMEngine(LLMEngine):
             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
+        nvtx.range_pop()
 
         return self._process_model_outputs(output, scheduler_outputs) + ignored
 
