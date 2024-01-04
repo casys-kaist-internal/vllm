@@ -108,6 +108,14 @@ class Scheduler:
                     if not request_ids:
                         return
 
+    def abort_all_seq_groups(self) -> None:
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.waiting])
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.running])
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.swapped])
+
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.running or self.swapped
 

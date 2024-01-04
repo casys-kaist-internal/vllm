@@ -20,10 +20,12 @@ fi
 download_dir="/home/sjchoi/workspace/models"
 target_model="facebook/opt-6.7b"
 draft_model="facebook/opt-125m"
+OUTFILE='nsight/'$(date '+%Y-%m-%d_%H-%M-%S')
 
 # if engine is base, run base server. 
 if [ "$engine" = "base" ]; then
     echo "Running $engine server at port $port"
+    nsys profile --gpu-metrics-device=0 --output=${OUTFILE} \
     python3 -m vllm.entrypoints.api_server \
         --port $port \
         --download-dir $download_dir \
@@ -39,6 +41,7 @@ else
 
     echo "Running $engine server at port $port with draft_size $draft_size"
 
+    nsys profile --gpu-metrics-device=0 --output=${OUTFILE} \
     python3 -m vllm.entrypoints.sps_api_server \
         --port $port \
         --download-dir $download_dir \
