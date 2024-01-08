@@ -13,6 +13,7 @@ from vllm import LLM, SpSLLM, SamplingParams
 
 download_dir = '/home/sjchoi/workspace/models'
 
+from datasets import load_dataset
 
 def sample_requests(
     dataset_path: str,
@@ -57,6 +58,72 @@ def sample_requests(
     return sampled_requests
 
 
+def sample_requests_cnndm(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    fixed_output_len: Optional[int],
+) -> List[Tuple[str, int, int]]:
+    if fixed_output_len is not None and fixed_output_len < 4:
+        raise ValueError("output_len too small")
+
+    # Load the dataset.
+    dataset = load_dataset("cnn_dailymail", "3.0.0")
+
+    prompts = dataset["train"]["article"][:num_requests]
+    summaries = dataset["train"]["highlights"][:num_requests]
+    
+    prefix = "summarize: "
+    
+    prompts = [prefix + prompt for prompt in prompts]
+
+    print("found dataset : ", len(prompts))
+    # OPT for causal LM -> Model tuned for Text generation..
+
+    # Filter out the conversations with less than 2 turns.
+    # dataset = [data for data in dataset if len(data["conversations"]) >= 2]
+    # # Only keep the first two turns of each conversation.
+    # dataset = [(data["conversations"][0]["value"],
+    #             data["conversations"][1]["value"]) for data in dataset]
+
+    # # Tokenize the prompts and completions.
+    # prompts = [prompt for prompt, _ in dataset]
+    prompt_token_ids = tokenizer(prompts).input_ids
+    summary_token_ids = tokenizer(summaries).input_ids
+    tokenized_dataset = []
+    for i in range(len(dataset)):
+        output_len = len(summary_token_ids[i])
+        if fixed_output_len is not None:
+            output_len = fixed_output_len
+        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+    # Filter out too long sequences.
+    filtered_dataset: List[Tuple[str, int, int]] = []
+
+    too_short = 0
+    too_long = 0
+
+    for prompt, prompt_token_ids, output_len in tokenized_dataset:
+        prompt_len = len(prompt_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            too_short += 1
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            too_long += 1
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    print("too_short : ", too_short, "too_long : ", too_long)
+
+    # Sample the requests.
+    print("Number of filtered dataset : ", len(filtered_dataset))
+        
+    sampled_requests = filtered_dataset[:num_requests]
+    # sampled_requests = random.sample(filtered_dataset, num_requests)
+    return sampled_requests
+
 def main(args: argparse.Namespace):
     global download_dir
     print(args)
@@ -93,18 +160,18 @@ def main(args: argparse.Namespace):
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
-    if args.dataset is None:
-        # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
-        requests = [(prompt, args.input_len, args.output_len)
-                    for _ in range(args.num_prompts)]
-    else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
+
+    # requests = sample_requests_cnndm(args.dataset, args.num_prompts, tokenizer,
+    #                                args.output_len)
+
+    requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
+                                   args.output_len)
 
     def run_to_completion():
         latencies = []
         # Add the requests to the engine.
         # print(len(requests))
+        print("Temperature : ",args.temperature)
 
         for prompt, _, output_len in tqdm(requests):
             sampling_params = SamplingParams(
@@ -114,14 +181,13 @@ def main(args: argparse.Namespace):
                 ignore_eos=True,
                 max_tokens=output_len,
             )
-
-            for _ in range(args.batch_size):
-                # FIXME(woosuk): Do not use internal method.
-                llm._add_request(
-                    prompt=prompt,
-                    prompt_token_ids=None,
-                    sampling_params=sampling_params,
-                )
+ 
+            # FIXME(woosuk): Do not use internal method.
+            llm._add_request(
+                prompt=prompt,
+                prompt_token_ids=None,
+                sampling_params=sampling_params,
+            )
 
             start_time = time.perf_counter()
             output = llm._run_engine(use_tqdm=False)
@@ -130,21 +196,21 @@ def main(args: argparse.Namespace):
             latencies.append(latency)
             # print(output[0].outputs[0].text)
 
-            return np.mean(latencies)
+        return np.mean(latencies)
 
     print("Warming up...")
-    # sampling_params = SamplingParams(
-    #     n=args.n,
-    #     temperature=0.0 if args.use_beam_search else 1.0,
-    #     top_p=1.0,
-    #     use_beam_search=args.use_beam_search,
-    #     ignore_eos=True,
-    #     max_tokens=100,
-    # )
-    # dummy_prompt_token_ids = [[0] * 10] * 10
-    # llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-    #              sampling_params=sampling_params,
-    #              use_tqdm=False)
+    sampling_params = SamplingParams(
+        n=args.n,
+        temperature=0.0 if args.use_beam_search else 1.0,
+        top_p=1.0,
+        use_beam_search=args.use_beam_search,
+        ignore_eos=True,
+        max_tokens=100,
+    )
+    dummy_prompt_token_ids = [[0] * 10] * 10
+    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                 sampling_params=sampling_params,
+                 use_tqdm=False)
 
     # Benchmark.
     avg_latency = run_to_completion()

@@ -30,19 +30,30 @@ def main(args: argparse.Namespace):
         seed=args.seed,
         trust_remote_code=args.trust_remote_code,
         dtype=args.dtype,
-        download_dir=download_dir
+        download_dir=download_dir,
+        max_num_seqs=2048,
     )
 
-    batch_size = 1
-    while (batch_size <= 4096):
+    tokenizer = llm.get_tokenizer()
+
+    # while (batch_size <= 512):
+    # batch_sizes = [i for i in range(110, 150)]
+    if args.fixed_batch_size is not None:
+        batch_sizes = [args.fixed_batch_size]
+    else:
+        # batch_sizes = [i for i in range(1, 500)]
+        batch_sizes = [130]
+
+    for batch_size in batch_sizes:
         for _ in range(batch_size):
             # Make random dummy prompt token_ids
             dummy_prompt_token_ids = [
-                random.randint(0, 50272) for _ in range(10)]
+                random.randint(0, 50272) for _ in range(35)]
 
-            max_tokens = min(2048, int(MAX_KV_CACHE/batch_size))
-            if max_tokens <= 10:
-                break
+            # max_tokens = min(2048, int(MAX_KV_CACHE/batch_size))
+            # if max_tokens <= 10:
+            #     break
+            max_tokens = 4
 
             sampling_params = SamplingParams(
                 temperature=0.0,
@@ -58,7 +69,6 @@ def main(args: argparse.Namespace):
             )
 
         llm._run_engine(use_tqdm=False)
-        batch_size += 1
 
 
 if __name__ == '__main__':
@@ -103,6 +113,9 @@ if __name__ == '__main__':
                         type=int,
                         default=1,
                         help='Number of iterations to run.')
+
+    parser.add_argument('--fixed-batch-size',default=None,type=int)
+
     parser.add_argument('--trust-remote-code',
                         action='store_true',
                         help='trust remote code from huggingface')

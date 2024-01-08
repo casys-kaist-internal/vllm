@@ -34,7 +34,7 @@ class LinearMethodBase(ABC):
         raise NotImplementedError
 
 
-class UnquantizedLinearMethod(LinearMethodBase):
+class  UnquantizedLinearMethod(LinearMethodBase):
     """Linear method without quantization.
 
     Args:
@@ -60,6 +60,9 @@ class UnquantizedLinearMethod(LinearMethodBase):
                       x: torch.Tensor,
                       bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         weight = weights["weight"]
+        print("weight shape: ", weight.shape)
+        print("x shape: ", x.shape)
+
         if self.separate_bias_add:
             if bias:
                 return F.linear(x, weight) + bias

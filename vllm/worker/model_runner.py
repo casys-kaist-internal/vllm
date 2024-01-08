@@ -10,6 +10,8 @@ from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
 
+from torch.cuda import nvtx
+
 logger = init_logger(__name__)
 
 _PAD_SLOT_ID = -1
@@ -283,6 +285,8 @@ class ModelRunner:
         torch.cuda.synchronize()
         start = time.monotonic()
 
+        if not is_prompt:
+            nvtx.range_push("execute_model")
         # Execute the model.
         hidden_states = self.model(
             input_ids=input_tokens,
@@ -291,6 +295,8 @@ class ModelRunner:
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
+        torch.cuda.synchronize()
+        start_sampler = time.monotonic()
 
         # Sample the next token.
         output = self.model.sample(
@@ -300,10 +306,16 @@ class ModelRunner:
 
         torch.cuda.synchronize()
         if not is_prompt:
-            latency = time.monotonic() - start
+            nvtx.range_pop()
+            now = time.monotonic()
+            total_latency = now - start
+            sampler_latency = now - start_sampler
+            model_latency = total_latency - sampler_latency
+
             input_tokens = input_tokens.size(0)
             context_len = torch.sum(input_metadata.context_lens).item()
-            print(f"profile, {input_tokens}, {context_len}, {latency:.6f}")
+            # print(f"profile, {input_tokens}, {context_len}, {sampler_latency:.6f}, {model_latency:.6f}, {total_latency:.6f}")
+            print(f"profile, {input_tokens}, {context_len}, {model_latency:.6f}")
 
         return output
 
