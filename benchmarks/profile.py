@@ -12,7 +12,6 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 
 download_dir = '/home/sjchoi/workspace/models'
-MAX_KV_CACHE = 10000
 
 
 def main(args: argparse.Namespace):
@@ -36,12 +35,12 @@ def main(args: argparse.Namespace):
     dummy_prompt_token_ids = [
         random.randint(0, 50272) for _ in range(1)]
 
-    for batch_size in range(1, 257):
+    for batch_size in range(255, 257):
         sampling_params = SamplingParams(
             temperature=0.0,
             top_p=1.0,
             ignore_eos=True,
-            max_tokens=2048
+            max_tokens=1024
         )
 
         for _ in range(batch_size):

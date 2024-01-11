@@ -94,10 +94,16 @@ class Sampler(nn.Module):
 
         # Sample the next tokens.
         # For speculative sampling, score the draft with the target model.
-        if not sampling_metadata.is_target_decode:
+        if not sampling_metadata.is_target_decode or sampling_metadata.draft_probs is None:
             nvtx.range_push("_sample")
             sample_results = _sample(probs, logprobs, sampling_metadata)
-            sps_results = None
+            if sampling_metadata.is_target_decode:
+                sps_results = []
+                for _ in range(len(sample_results)):
+                    # adjusted_draft_len, accept_cnt, accept_prob
+                    sps_results.append((0, 0, []))
+            else:
+                sps_results = None
             nvtx.range_pop()
         else:
             nvtx.range_push("_sps_sample")
@@ -164,9 +170,9 @@ def _get_penalties(
             repetition_penalties += [r] * len(seq_ids)
         else:
             assert len(seq_ids) == 1
-            presence_penalties += [p] * sampling_metadata.draft_lens[i]
-            frequency_penalties += [f] * sampling_metadata.draft_lens[i]
-            repetition_penalties += [r] * sampling_metadata.draft_lens[i]
+            presence_penalties += [p] * sampling_metadata.target_lens[i]
+            frequency_penalties += [f] * sampling_metadata.target_lens[i]
+            repetition_penalties += [r] * sampling_metadata.target_lens[i]
 
     return presence_penalties, frequency_penalties, repetition_penalties
 
@@ -314,7 +320,7 @@ def _get_temperatures(sampling_metadata: SamplingMetadata) -> List[float]:
             temperatures += [temperature] * len(seq_ids)
         else:
             assert len(seq_ids) == 1
-            temperatures += [temperature] * sampling_metadata.draft_lens[i]
+            temperatures += [temperature] * sampling_metadata.target_lens[i]
 
     return temperatures
 
@@ -347,9 +353,9 @@ def _get_top_p_top_k_min_p(
             min_ps += [min_p] * len(seq_ids)
         else:
             assert len(seq_ids) == 1
-            top_ps += [top_p] * sampling_metadata.draft_lens[i]
-            top_ks += [top_k] * sampling_metadata.draft_lens[i]
-            min_ps += [min_p] * sampling_metadata.draft_lens[i]
+            top_ps += [top_p] * sampling_metadata.target_lens[i]
+            top_ks += [top_k] * sampling_metadata.target_lens[i]
+            min_ps += [min_p] * sampling_metadata.target_lens[i]
 
     return top_ps, top_ks, min_ps
 
@@ -557,31 +563,34 @@ def _sample(
     return sample_results
 
 
+counter = 0
+
+
 def _sps_sample(
     probs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
 ) -> Tuple[List[Tuple[List[int], List[int]]], List[Tuple[int, int]], torch.Tensor, torch.Tensor]:
     # draft_lens: List[int]
     # draft includes one additional token before draft tokens and draft tokens so we subtract 1
-    draft_lens = sampling_metadata.draft_lens
-    adjusted_draft_lens = [length - 1 for length in draft_lens]
+    target_lens = sampling_metadata.target_lens
+    adjusted_target_lens = [length - 1 for length in target_lens]
 
-    # draft_token_ids: [seq_idx, max_draft_len]
+    # draft_token_ids: [seq_idx, max_adjusted_draft_len]
     sampled_draft_token_ids = sampling_metadata.sampled_draft_token_ids
 
     # target_probs: [seq_len, vocab_size] -> [seq_idx, max_draft_len, vocab_size]
-    target_probs = _reshape_and_pad(probs, draft_lens)
+    target_probs = _reshape_and_pad(probs, target_lens)
     del probs
 
     # target_prob_for_draft_token_id: [seq_idx, max_draft_len]
     target_prob_for_sampled_draft_token = torch.gather(
-        target_probs[:, :-1, :], 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+        target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
-    # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_draft_len, vocab_size]
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_adjusted_draft_len, vocab_size]
     draft_probs = _reshape_and_pad(
-        sampling_metadata.draft_probs, adjusted_draft_lens)
+        sampling_metadata.draft_probs, adjusted_target_lens)
 
-    # draft_prob_for_draft_token_id: [seq_idx, max_draft_len]
+    # draft_prob_for_sampled_draft_token: [seq_idx, max_draft_len]
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
@@ -590,13 +599,16 @@ def _sps_sample(
         draft_prob_for_sampled_draft_token)
     del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
+    # change inf or nan to 0
+    accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
+
     # accept is 0 and reject is 1
     accepted = torch.where(
         torch.rand_like(accept_prob) < accept_prob,
         torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
     # accepted = torch.where(
-    #     torch.full_like(accept_prob, 0.5) < accept_prob,
+    #     torch.full_like(accept_prob, 0) < accept_prob,
     #     torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
     # cumulative sum
@@ -608,12 +620,12 @@ def _sps_sample(
     # accept_cnt: [seq_idx]
     accept_cnt = torch.sum(accepted, dim=1)
     del accepted
+    # print(accept_cnt)
 
     # rejected_draft_idx: [seq_idx]
-    draft_lens_tensor = torch.tensor(
-        adjusted_draft_lens, device=accept_cnt.device)
-    all_accept_mask = (accept_cnt == draft_lens_tensor)
-    del draft_lens_tensor
+    target_lens_tensor = torch.tensor(
+        adjusted_target_lens, device=accept_cnt.device)
+    all_accept_mask = (accept_cnt == target_lens_tensor)
 
     # make accept_cnt 0 for all accepted sequences.
     masked_accept_cnt = accept_cnt.clone()
@@ -635,10 +647,13 @@ def _sps_sample(
     del target_prob_at_reject_idx, draft_prob_at_reject_idx
 
     # recover to original probability for all accepted sequences
-    modified_rejection_prob[all_accept_mask,
-                            :] = target_probs[all_accept_mask, -1, :].squeeze(1)
+    indices = torch.arange(all_accept_mask.size(
+        0)).long().to(all_accept_mask.device)
+    modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
+                                                               target_lens_tensor, :][all_accept_mask].squeeze(1)
     modified_rejection_logprobs = torch.log(modified_rejection_prob)
-    del target_probs, draft_probs
+
+    del target_probs, draft_probs, target_lens_tensor
 
     sample_results = _sample(modified_rejection_prob,
                              modified_rejection_logprobs, sampling_metadata)
@@ -646,7 +661,8 @@ def _sps_sample(
     sps_results = []
     assert len(sample_results) == accept_prob.size(0)
     for i in range(len(sample_results)):
-        sps_results.append((accept_cnt[i].item(), accept_prob[i].tolist()))
+        sps_results.append(
+            (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist()))
 
     return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
 
@@ -794,8 +810,9 @@ def _build_sampler_output(
             else:
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
-                                   accept_cnt=sps_results[idx][0],
-                                   accept_probs=sps_results[idx][1]))
+                                   total_cnt=sps_results[idx][0],
+                                   accept_cnt=sps_results[idx][1],
+                                   accept_probs=sps_results[idx][2]))
 
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
@@ -810,7 +827,6 @@ def _get_modified_rejection_prob(
     target_prob.clamp_(min=0)
     x_max_sum = target_prob.sum(dim=-1, keepdim=True)
     target_prob.div_(x_max_sum)
-
     return target_prob
 
 

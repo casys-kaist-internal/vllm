@@ -35,9 +35,6 @@ logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
 
-# SPS_ALL_ACCEPT = True
-SPS_ALL_ACCEPT = False
-
 
 class SpSLLMEngine:
     """A SpS LLM engine that receives requests and generates texts.
@@ -307,8 +304,7 @@ class SpSLLMEngine:
         # Create the sequences.
         block_size = self.cache_config.block_size
         seq_id = next(self.seq_counter)
-        seq = Sequence(seq_id, prompt, prompt_token_ids,
-                       block_size, self.sps_config.draft_size)
+        seq = Sequence(seq_id, prompt, prompt_token_ids, block_size)
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
@@ -384,6 +380,7 @@ class SpSLLMEngine:
                 "exactly one child sample for each parent sequence.")
 
             child_sample = child_samples[0]
+            check_cnt = 1
 
             if sps_stage == SpSStage.PROMPT:
                 # Append the token to the parent sequence.
@@ -397,29 +394,36 @@ class SpSLLMEngine:
                                              child_sample.probs)
 
             elif sps_stage == SpSStage.TARGET_DECODE:
+                # parent.accept_draft_tokens(
+                #     child_sample.accept_cnt, child_sample.accept_probs)
                 parent.accept_draft_tokens(
-                    child_sample.accept_cnt, child_sample.accept_probs)
+                    child_sample.accept_cnt)
+                check_cnt += child_sample.accept_cnt
 
-                if child_sample.accept_cnt != self.sps_config.draft_size:
-                    parent.append_token_id(
-                        child_sample.output_token, child_sample.logprobs)
-                else:
-                    if SPS_ALL_ACCEPT:
-                        # all accepted so sample additional token and save it for lazy append
-                        parent.save_lazy_token_id(
-                            child_sample.output_token, child_sample.logprobs)
-                        parent.status = SequenceStatus.SPS_ALL_ACCEPT
+                # print("accept_cnt / total_cnt ",
+                #       child_sample.accept_cnt, child_sample.total_cnt)
+
+                if child_sample.accept_cnt != child_sample.total_cnt:
+                    parent.data.draft_cache_cnt += 1
+
+                parent.append_token_id(
+                    child_sample.output_token, child_sample.logprobs)
+
+                check_cnt += 1
+                # else:
+                #     # all accepted so sample additional token and save it for lazy append
+                #     parent.save_lazy_token_id(
+                #         child_sample.output_token, child_sample.logprobs)
+                #     parent.status = SequenceStatus.ALL_ACCEPT
 
             else:
                 raise ValueError(f"Invalid SpS stage: {sps_stage}")
 
-            child_seqs.append((parent, parent))
+            child_seqs.append((parent, parent, check_cnt))
 
         # Decode and check stop only on PROMPT stage and TARGET_DECODE stage.
         if sps_stage == SpSStage.PROMPT or sps_stage == SpSStage.TARGET_DECODE:
-            for seq, _ in child_seqs:
-                check_cnt = (seq.get_len() - seq.decode_offset
-                             if sps_stage == SpSStage.TARGET_DECODE else 1)
+            for seq, _, check_cnt in child_seqs:
                 self._decode_sequence(seq, seq_group.sampling_params)
                 self._check_stop(seq, seq_group.sampling_params, check_cnt)
 
@@ -427,7 +431,7 @@ class SpSLLMEngine:
         # manager. Keep them in the sequence group as candidate output.
         # NOTE: we need to fork the new sequences before freeing the
         # old sequences.
-        for seq, parent in child_seqs:
+        for seq, parent, _ in child_seqs:
             if seq is parent and seq.is_finished():
                 self.scheduler.free_seq(seq)
         return
@@ -454,40 +458,26 @@ class SpSLLMEngine:
 
         if self.log_stats:
             # Log the system stats.
-            self._log_system_stats(scheduler_outputs.prompt_run,
+            self._log_system_stats(True if sps_stage == SpSStage.PROMPT else False,
                                    scheduler_outputs.num_batched_tokens)
         nvtx.range_pop()
         return request_outputs
 
     def step(self) -> List[RequestOutput]:
-        """Performs one decoding iteration and returns newly generated results.
-
-        This function performs one decoding iteration of the engine. It first
-        schedules the sequences to be executed in the next iteration and the
-        token blocks to be swapped in/out/copy. Then, it executes the model
-        and updates the scheduler with the model outputs. Finally, it decodes
-        the sequences and returns the newly generated results.
+        """ Performs one decoding iteration: 
+            - Target prompt + Draft prompt 
+            - Draft decode 
+            - Target decode 
         """
-        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
         if scheduler_outputs.is_empty():
             return ignored
-        nvtx.range_pop()
 
+        sps_stage = seq_group_metadata_list[0].sps_stage
         num_batched_tokens = scheduler_outputs.num_batched_tokens
 
-        # if not seq_group_metadata_list[0].is_prompt:
-        #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
-        #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
-
-        # NOTE: We assume that all sequences in the group are in the same stage.
-        sps_stage = seq_group_metadata_list[0].sps_stage
-
-        if scheduler_outputs.prompt_run:
-            assert sps_stage == SpSStage.PROMPT
-
+        if sps_stage == SpSStage.PROMPT:
             nvtx.range_push("PROMPT_TARGET " + str(num_batched_tokens))
-            # We should run both target and draft models for the prompt because of KV cache.
             output = self._run_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -497,9 +487,21 @@ class SpSLLMEngine:
             )
             nvtx.range_pop()
 
-            nvtx.range_push("PROMPT_DRAFT " + str(num_batched_tokens))
-            # Don't need output for draft model. Execution required for draft KV cache.
-            self._run_workers(
+            # nvtx.range_push("PROMPT_DRAFT " + str(num_batched_tokens))
+            # self._run_workers(
+            #     "execute_draft_model",
+            #     seq_group_metadata_list=seq_group_metadata_list,
+            #     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+            #     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+            #     blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            # )
+            # nvtx.range_pop()
+
+            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+
+        elif sps_stage == SpSStage.DRAFT_DECODE:
+            nvtx.range_push("DRAFT_DECODE " + str(num_batched_tokens))
+            output = self._run_workers(
                 "execute_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -508,45 +510,11 @@ class SpSLLMEngine:
             )
             nvtx.range_pop()
 
-            return self._process_model_outputs(output, scheduler_outputs, SpSStage.PROMPT)
+            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
 
-        else:
-            assert sps_stage == SpSStage.DRAFT_DECODE
-
-            nvtx.range_push("DRAFT_DECODE " + str(num_batched_tokens))
-            # Iterate over the range of draft size
-            for draft_index in range(self.sps_config.draft_size):
-                nvtx.range_push(str(draft_index))
-                # Only swap in/out/copy blocks for the first draft iteration
-                if draft_index == 0:
-                    draft_output = self._run_workers(
-                        "execute_draft_model",
-                        seq_group_metadata_list=seq_group_metadata_list,
-                        blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                        blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                        blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                    )
-                else:
-                    draft_output = self._run_workers(
-                        "execute_draft_model",
-                        seq_group_metadata_list=seq_group_metadata_list,
-                        blocks_to_swap_in=None,
-                        blocks_to_swap_out=None,
-                        blocks_to_copy=None,
-                    )
-                nvtx.range_pop()
-                self._process_model_outputs(
-                    draft_output, scheduler_outputs, SpSStage.DRAFT_DECODE)
-            nvtx.range_pop()
-
-            # Change to TARGET_DECODE stage
-            for seq_group_metadata in seq_group_metadata_list:
-                seq_group_metadata.sps_stage = SpSStage.TARGET_DECODE
-
+        elif sps_stage == SpSStage.TARGET_DECODE:
             nvtx.range_push("TARGET_DECODE " + str(num_batched_tokens))
-            # Execute the target model to score the draft outputs
-            # Need to swap in/out/copy blocks for target model
-            target_output = self._run_workers(
+            output = self._run_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -555,54 +523,198 @@ class SpSLLMEngine:
             )
             nvtx.range_pop()
 
-            target_output = self._process_model_outputs(
-                target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
+            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
 
-            if SPS_ALL_ACCEPT:
-                # If all accepted, need to run draft model to cache kv for the
-                # additional token sampled by target model.
-                seq_group_metadata_list: List[SequenceGroupMetadata] = []
-                for seq_group in scheduler_outputs.scheduled_seq_groups:
-                    seq_data: Dict[int, SequenceData] = {}
-                    block_tables: Dict[int, List[int]] = {}
-                    for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
-                        seq_id = seq.seq_id
-                        seq_data[seq_id] = seq.data
-                        block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
-                            seq)
+            # # If all accepted, need to run draft model to cache kv for the
+            # # additional token sampled by target model.
+            # seq_group_metadata_list: List[SequenceGroupMetadata] = []
+            # for seq_group in scheduler_outputs.scheduled_seq_groups:
+            #     seq_data: Dict[int, SequenceData] = {}
+            #     block_tables: Dict[int, List[int]] = {}
+            #     for seq in seq_group.get_seqs(status=SequenceStatus.ALL_ACCEPT):
+            #         seq_id = seq.seq_id
+            #         seq_data[seq_id] = seq.data
+            #         block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
+            #             seq)
 
-                    if seq_data:
-                        seq_group_metadata = SequenceGroupMetadata(
-                            request_id=seq_group.request_id,
-                            is_prompt=False,
-                            seq_data=seq_data,
-                            sampling_params=seq_group.sampling_params,
-                            block_tables=block_tables,
-                            sps_stage=SpSStage.DRAFT_DECODE,
-                        )
-                        seq_group_metadata_list.append(seq_group_metadata)
+            #     if seq_data:
+            #         seq_group_metadata = SequenceGroupMetadata(
+            #             request_id=seq_group.request_id,
+            #             is_prompt=False,
+            #             seq_data=seq_data,
+            #             sampling_params=seq_group.sampling_params,
+            #             block_tables=block_tables,
+            #             sps_stage=SpSStage.DRAFT_DECODE,
+            #         )
+            #         seq_group_metadata_list.append(seq_group_metadata)
 
-                # We already considered all accept case in scheduler so no need to swap in/out/copy blocks
-                # Don't need output for draft model. Execution required for draft KV cache.
-                if seq_group_metadata_list:
-                    nvtx.range_push("ALL_ACCEPT")
-                    self._run_workers(
-                        "execute_draft_model",
-                        seq_group_metadata_list=seq_group_metadata_list,
-                        blocks_to_swap_in=None,
-                        blocks_to_swap_out=None,
-                        blocks_to_copy=None,
-                    )
-                    nvtx.range_pop()
+            # if seq_group_metadata_list:
+            #     nvtx.range_push("ALL_ACCEPT")
+            #     self._run_workers(
+            #         "execute_draft_model",
+            #         seq_group_metadata_list=seq_group_metadata_list,
+            #         blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+            #         blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+            #         blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            #     )
+            #     nvtx.range_pop()
 
-                    for seq_group in scheduler_outputs.scheduled_seq_groups:
-                        for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
-                            # Change back to original RUNNING status
-                            seq.status = SequenceStatus.RUNNING
-                            # Append the lazy token saved in all accept case for target decode
-                            seq.append_lazy_token_id()
+            #     for seq_group in scheduler_outputs.scheduled_seq_groups:
+            #         for seq in seq_group.get_seqs(status=SequenceStatus.ALL_ACCEPT):
+            #             # Change back to original RUNNING status
+            #             seq.status = SequenceStatus.RUNNING
+            #             # Append the lazy token saved in all accept case for target decode
+            #             seq.append_lazy_token_id()
+            #
+            # return output
 
-            return target_output
+        else:
+            raise ValueError(f"Invalid SpS stage: {sps_stage}")
+
+    # def step(self) -> List[RequestOutput]:
+    #     """Performs one decoding iteration and returns newly generated results.
+
+    #     This function performs one decoding iteration of the engine. It first
+    #     schedules the sequences to be executed in the next iteration and the
+    #     token blocks to be swapped in/out/copy. Then, it executes the model
+    #     and updates the scheduler with the model outputs. Finally, it decodes
+    #     the sequences and returns the newly generated results.
+    #     """
+    #     nvtx.range_push("schedule")
+    #     seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
+    #     if scheduler_outputs.is_empty():
+    #         return ignored
+    #     nvtx.range_pop()
+
+    #     num_batched_tokens = scheduler_outputs.num_batched_tokens
+
+    #     # if not seq_group_metadata_list[0].is_prompt:
+    #     #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
+    #     #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
+
+    #     # NOTE: We assume that all sequences in the group are in the same stage.
+    #     sps_stage = seq_group_metadata_list[0].sps_stage
+
+    #     if scheduler_outputs.prompt_run:
+    #         assert sps_stage == SpSStage.PROMPT
+
+    #         nvtx.range_push("PROMPT_TARGET " + str(num_batched_tokens))
+    #         # We should run both target and draft models for the prompt because of KV cache.
+    #         output = self._run_workers(
+    #             "execute_target_model",
+    #             seq_group_metadata_list=seq_group_metadata_list,
+    #             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+    #             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+    #             blocks_to_copy=scheduler_outputs.blocks_to_copy,
+    #         )
+    #         nvtx.range_pop()
+
+    #         nvtx.range_push("PROMPT_DRAFT " + str(num_batched_tokens))
+    #         # Don't need output for draft model. Execution required for draft KV cache.
+    #         self._run_workers(
+    #             "execute_draft_model",
+    #             seq_group_metadata_list=seq_group_metadata_list,
+    #             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+    #             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+    #             blocks_to_copy=scheduler_outputs.blocks_to_copy,
+    #         )
+    #         nvtx.range_pop()
+
+    #         return self._process_model_outputs(output, scheduler_outputs, SpSStage.PROMPT)
+
+    #     else:
+    #         assert sps_stage == SpSStage.DRAFT_DECODE
+
+    #         nvtx.range_push("DRAFT_DECODE " + str(num_batched_tokens))
+    #         # Iterate over the range of draft size
+    #         for draft_index in range(self.sps_config.draft_size):
+    #             nvtx.range_push(str(draft_index))
+    #             # Only swap in/out/copy blocks for the first draft iteration
+    #             if draft_index == 0:
+    #                 draft_output = self._run_workers(
+    #                     "execute_draft_model",
+    #                     seq_group_metadata_list=seq_group_metadata_list,
+    #                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+    #                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+    #                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
+    #                 )
+    #             else:
+    #                 draft_output = self._run_workers(
+    #                     "execute_draft_model",
+    #                     seq_group_metadata_list=seq_group_metadata_list,
+    #                     blocks_to_swap_in=None,
+    #                     blocks_to_swap_out=None,
+    #                     blocks_to_copy=None,
+    #                 )
+    #             nvtx.range_pop()
+    #             self._process_model_outputs(
+    #                 draft_output, scheduler_outputs, SpSStage.DRAFT_DECODE)
+    #         nvtx.range_pop()
+
+    #         # Change to TARGET_DECODE stage
+    #         for seq_group_metadata in seq_group_metadata_list:
+    #             seq_group_metadata.sps_stage = SpSStage.TARGET_DECODE
+
+    #         nvtx.range_push("TARGET_DECODE " + str(num_batched_tokens))
+    #         # Execute the target model to score the draft outputs
+    #         # Need to swap in/out/copy blocks for target model
+    #         target_output = self._run_workers(
+    #             "execute_target_model",
+    #             seq_group_metadata_list=seq_group_metadata_list,
+    #             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+    #             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+    #             blocks_to_copy=scheduler_outputs.blocks_to_copy,
+    #         )
+    #         nvtx.range_pop()
+
+    #         target_output = self._process_model_outputs(
+    #             target_output, scheduler_outputs, SpSStage.TARGET_DECODE)
+
+    #         if SPS_ALL_ACCEPT:
+    #             # If all accepted, need to run draft model to cache kv for the
+    #             # additional token sampled by target model.
+    #             seq_group_metadata_list: List[SequenceGroupMetadata] = []
+    #             for seq_group in scheduler_outputs.scheduled_seq_groups:
+    #                 seq_data: Dict[int, SequenceData] = {}
+    #                 block_tables: Dict[int, List[int]] = {}
+    #                 for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+    #                     seq_id = seq.seq_id
+    #                     seq_data[seq_id] = seq.data
+    #                     block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
+    #                         seq)
+
+    #                 if seq_data:
+    #                     seq_group_metadata = SequenceGroupMetadata(
+    #                         request_id=seq_group.request_id,
+    #                         is_prompt=False,
+    #                         seq_data=seq_data,
+    #                         sampling_params=seq_group.sampling_params,
+    #                         block_tables=block_tables,
+    #                         sps_stage=SpSStage.DRAFT_DECODE,
+    #                     )
+    #                     seq_group_metadata_list.append(seq_group_metadata)
+
+    #             # We already considered all accept case in scheduler so no need to swap in/out/copy blocks
+    #             # Don't need output for draft model. Execution required for draft KV cache.
+    #             if seq_group_metadata_list:
+    #                 nvtx.range_push("ALL_ACCEPT")
+    #                 self._run_workers(
+    #                     "execute_draft_model",
+    #                     seq_group_metadata_list=seq_group_metadata_list,
+    #                     blocks_to_swap_in=None,
+    #                     blocks_to_swap_out=None,
+    #                     blocks_to_copy=None,
+    #                 )
+    #                 nvtx.range_pop()
+
+    #                 for seq_group in scheduler_outputs.scheduled_seq_groups:
+    #                     for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+    #                         # Change back to original RUNNING status
+    #                         seq.status = SequenceStatus.RUNNING
+    #                         # Append the lazy token saved in all accept case for target decode
+    #                         seq.append_lazy_token_id()
+
+    #         return target_output
 
     def _log_system_stats(
         self,
@@ -741,7 +853,7 @@ class SpSLLMEngine:
             return
 
         # Check if the sequence has generated the EOS token.
-        if idx in range(-check_cnt, 0):
+        for idx in range(-check_cnt, 0):
             if ((not sampling_params.ignore_eos)
                     and seq.get_last_nth_token_id(idx) == self.tokenizer.eos_token_id):
                 seq.status = SequenceStatus.FINISHED_STOPPED

@@ -110,6 +110,7 @@ class SpSModelRunner:
         input_metadata = InputMetadata(
             prompt_lens=prompt_lens,
             draft_lens=[],
+            target_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -127,6 +128,7 @@ class SpSModelRunner:
         slot_mapping: List[List[int]] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
+        draft_lens: List[int] = []
 
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.sps_stage == SpSStage.DRAFT_DECODE
@@ -134,28 +136,121 @@ class SpSModelRunner:
             seq_ids = list(seq_group_metadata.seq_data.keys())
             for seq_id in seq_ids:
                 seq_data = seq_group_metadata.seq_data[seq_id]
-                generation_token = seq_data.get_last_draft_token_id()
-                input_tokens.append([generation_token])
+                draft_cache_cnt = seq_data.get_draft_cache_cnt()
+                generation_tokens = seq_data.get_uncached_draft_token_ids()
+                draft_lens.append(len(generation_tokens))
 
-                context_len = seq_data.get_len() + seq_data.get_draft_len()
-                if self.sliding_window is not None:
-                    context_len = min(context_len, self.sliding_window)
-                context_lens.append(context_len)
+                for token in generation_tokens:
+                    input_tokens.append([token])
 
-                position = context_len - 1
-                input_positions.append([position])
+                for i in range(len(generation_tokens)):
+                    context_len = draft_cache_cnt + 1 + i
+                    if self.sliding_window is not None:
+                        context_len = min(context_len, self.sliding_window)
+                    context_lens.append(context_len)
+
+                position_start = draft_cache_cnt
+                for i in range(len(generation_tokens)):
+                    position = position_start + i
+                    input_positions.append([position])
 
                 block_table = seq_group_metadata.block_tables[seq_id]
-                block_number = block_table[position // self.block_size]
-                block_offset = position % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append([slot])
 
-                if self.sliding_window is not None:
-                    sliding_window_blocks = (self.sliding_window //
-                                             self.block_size)
-                    block_table = block_table[-sliding_window_blocks:]
-                block_tables.append(block_table)
+                for position in range(position_start, position_start + len(generation_tokens)):
+                    block_number = block_table[position // self.block_size]
+                    block_offset = position % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append([slot])
+
+                    if self.sliding_window is not None:
+                        sliding_window_blocks = (self.sliding_window //
+                                                 self.block_size)
+                        block_table = block_table[-sliding_window_blocks:]
+                    block_tables.append(block_table)
+
+        input_tokens = _make_tensor_with_pad(input_tokens,
+                                             max_len=1,
+                                             pad=0,
+                                             dtype=torch.long)
+        input_positions = _make_tensor_with_pad(input_positions,
+                                                max_len=1,
+                                                pad=0,
+                                                dtype=torch.long)
+        slot_mapping = _make_tensor_with_pad(slot_mapping,
+                                             max_len=1,
+                                             pad=_PAD_SLOT_ID,
+                                             dtype=torch.long)
+        max_context_len = max(context_lens)
+        context_lens = torch.tensor(context_lens,
+                                    dtype=torch.int,
+                                    device="cuda")
+        max_block_table_len = max([len(t) for t in block_tables])
+        block_tables = _make_tensor_with_pad(block_tables,
+                                             max_len=max_block_table_len,
+                                             pad=0,
+                                             dtype=torch.int)
+
+        input_metadata = InputMetadata(
+            prompt_lens=[],
+            draft_lens=draft_lens,
+            target_lens=[],
+            slot_mapping=slot_mapping,
+            max_context_len=max_context_len,
+            context_lens=context_lens,
+            block_tables=block_tables,
+        )
+        return input_tokens, input_positions, input_metadata
+
+    def _prepare_target_decode(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+        assert len(seq_group_metadata_list) > 0
+        input_tokens: List[List[int]] = []
+        input_positions: List[List[int]] = []
+        slot_mapping: List[List[int]] = []
+        context_lens: List[int] = []
+        block_tables: List[List[int]] = []
+        target_lens: List[int] = []
+
+        for seq_group_metadata in seq_group_metadata_list:
+            assert seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE
+
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            for seq_id in seq_ids:
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                generation_tokens = [
+                    seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
+                target_lens.append(len(generation_tokens))
+
+                for token in generation_tokens:
+                    input_tokens.append([token])
+                # input_tokens.append(generation_tokens)
+                for i in range(len(generation_tokens)):
+                    context_len = seq_data.get_len() + i
+                    if self.sliding_window is not None:
+                        context_len = min(context_len, self.sliding_window)
+                    context_lens.append(context_len)
+
+                position_start = seq_data.get_len() - 1
+                for i in range(len(generation_tokens)):
+                    position = position_start + i
+                    input_positions.append([position])
+
+                # slots: List[int] = []
+                block_table = seq_group_metadata.block_tables[seq_id]
+
+                for position in range(position_start, position_start + len(generation_tokens)):
+                    block_number = block_table[position // self.block_size]
+                    block_offset = position % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append([slot])
+
+                    if self.sliding_window is not None:
+                        sliding_window_blocks = (self.sliding_window //
+                                                 self.block_size)
+                        block_table = block_table[-sliding_window_blocks:]
+                    block_tables.append(block_table)
 
         input_tokens = _make_tensor_with_pad(input_tokens,
                                              max_len=1,
@@ -182,93 +277,7 @@ class SpSModelRunner:
         input_metadata = InputMetadata(
             prompt_lens=[],
             draft_lens=[],
-            slot_mapping=slot_mapping,
-            max_context_len=max_context_len,
-            context_lens=context_lens,
-            block_tables=block_tables,
-        )
-        return input_tokens, input_positions, input_metadata
-
-    def _prepare_target_decode(
-        self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
-        assert len(seq_group_metadata_list) > 0
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
-        context_lens: List[int] = []
-        block_tables: List[List[int]] = []
-        draft_lens: List[int] = []
-
-        for seq_group_metadata in seq_group_metadata_list:
-            assert seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE
-
-            seq_ids = list(seq_group_metadata.seq_data.keys())
-            for seq_id in seq_ids:
-                seq_data = seq_group_metadata.seq_data[seq_id]
-                generation_tokens = [
-                    seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
-
-                for token in generation_tokens:
-                    input_tokens.append([token])
-                # input_tokens.append(generation_tokens)
-                draft_lens.append(len(generation_tokens))
-
-                for i in range(len(generation_tokens)):
-                    context_len = seq_data.get_len() + i
-                    if self.sliding_window is not None:
-                        context_len = min(context_len, self.sliding_window)
-                    context_lens.append(context_len)
-
-                position_start = seq_data.get_len() - 1
-                for i in range(len(generation_tokens)):
-                    position = position_start + i
-                    input_positions.append([position])
-                # input_positions.append(
-                #     list(range(position_start, position_start + len(generation_tokens))))
-
-                # slots: List[int] = []
-                block_table = seq_group_metadata.block_tables[seq_id]
-                for position in range(position_start, position_start + len(generation_tokens)):
-                    block_number = block_table[position // self.block_size]
-                    block_offset = position % self.block_size
-                    slot = block_number * self.block_size + block_offset
-                    slot_mapping.append([slot])
-
-                    if self.sliding_window is not None:
-                        sliding_window_blocks = (self.sliding_window //
-                                                 self.block_size)
-                        block_table = block_table[-sliding_window_blocks:]
-                    block_tables.append(block_table)
-
-        max_draft_len = max(draft_lens)
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long)
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long)
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long)
-        max_context_len = max(context_lens)
-        context_lens = torch.tensor(context_lens,
-                                    dtype=torch.int,
-                                    device="cuda")
-        max_block_table_len = max([len(t) for t in block_tables])
-        block_tables = _make_tensor_with_pad(block_tables,
-                                             max_len=max_block_table_len,
-                                             pad=0,
-                                             dtype=torch.int)
-
-        input_metadata = InputMetadata(
-            prompt_lens=[],
-            # NOTE(sjchoi): draft_lens only needed for target decode
-            draft_lens=draft_lens,
+            target_lens=target_lens,
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -288,6 +297,7 @@ class SpSModelRunner:
         categorized_sample_indices_start_idx = 0
         prompt_lens: List[int] = input_metadata.prompt_lens
         draft_lens: List[int] = input_metadata.draft_lens
+        target_lens: List[int] = input_metadata.target_lens
         sampled_draft_token_ids: List[List[int]] = []
         draft_probs: List[torch.Tensor] = []
 
@@ -321,10 +331,10 @@ class SpSModelRunner:
 
             elif seq_group_metadata.sps_stage == SpSStage.DRAFT_DECODE:
                 num_seqs = len(seq_ids)
-                selected_token_indices.extend(
-                    range(selected_token_start_idx,
-                          selected_token_start_idx + num_seqs))
-                selected_token_start_idx += num_seqs
+                draft_len = draft_lens[i]
+                selected_token_indices.append(
+                    selected_token_start_idx + draft_len - 1)
+                selected_token_start_idx += draft_len
 
                 categorized_sample_indices[
                     sampling_params.sampling_type].extend(
@@ -334,11 +344,11 @@ class SpSModelRunner:
 
             elif seq_group_metadata.sps_stage == SpSStage.TARGET_DECODE:
                 num_seqs = len(seq_ids)
-                draft_len = draft_lens[i]
+                target_len = target_lens[i]
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
-                          selected_token_start_idx + draft_len))
-                selected_token_start_idx += draft_len
+                          selected_token_start_idx + target_len))
+                selected_token_start_idx += target_len
 
                 categorized_sample_indices[
                     sampling_params.sampling_type].extend(
@@ -349,7 +359,7 @@ class SpSModelRunner:
                 # NOTE: draft len includes the last token of the sequence just before draft tokens
                 # so get_draft_token_ids is one less than draft_len
                 draft_token_ids = seq_data.get_draft_token_ids()
-                assert len(draft_token_ids) == draft_len - 1
+                assert len(draft_token_ids) == target_len - 1
                 sampled_draft_token_ids.append(draft_token_ids)
                 draft_probs.extend(seq_data.get_draft_probs())
 
@@ -361,10 +371,10 @@ class SpSModelRunner:
                                               dtype=torch.long,
                                               device="cuda")
 
-        if sampled_draft_token_ids:
+        if draft_probs:
             sampled_draft_token_ids = _make_tensor_with_pad(sampled_draft_token_ids,
                                                             max_len=max(
-                                                                draft_lens) - 1,
+                                                                target_lens) - 1,
                                                             pad=0,
                                                             dtype=torch.long)
             draft_probs = torch.stack(draft_probs, dim=0)
@@ -386,6 +396,7 @@ class SpSModelRunner:
             seq_data=seq_data,
             prompt_lens=prompt_lens,
             draft_lens=draft_lens,
+            target_lens=target_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
@@ -414,6 +425,11 @@ class SpSModelRunner:
             raise ValueError(f"Invalid SpS stage: {sps_stage}")
 
         input_tokens, input_positions, input_metadata = inputs
+
+        # print("stage: ", sps_stage)
+        # print("input_tokens: ", input_tokens)
+        # print("input_positions: ", input_positions)
+
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                  input_metadata)
 
