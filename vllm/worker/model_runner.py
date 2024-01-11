@@ -110,6 +110,7 @@ class ModelRunner:
         input_metadata = InputMetadata(
             prompt_lens=prompt_lens,
             draft_lens=[],
+            target_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -182,6 +183,7 @@ class ModelRunner:
         input_metadata = InputMetadata(
             prompt_lens=[],
             draft_lens=[],
+            target_lens=[],
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -255,6 +257,7 @@ class ModelRunner:
             seq_data=seq_data,
             prompt_lens=prompt_lens,
             draft_lens=[],
+            target_lens=[],
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
         )
@@ -271,8 +274,6 @@ class ModelRunner:
         # all decodes.
         # Prepare input tensors.
         is_prompt = seq_group_metadata_list[0].is_prompt
-        if not is_prompt:
-            start = time.monotonic()
 
         if is_prompt:
             inputs = self._prepare_prompt(seq_group_metadata_list)
@@ -297,13 +298,6 @@ class ModelRunner:
             hidden_states=hidden_states,
             sampling_metadata=sampling_metadata,
         )
-
-        if not is_prompt:
-            torch.cuda.synchronize()
-            latency = time.monotonic() - start
-            input_tokens = len(seq_group_metadata_list)
-            sum_context_len = sum(input_metadata.context_lens)
-            print(f"profile, {input_tokens}, {sum_context_len}, {latency:.4f}")
 
         return output
 

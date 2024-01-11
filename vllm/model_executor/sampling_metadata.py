@@ -24,6 +24,7 @@ class SamplingMetadata:
         seq_data: Dict[int, SequenceData],
         prompt_lens: List[int],
         draft_lens: List[int],
+        target_lens: List[int],
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Dict[SamplingType, torch.Tensor],
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
@@ -33,6 +34,7 @@ class SamplingMetadata:
         self.seq_data = seq_data
         self.prompt_lens = prompt_lens
         self.draft_lens = draft_lens
+        self.target_lens = target_lens
         self.selected_token_indices = selected_token_indices
         self.categorized_sample_indices = categorized_sample_indices
         self.num_prompts = len(prompt_lens)
@@ -41,12 +43,12 @@ class SamplingMetadata:
         # SpS related attributes start
         self.sampled_draft_token_ids = sampled_draft_token_ids
         self.draft_probs = draft_probs
-        self.is_target_decode = len(draft_lens) > 0
+        self.is_target_decode = len(target_lens) > 0
         # SpS related attributes end
 
-        if self.is_target_decode:
-            assert self.sampled_draft_token_ids is not None
-            assert self.draft_probs is not None
+        # if self.is_target_decode:
+        #     assert self.sampled_draft_token_ids is not None
+        #     assert self.draft_probs is not None
 
     def __repr__(self) -> str:
         return (
@@ -55,5 +57,6 @@ class SamplingMetadata:
             f"seq_data={self.seq_data}, "
             f"prompt_lens={self.prompt_lens}, "
             f"draft_lens={self.draft_lens}, "
+            f"target_lens={self.target_lens}, "
             f"selected_token_indices={self.selected_token_indices}, "
             f"categorized_sample_indices={self.categorized_sample_indices})")

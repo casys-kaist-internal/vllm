@@ -111,7 +111,7 @@ async def send_request(
     headers = {"User-Agent": "Benchmark Client"}
     if backend == "vllm":
         pload = {
-            "prompt": prompt,
+            "prompt": prompt[:10],
             "n": 1,
             "best_of": best_of,
             "use_beam_search": use_beam_search,

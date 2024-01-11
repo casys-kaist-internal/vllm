@@ -27,7 +27,8 @@ class SequenceStatus(enum.Enum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
-    SPS_ALL_ACCEPT = enum.auto()  # SpS related status
+    ALL_ACCEPT = enum.auto()  # SpS related status
+    DRAFT_EXIT = enum.auto()  # SpS related status
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -76,6 +77,8 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
+        # number of tokens that cached with draft KV
+        self.draft_cache_cnt = 0
         self.draft_token_ids: List[int] = []
         self.draft_logprobs: List[float] = []
         self.draft_probs: List[torch.Tensor] = []
@@ -112,6 +115,24 @@ class SequenceData:
             return self.get_last_token_id()
         return self.draft_token_ids[-1]
 
+    def get_uncached_draft_token_ids(self) -> List[int]:
+        all_tokens_including_draft = self.get_token_ids() + self.get_draft_token_ids()
+        uncached_draft_token_ids = all_tokens_including_draft[self.draft_cache_cnt:]
+
+        # NOTE: draft_cache_cnt is updated here
+        self.draft_cache_cnt += len(uncached_draft_token_ids)
+
+        return uncached_draft_token_ids
+
+    def get_uncached_draft_len(self) -> int:
+        all_tokens_including_draft = self.get_token_ids() + self.get_draft_token_ids()
+        uncached_draft_token_ids = all_tokens_including_draft[self.draft_cache_cnt:]
+
+        return len(uncached_draft_token_ids)
+
+    def get_draft_cache_cnt(self) -> int:
+        return self.draft_cache_cnt
+
     def append_draft_token_id(self, token_id: int, logprobs: float, probs: torch.Tensor) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_logprobs.append(logprobs)
@@ -121,6 +142,8 @@ class SequenceData:
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_logprobs[i])
+
+        self.draft_cache_cnt = self.get_len() - 1
 
         self.draft_token_ids.clear()
         self.draft_logprobs.clear()
@@ -167,13 +190,11 @@ class Sequence:
         seq_id: int,
         prompt: str,
         prompt_token_ids: List[int],
-        block_size: int,
-        draft_size: Optional[int] = 0,
+        block_size: int
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
         self.block_size = block_size
-        self.draft_size = draft_size
 
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: SampleLogprobs = []
@@ -309,6 +330,9 @@ class Sequence:
     def get_draft_probs(self) -> List[torch.Tensor]:
         return self.data.get_draft_probs()
 
+    def get_draft_len(self) -> int:
+        return self.data.get_draft_len()
+
     def append_draft_token_id(
         self,
         token_id: int,
@@ -320,15 +344,17 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
-    def accept_draft_tokens(self, accept_cnt: int, accept_probs: List[float]) -> None:
-        assert accept_cnt <= self.draft_size
-        reject_cnt = self.draft_size - accept_cnt
+    def accept_draft_tokens(self,
+                            accept_cnt: int) -> None:
+        # assert accept_cnt <= self.draft_size
+        draft_size = self.get_draft_len()
+        reject_cnt = draft_size - accept_cnt
         if reject_cnt > 0:
             self.reject_pos.append(self.get_len() + reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
-        self.accept_probs.extend(accept_probs)
+        # self.accept_probs.extend(accept_probs)
 
     def get_last_nth_token_id(self, idx) -> int:
         return self.data.get_last_nth_token_id(idx)
@@ -506,6 +532,7 @@ class SequenceOutput:
         output_token: int,
         logprobs: Dict[int, float],
         probs: Optional[torch.Tensor] = None,
+        total_cnt: Optional[int] = 0,
         accept_cnt: Optional[int] = 0,
         accept_probs: Optional[List[float]] = None,
     ) -> None:
@@ -515,6 +542,7 @@ class SequenceOutput:
 
         # SpS related start
         self.probs = probs
+        self.total_cnt = total_cnt
         self.accept_cnt = accept_cnt
         self.accept_probs = accept_probs
         # SpS related end

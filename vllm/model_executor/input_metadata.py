@@ -18,12 +18,14 @@ class InputMetadata:
         self,
         prompt_lens: List[int],
         draft_lens: List[int],
+        target_lens: List[int],
         slot_mapping: torch.Tensor,
         max_context_len: Optional[int],
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
     ) -> None:
         self.prompt_lens = prompt_lens
+        self.target_lens = target_lens
         self.draft_lens = draft_lens
         self.max_context_len = max_context_len
         self.slot_mapping = slot_mapping
@@ -34,7 +36,7 @@ class InputMetadata:
         # SpS DRAFT_DECODE: is_prompt == False and is_target_decode == False
         # SpS TARGET_DECODE: is_prompt == False and is_target_decode == True
         self.is_prompt = len(prompt_lens) > 0
-        self.is_target_decode = (not self.is_prompt) and (len(draft_lens) > 0)
+        self.is_target_decode = (not self.is_prompt) and (len(target_lens) > 0)
 
         if self.is_prompt:
             assert self.is_target_decode == False

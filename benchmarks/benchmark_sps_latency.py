@@ -112,7 +112,7 @@ def main(args: argparse.Namespace):
                 temperature=args.temperature,
                 top_p=1.0,
                 ignore_eos=True,
-                max_tokens=output_len,
+                max_tokens=2048,
             )
 
             for _ in range(args.batch_size):
@@ -130,7 +130,7 @@ def main(args: argparse.Namespace):
             latencies.append(latency)
             # print(output[0].outputs[0].text)
 
-            return np.mean(latencies)
+        return np.mean(latencies)
 
     print("Warming up...")
     # sampling_params = SamplingParams(
@@ -172,7 +172,7 @@ if __name__ == '__main__':
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
-    parser.add_argument('--output-len', type=int, default=128)
+    parser.add_argument('--output-len', type=int, default=2048)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',
