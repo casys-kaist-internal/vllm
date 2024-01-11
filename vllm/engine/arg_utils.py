@@ -249,7 +249,7 @@ class SpSEngineArgs:
     target_model: str
     draft_model: str
     tokenizer: Optional[str] = None
-    draft_size: int = 4
+    draft_size: int = 8
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
@@ -263,7 +263,7 @@ class SpSEngineArgs:
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
-    gpu_memory_utilization: float = 0.90
+    gpu_memory_utilization: float = 0.95
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: int = 256
     max_paddings: int = 256

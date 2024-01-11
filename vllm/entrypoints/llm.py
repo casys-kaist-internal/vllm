@@ -1,5 +1,7 @@
 from typing import List, Optional, Union
 
+from torch.cuda import nvtx
+
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
@@ -172,11 +174,9 @@ class LLM:
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
+            nvtx.range_push("step")
             step_outputs = self.llm_engine.step()
-            free_blocks = self.llm_engine.scheduler.block_manager.gpu_allocator.get_num_free_blocks()
-            if (free_blocks < 100):
-                self.llm_engine.abort_all_requests()
-                return outputs
+            nvtx.range_pop()
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
