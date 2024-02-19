@@ -312,6 +312,9 @@ class OPTForCausalLM(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
+        # print(config)
+        # config["num_hidden_layers"] = 50
+        # print(config)
         self.config = config
         self.linear_method = linear_method
         self.model = OPTModel(parallel_state, config, linear_method)

@@ -73,7 +73,8 @@ def main(args: argparse.Namespace):
             seed=args.seed,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
-            download_dir=download_dir
+            download_dir=download_dir,
+            load_format="dummy"
         )
     elif args.engine == "sps":
         llm = SpSLLM(
@@ -112,7 +113,7 @@ def main(args: argparse.Namespace):
                 temperature=args.temperature,
                 top_p=1.0,
                 ignore_eos=True,
-                max_tokens=2048,
+                max_tokens=128,
             )
 
             for _ in range(args.batch_size):

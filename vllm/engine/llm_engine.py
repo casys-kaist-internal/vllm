@@ -588,6 +588,8 @@ class LLMEngine:
         # if not seq_group_metadata_list[0].is_prompt:
         #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
         #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
+        if not seq_group_metadata_list[0].is_prompt:
+            start = time.monotonic()
 
         # Execute the model.
         nvtx.range_push("EXECUTE_MODEL" + str(num_batched_tokens))
@@ -599,6 +601,10 @@ class LLMEngine:
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
         nvtx.range_pop()
+
+        if not seq_group_metadata_list[0].is_prompt:
+            end = time.monotonic()
+            print(f"latency, {num_batched_tokens},  {end - start:.5f}")
 
         return self._process_model_outputs(output, scheduler_outputs)
 
