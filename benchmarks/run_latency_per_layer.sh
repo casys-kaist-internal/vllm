@@ -26,10 +26,10 @@ gpt_neo_models="EleutherAI/gpt-neo-125m EleutherAI/gpt-neo-1.3b EleutherAI/gpt-n
 
 
 # Loop through models
-for model in $gpt_neo_models; do
+for model in $opt_models; do
     # Loop through batch sizes from 1 to 10
     for batch_size in {1..256}; do 
-        output_file="/home/yhkim/workspace/vllm/benchmarks/result_context_len/${model}_${batch_size}.csv"
+        output_file="/home/yhkim/workspace/vllm/benchmarks/result_per_layer/${model}_${batch_size}.csv"
         if [ -f "$output_file" ]; then
             rm "$output_file"
         fi
@@ -37,9 +37,10 @@ for model in $gpt_neo_models; do
         --num-prompts 1 \
         --engine base \
         --input-len 1 \
+        --output-len 2048 \
         --target-model "$model" \
         --batch-size "$batch_size" \
-        | grep "latency" >> "$output_file"
+        | grep -E "latency|Linear|LayerNorm|Activation|ResidualAdd|PagedAttention" >> "$output_file"
         # {task}, {batch_size}, {context_len}, {latency(s)} 로 저장됨
         # tast = 'latency', context_len은 k번째 토큰을 생성하는 decoding step을 의미
     done

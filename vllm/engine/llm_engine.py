@@ -604,7 +604,11 @@ class LLMEngine:
 
         if not seq_group_metadata_list[0].is_prompt:
             end = time.monotonic()
-            print(f"latency, {num_batched_tokens},  {end - start:.5f}")
+            seq_group_metadata = seq_group_metadata_list[0]
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            seq_id = seq_ids[0]
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            print(f"latency, {num_batched_tokens},  {seq_data.get_len()}, {end - start:.5f}")
 
         return self._process_model_outputs(output, scheduler_outputs)
 
