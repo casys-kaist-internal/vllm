@@ -3,6 +3,7 @@ import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple, Union
 
+import torch
 from torch.cuda import nvtx
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
@@ -545,7 +546,6 @@ class LLMEngine:
     def _process_model_outputs(
             self, output: SamplerOutput,
             scheduler_outputs: SchedulerOutputs) -> List[RequestOutput]:
-        nvtx.range_push("process_model_outputs")
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
@@ -565,10 +565,10 @@ class LLMEngine:
             # Log the system stats.
             self._log_system_stats(scheduler_outputs.prompt_run,
                                    scheduler_outputs.num_batched_tokens)
-        nvtx.range_pop()
+
         return request_outputs
 
-    def step(self) -> List[RequestOutput]:
+    def step(self) -> Tuple[List[RequestOutput], bool]:
         """Performs one decoding iteration and returns newly generated results.
 
         This function performs one decoding iteration of the engine. It first
@@ -577,20 +577,11 @@ class LLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
         if scheduler_outputs.is_empty():
             return ignored
-        nvtx.range_pop()
-
-        num_batched_tokens = scheduler_outputs.num_batched_tokens
-
-        # if not seq_group_metadata_list[0].is_prompt:
-        #     print("num_batched_tokens", scheduler_outputs.num_batched_tokens)
-        #     print("num_scheduled_seq_groups", len(seq_group_metadata_list))
 
         # Execute the model.
-        nvtx.range_push("EXECUTE_MODEL" + str(num_batched_tokens))
         output = self._run_workers(
             "execute_model",
             seq_group_metadata_list=seq_group_metadata_list,
@@ -598,9 +589,8 @@ class LLMEngine:
             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
-        nvtx.range_pop()
 
-        return self._process_model_outputs(output, scheduler_outputs)
+        return self._process_model_outputs(output, scheduler_outputs), scheduler_outputs.prompt_run
 
     def _log_system_stats(
         self,

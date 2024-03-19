@@ -5,6 +5,7 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.tokenizers import *
+from torch.cuda import nvtx
 
 logger = init_logger(__name__)
 

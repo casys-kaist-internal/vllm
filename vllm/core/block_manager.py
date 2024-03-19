@@ -280,6 +280,17 @@ class BlockSpaceManager:
         self._free_block_table(block_table)
         del self.block_tables[seq.seq_id]
 
+    def free_blocks(self, seq: Sequence, cnt: int) -> None:
+        assert seq.seq_id in self.block_tables
+        block_table = self.block_tables[seq.seq_id]
+
+        for _ in range(cnt):
+            last_block = block_table.pop()
+            if last_block.device == Device.GPU:
+                self.gpu_allocator.free(last_block)
+            else:
+                self.cpu_allocator.free(last_block)
+
     def reset(self) -> None:
         for block_table in self.block_tables.values():
             self._free_block_table(block_table)
