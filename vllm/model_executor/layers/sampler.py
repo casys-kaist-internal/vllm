@@ -95,7 +95,6 @@ class Sampler(nn.Module):
         # Sample the next tokens.
         # For speculative sampling, score the draft with the target model.
         if not sampling_metadata.is_target_decode or sampling_metadata.draft_probs is None:
-            nvtx.range_push("_sample")
             sample_results = _sample(probs, logprobs, sampling_metadata)
             if sampling_metadata.is_target_decode:
                 sps_results = []
@@ -104,12 +103,9 @@ class Sampler(nn.Module):
                     sps_results.append((0, 0, []))
             else:
                 sps_results = None
-            nvtx.range_pop()
         else:
-            nvtx.range_push("_sps_sample")
             sample_results, sps_results, probs, logprobs = _sps_sample(
                 probs, sampling_metadata)
-            nvtx.range_pop()
 
         # Get the logprobs query results.
         prompt_logprobs, sample_logprobs = _get_logprobs(
@@ -578,7 +574,7 @@ def _sps_sample(
     # draft_token_ids: [seq_idx, max_adjusted_draft_len]
     sampled_draft_token_ids = sampling_metadata.sampled_draft_token_ids
 
-    # target_probs: [seq_len, vocab_size] -> [seq_idx, max_draft_len, vocab_size]
+    # target_probs: [seq_len, vocab_size] -> [seq_idx, max_target_len, vocab_size]
     target_probs = _reshape_and_pad(probs, target_lens)
     del probs
 
@@ -586,7 +582,7 @@ def _sps_sample(
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
-    # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_adjusted_draft_len, vocab_size]
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_adjusted_target_lens, vocab_size]
     draft_probs = _reshape_and_pad(
         sampling_metadata.draft_probs, adjusted_target_lens)
 
@@ -594,10 +590,17 @@ def _sps_sample(
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
+    # print("================================================")
+    # print("target", target_prob_for_sampled_draft_token)
+    # print("draft", draft_prob_for_sampled_draft_token)
+    # _calculate_alpha(target_probs, draft_probs, adjusted_target_lens)
+
     # accept_prob: [seq_idx, max_draft_len]
     accept_prob = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
     del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
+
+    # print("accept_prob", accept_prob)
 
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
@@ -619,6 +622,7 @@ def _sps_sample(
 
     # accept_cnt: [seq_idx]
     accept_cnt = torch.sum(accepted, dim=1)
+    # print("accept_cnt", accept_cnt)
     del accepted
     # print(accept_cnt)
 
@@ -843,3 +847,19 @@ def _reshape_and_pad(
         idx += size
 
     return padded_x
+
+
+def _calculate_alpha(
+        target_probs: torch.Tensor,
+        draft_probs: torch.Tensor,
+        adjusted_target_lens: List[int]
+):
+    # target_probs:  [seq_idx, max_target_lens, vocab_size]
+    # draft_probs: [seq_idx, max_adjusted_target_lens, vocab_size]
+
+    for seq_idx in range(target_probs.size(0)):
+        for target_len in range(adjusted_target_lens[seq_idx]):
+            target_prob = target_probs[seq_idx, :target_len, :]
+            draft_prob = draft_probs[seq_idx, :target_len, :]
+            print(target_prob, draft_prob)
+            min_prob = torch.min(target_prob, draft_prob)

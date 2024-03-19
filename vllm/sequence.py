@@ -316,6 +316,7 @@ class Sequence:
 
     def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
         assert len(self.logical_token_blocks) > 0
+        free_block_cnt = 0
 
         for _ in range(remove_cnt):
             last_block = self.logical_token_blocks[-1]
@@ -323,6 +324,9 @@ class Sequence:
 
             if last_block.is_empty():
                 self.logical_token_blocks.pop()
+                free_block_cnt += 1
+
+        return free_block_cnt
 
     def get_draft_token_ids(self) -> List[int]:
         return self.data.get_draft_token_ids()
@@ -345,7 +349,7 @@ class Sequence:
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
     def accept_draft_tokens(self,
-                            accept_cnt: int) -> None:
+                            accept_cnt: int) -> int:
         # assert accept_cnt <= self.draft_size
         draft_size = self.get_draft_len()
         reject_cnt = draft_size - accept_cnt
@@ -353,8 +357,10 @@ class Sequence:
             self.reject_pos.append(self.get_len() + reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        self._remove_tokens_from_blocks(reject_cnt)
+        free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
         # self.accept_probs.extend(accept_probs)
+
+        return free_block_cnt
 
     def get_last_nth_token_id(self, idx) -> int:
         return self.data.get_last_nth_token_id(idx)

@@ -110,19 +110,33 @@ def run_vllm(
     else:
         raise ValueError(f"Unknown engine: {engine}")
 
+    # sampling_params = SamplingParams(
+    #     n=n,
+    #     temperature=0,
+    #     top_p=1.0,
+    #     use_beam_search=use_beam_search,
+    #     ignore_eos=False,
+    #     max_tokens=32,
+    # )
+
+    # dummy_prompt_token_ids = [[0] * 32] * 32
+    # llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+    #              sampling_params=sampling_params,
+    #              use_tqdm=False)
+
     # Add the requests to the engine.
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
             n=n,
-            temperature=0.5,
+            temperature=0,
             top_p=1.0,
             use_beam_search=use_beam_search,
-            ignore_eos=False,
-            max_tokens=output_len,
+            ignore_eos=True,
+            max_tokens=512,
         )
         # FIXME(woosuk): Do not use internal method.
         llm._add_request(
-            prompt=prompt,
+            prompt=prompt[:1],
             prompt_token_ids=None,
             sampling_params=sampling_params,
         )
@@ -133,32 +147,32 @@ def run_vllm(
     end = time.perf_counter()
 
     # (Hyunjae) Save debuggable outputs as JSON
-    if engine == 'sps':
-        import json
-        outputs_json = []
-        for output in outputs:
+    # if engine == 'sps':
+    #     import json
+    #     outputs_json = []
+    #     for output in outputs:
 
-            assert len(
-                output.outputs) == 1, "Beam Search not supported in SpS for now.."
-            completion_output = output.outputs[0]
+    #         assert len(
+    #             output.outputs) == 1, "Beam Search not supported in SpS for now.."
+    #         completion_output = output.outputs[0]
 
-            prompt = output.prompt
-            output_str = completion_output.text
-            rejection_positions = completion_output.reject_pos
-            accept_probabilities = completion_output.accept_probs
-            num_output_tokens = len(completion_output.token_ids)
-            outputs_json.append({
-                'prompt': prompt,
-                'output_str': output_str,
-                'rejection_positions': rejection_positions,
-                'accept_probabilities': accept_probabilities,
-                'num_output_tokens': num_output_tokens,
-            })
+    #         prompt = output.prompt
+    #         output_str = completion_output.text
+    #         rejection_positions = completion_output.reject_pos
+    #         accept_probabilities = completion_output.accept_probs
+    #         num_output_tokens = len(completion_output.token_ids)
+    #         outputs_json.append({
+    #             'prompt': prompt,
+    #             'output_str': output_str,
+    #             'rejection_positions': rejection_positions,
+    #             'accept_probabilities': accept_probabilities,
+    #             'num_output_tokens': num_output_tokens,
+    #         })
 
-        file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
-        file_name = file_name.replace('/', '_')
-        with open(file_name, 'w') as f:
-            json.dump(outputs_json, f, indent=2)
+    #     file_name = f'outputs_target_{target_model}_draft_{draft_model}_size_{draft_size}_temp_{temperature}.json'
+    #     file_name = file_name.replace('/', '_')
+    #     with open(file_name, 'w') as f:
+    #         json.dump(outputs_json, f, indent=2)
 
     return end - start
 
@@ -317,7 +331,7 @@ if __name__ == "__main__":
                         type=int,
                         default=1000,
                         help="Number of prompts to process.")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=7777)
     parser.add_argument("--hf-max-batch-size",
                         type=int,
                         default=None,
@@ -326,7 +340,7 @@ if __name__ == "__main__":
                         action='store_true',
                         help='trust remote code from huggingface')
 
-    parser.add_argument('--temperature', type=float, default=1.0)
+    parser.add_argument('--temperature', type=float, default=0)
     parser.add_argument(
         '--max-model-len',
         type=int,
