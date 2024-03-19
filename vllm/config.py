@@ -469,11 +469,14 @@ def _get_and_verify_max_len(
 class SpSConfig:
     def __init__(self, draft_size: int) -> None:
         self.draft_size = draft_size
-        self.num_tokens_to_target_threshold = [64, 64]
+        # really large number to disable this feature
+        self.num_tokens_to_target_threshold = 100000000000000
 
     def get_num_tokens_to_target_threshold(self, current_running_seqs: int) -> int:
-        for threshold in self.num_tokens_to_target_threshold:
-            if current_running_seqs <= threshold:
-                return threshold
+        return self.num_tokens_to_target_threshold
 
-        return 0
+        # for threshold in self.num_tokens_to_target_threshold:
+        #     if current_running_seqs <= threshold:
+        #         return threshold
+
+        # return 0

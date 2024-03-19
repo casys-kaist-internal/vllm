@@ -4,12 +4,13 @@
 dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # Set the window size
-window_size=8
+window_size=2
 
-python3 benchmark_sps_latency.py \
+./nsys_profile python3 benchmark_sps_latency.py \
 --dataset "$dataset" \
---num-prompts 1 \
---engine sps \
+--num-prompts 24 \
+--batch-size 24 \
+--engine base \
 --draft-size "$window_size"
 
 # python3 benchmark_sps_throughput.py \

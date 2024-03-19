@@ -63,7 +63,6 @@ def main(args: argparse.Namespace):
 
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
-
     if args.engine == "base":
         llm = LLM(
             model=args.target_model,
@@ -73,7 +72,8 @@ def main(args: argparse.Namespace):
             seed=args.seed,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
-            download_dir=download_dir
+            download_dir=download_dir,
+            load_format="dummy"
         )
     elif args.engine == "sps":
         llm = SpSLLM(
@@ -91,64 +91,34 @@ def main(args: argparse.Namespace):
     else:
         raise ValueError(f"Unknown engine: {args.engine}")
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer, trust_remote_code=args.trust_remote_code)
-    if args.dataset is None:
-        # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
-        requests = [(prompt, args.input_len, args.output_len)
-                    for _ in range(args.num_prompts)]
-    else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
+    sampling_params = SamplingParams(
+        n=args.n,
+        temperature=0.0 if args.use_beam_search else 1.0,
+        top_p=1.0,
+        use_beam_search=args.use_beam_search,
+        ignore_eos=True,
+        max_tokens=args.output_len,
+    )
+    print(sampling_params)
+    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
 
     def run_to_completion():
-        latencies = []
-        # Add the requests to the engine.
-        # print(len(requests))
+        start_time = time.perf_counter()
+        llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                     sampling_params=sampling_params,
+                     use_tqdm=False)
+        end_time = time.perf_counter()
+        latency = end_time - start_time
+        return latency
 
-        for prompt, _, output_len in tqdm(requests):
-            sampling_params = SamplingParams(
-                n=1,
-                temperature=args.temperature,
-                top_p=1.0,
-                ignore_eos=True,
-                max_tokens=2048,
-            )
-
-            for _ in range(args.batch_size):
-                # FIXME(woosuk): Do not use internal method.
-                llm._add_request(
-                    prompt=prompt,
-                    prompt_token_ids=None,
-                    sampling_params=sampling_params,
-                )
-
-            start_time = time.perf_counter()
-            output = llm._run_engine(use_tqdm=False)
-            end_time = time.perf_counter()
-            latency = end_time - start_time
-            latencies.append(latency)
-            # print(output[0].outputs[0].text)
-
-        return np.mean(latencies)
-
-    print("Warming up...")
-    # sampling_params = SamplingParams(
-    #     n=args.n,
-    #     temperature=0.0 if args.use_beam_search else 1.0,
-    #     top_p=1.0,
-    #     use_beam_search=args.use_beam_search,
-    #     ignore_eos=True,
-    #     max_tokens=100,
-    # )
-    # dummy_prompt_token_ids = [[0] * 10] * 10
-    # llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-    #              sampling_params=sampling_params,
-    #              use_tqdm=False)
+    # print("Warming up...")
+    # run_to_completion()
 
     # Benchmark.
-    avg_latency = run_to_completion()
-    print(f'Avg latency: {avg_latency} seconds')
+    latencies = []
+    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
+        latencies.append(run_to_completion())
+    print(f'DECODE Avg latency: {np.mean(latencies)} seconds')
 
 
 if __name__ == '__main__':
@@ -172,7 +142,7 @@ if __name__ == '__main__':
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
-    parser.add_argument('--output-len', type=int, default=2048)
+    parser.add_argument('--output-len', type=int, default=512)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',

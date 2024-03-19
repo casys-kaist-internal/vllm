@@ -113,11 +113,19 @@ class SpSScheduler:
                     if not request_ids:
                         return
 
+    def abort_all_seq_groups(self) -> None:
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.waiting])
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.running])
+        self.abort_seq_group(
+            [seq_group.request_id for seq_group in self.swapped])
+
     def has_unfinished_seqs(self) -> bool:
-        return self.waiting or self.running or self.swapped
+        return self.waiting or self.running or self.swapped or self.draft_exit
 
     def get_num_unfinished_seq_groups(self) -> int:
-        return len(self.waiting) + len(self.running) + len(self.swapped)
+        return len(self.waiting) + len(self.running) + len(self.swapped) + len(self.draft_exit)
 
     def _schedule(self) -> SpSSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -252,27 +260,38 @@ class SpSScheduler:
 
             # Reserve new token slots for the running sequence groups.
             running: List[SequenceGroup] = []
+            preempted: List[SequenceGroup] = []
             while self.running:
                 seq_group = self.running.pop(0)
-                if not self.block_manager.can_append_slot(seq_group):
-                    raise RuntimeError(
-                        "Draft preemption is not supported yet.")
-                else:
-                    seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                    if seq.get_draft_len() > self.sps_config.draft_size:
-                        self.draft_exit.append(seq_group)
-                        seq.status = SequenceStatus.DRAFT_EXIT
-                    elif seq.get_len() + seq.get_draft_len() >= self.scheduler_config.max_model_len:
-                        self.draft_exit.append(seq_group)
-                        seq.status = SequenceStatus.DRAFT_EXIT
-                    elif remaining_tokens > 0:
+                seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+
+                if seq.get_draft_len() >= self.sps_config.draft_size:
+                    self.draft_exit.append(seq_group)
+                    seq.status = SequenceStatus.DRAFT_EXIT
+                elif seq.get_len() + seq.get_draft_len() >= self.scheduler_config.max_model_len:
+                    self.draft_exit.append(seq_group)
+                    seq.status = SequenceStatus.DRAFT_EXIT
+                elif remaining_tokens > 0:
+                    while not self.block_manager.can_append_slot(seq_group):
+                        if self.running:
+                            # Preempt the lowest-priority sequence groups.
+                            victim_seq_group = self.running.pop(-1)
+                            self._preempt(victim_seq_group, blocks_to_swap_out)
+                            preempted.append(victim_seq_group)
+                        else:
+                            # No other sequence groups can be preempted.
+                            # Preempt the current sequence group.
+                            self._preempt(seq_group, blocks_to_swap_out)
+                            preempted.append(seq_group)
+                            break
+                    else:
                         # Append new slots to the sequence group.
                         self._append_slot(seq_group, blocks_to_copy)
                         running.append(seq_group)
                         remaining_tokens -= 1
-                    else:
-                        self.draft_exit.append(seq_group)
-                        seq.status = SequenceStatus.DRAFT_EXIT
+                else:
+                    self.draft_exit.append(seq_group)
+                    seq.status = SequenceStatus.DRAFT_EXIT
             self.running = running
 
             if self.running:
@@ -373,7 +392,7 @@ class SpSScheduler:
         scheduler_outputs = self._schedule()
 
         # print("Number of scheduled seq groups: ", len(
-        #     scheduler_outputs.scheduled_seq_groups))
+        #     scheduler_outputs.scheduled_seq_groups), scheduler_outputs.sps_stage)
 
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
@@ -485,9 +504,9 @@ class SpSScheduler:
         assert len(seqs) == 1
         for seq in seqs:
             seq.status = SequenceStatus.WAITING
-            self.block_manager.free(seq)
             # Discard all draft tokens
             seq.accept_draft_tokens(0)
+            self.block_manager.free(seq)
 
         # NOTE: For FCFS, we insert the preempted sequence group to the front
         # of the waiting queue.
