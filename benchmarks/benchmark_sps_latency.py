@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 
-download_dir = '/home/sjchoi/workspace/models'
+download_dir = '/home/yhkim/workspace/models'
 
 
 def sample_requests(
@@ -96,7 +96,7 @@ def main(args: argparse.Namespace):
         args.tokenizer, trust_remote_code=args.trust_remote_code)
     if args.dataset is None:
         # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
+        prompt = "hi" * (args.input_len)
         requests = [(prompt, args.input_len, args.output_len)
                     for _ in range(args.num_prompts)]
     else:
@@ -113,7 +113,7 @@ def main(args: argparse.Namespace):
                 temperature=args.temperature,
                 top_p=1.0,
                 ignore_eos=True,
-                max_tokens=128,
+                max_tokens=args.max_token,
             )
 
             for _ in range(args.batch_size):
@@ -172,9 +172,10 @@ if __name__ == '__main__':
                         choices=['awq', 'squeezellm', None],
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
-    parser.add_argument('--input-len', type=int, default=32)
+    parser.add_argument('--input-len', type=int, default=1)
     parser.add_argument('--output-len', type=int, default=2048)
     parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--max-token', type=int, default=2048)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,

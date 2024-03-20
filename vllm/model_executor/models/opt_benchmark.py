@@ -111,7 +111,7 @@ class OPTAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         end_event.record()
         torch.cuda.synchronize()
-        print(f"Linear, {start_event.elapsed_time(end_event)}")
+        print(f"Qkv_proj, {start_event.elapsed_time(end_event)}")
 
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         key_cache, value_cache = kv_cache
@@ -129,7 +129,7 @@ class OPTAttention(nn.Module):
         output, _ = self.out_proj(attn_output)
         end_event.record()
         torch.cuda.synchronize()
-        print(f"Linear, {start_event.elapsed_time(end_event)}")
+        print(f"Out_proj, {start_event.elapsed_time(end_event)}")
 
         return output
 
@@ -236,7 +236,7 @@ class OPTDecoderLayer(nn.Module):
         hidden_states, _ = self.fc1(hidden_states)
         end_event.record()
         torch.cuda.synchronize()
-        print(f"Linear, {start_event.elapsed_time(end_event)}")
+        print(f"FC1, {start_event.elapsed_time(end_event)}")
 
         torch.cuda.synchronize()
         start_event.record()
@@ -250,7 +250,7 @@ class OPTDecoderLayer(nn.Module):
         hidden_states, _ = self.fc2(hidden_states)
         end_event.record()
         torch.cuda.synchronize()
-        print(f"Linear, {start_event.elapsed_time(end_event)}")
+        print(f"FC2, {start_event.elapsed_time(end_event)}")
 
         torch.cuda.synchronize()
         start_event.record()

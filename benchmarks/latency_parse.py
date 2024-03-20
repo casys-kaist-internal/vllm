@@ -2,17 +2,22 @@ import csv
 import os
 import statistics
 import numpy as np
-directory = "results/facebook"
-models = ["opt-125m", "opt-350m", "opt-1.3b", "opt-2.7b", "opt-6.7b", "opt-13b"]
+directory = "results2/openai-community"
+opt_models = ["opt-125m", "opt-350m", "opt-1.3b", "opt-2.7b", "opt-6.7b", "opt-13b"]
 batch_sizes = range(1, 257)
+# gpt2
+gpt2_models=["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"]
 
-output_filepath = "output.csv"  # Specify the output file path
+# bloom
+bloom_models=["bloom-560m", "bloom-1b1", "bloom-1b7", "bloom-3b", "bloom-7b1"]
+
+output_filepath = "3090_gpt2_output.csv"  # Specify the output file path
 
 with open(output_filepath, "w") as output_file:  # Open the output file for writing
     csv_writer = csv.writer(output_file)
     csv_writer.writerow(["model_name", "batch_size", "average_latency"])  # Write the header row
 
-    for model in models:
+    for model in gpt2_models:
         for batch_size in batch_sizes:
             filename = f"{model}_{batch_size}.csv"
             filepath = os.path.join(directory, filename)

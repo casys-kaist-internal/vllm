@@ -10,7 +10,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 from tqdm import tqdm
 
-download_dir = '/home/sjchoi/workspace/models'
+download_dir = '/home/yhkim/workspace/models'
 
 
 def sample_requests(
@@ -315,7 +315,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument("--num-prompts",
                         type=int,
-                        default=1000,
+                        default=100,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hf-max-batch-size",

@@ -10,7 +10,7 @@ output_file="/home/yhkim/workspace/vllm/benchmarks/results_latency.csv"
 benchmark="latency"
 
 # List of models
-opt_models="facebook/opt-125m facebook/opt-350m facebook/opt-1.3b facebook/opt-2.7b facebook/opt-6.7b facebook/opt-13b"
+opt_models="facebook/opt-125m facebook/opt-350m facebook/opt-1.3b facebook/opt-2.7b facebook/opt-6.7b"
 
 # gpt2
 gpt2_models="openai-community/gpt2 openai-community/gpt2-medium openai-community/gpt2-large openai-community/gpt2-xl"
@@ -40,7 +40,7 @@ for model in $opt_models; do
         --output-len 2048 \
         --target-model "$model" \
         --batch-size "$batch_size" \
-        | grep -E "latency|Linear|LayerNorm|Activation|ResidualAdd|PagedAttention" >> "$output_file"
+        | grep -E "latency|FC1|FC2|Out_proj|Qkv_proj|LayerNorm|Activation|ResidualAdd|PagedAttention" >> "$output_file"
         # {task}, {batch_size}, {context_len}, {latency(s)} 로 저장됨
         # tast = 'latency', context_len은 k번째 토큰을 생성하는 decoding step을 의미
     done
