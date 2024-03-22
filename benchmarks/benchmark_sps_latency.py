@@ -74,6 +74,7 @@ def main(args: argparse.Namespace):
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
             download_dir=download_dir,
+            max_num_batched_tokens= args.batch_size * args.max_token,
             load_format="dummy"
         )
     elif args.engine == "sps":

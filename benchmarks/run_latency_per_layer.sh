@@ -29,7 +29,7 @@ gpt_neo_models="EleutherAI/gpt-neo-125m EleutherAI/gpt-neo-1.3b EleutherAI/gpt-n
 for model in $opt_models; do
     # Loop through batch sizes from 1 to 10
     for batch_size in {1..256}; do 
-        output_file="/home/yhkim/workspace/vllm/benchmarks/result_per_layer/${model}_${batch_size}.csv"
+        output_file="/home/yhkim/workspace/vllm/benchmarks/result_per_layer/0320/${model}_${batch_size}.csv"
         if [ -f "$output_file" ]; then
             rm "$output_file"
         fi
