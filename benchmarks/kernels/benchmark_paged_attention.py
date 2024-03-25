@@ -155,7 +155,7 @@ if __name__ == '__main__':
     parser.add_argument("--version",
                         type=str,
                         choices=["v1", "v2"],
-                        default="v2")
+                        default="v1")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context-len", type=int, default=4096)
     parser.add_argument("--num-query-heads", type=int, default=64)
