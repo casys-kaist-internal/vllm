@@ -7,8 +7,10 @@ input_features = 4096
 output_features = 4096
 num_iterations = 100
 
-# Create a placeholder for profiling results
+# Create a placeholder for profiling results and TFLOPS
 profile_results = {}
+tflops_results = {}
+ai_results = {}
 
 # Ensure CUDA is available and set the device
 if torch.cuda.is_available():
@@ -17,44 +19,62 @@ if torch.cuda.is_available():
 else:
     raise SystemExit("CUDA is not available. This script requires a GPU.")
 
-# Loop over batch sizes from 1 to 256
-for batch_size in range(1, 513):
-        # Define the input tensor and linear layer, moving them to the GPU
-        input_tensor = torch.randn(batch_size, input_features, device=device)
-        linear_layer = torch.nn.Linear(input_features, output_features).to(device)
+# Loop over batch sizes from 1 to 512
+for batch_size in range(1, 1025):
+    # Define the input tensor and linear layer, moving them to the GPU
+    input_tensor = torch.randn(batch_size, input_features, device=device).half()
+    linear_layer = torch.nn.Linear(input_features, output_features).to(device).half()
 
-        for _ in range(3):
-            # Warm-up run for more accurate timing
-            _ = linear_layer(input_tensor)
+    for _ in range(3):
+        # Warm-up run for more accurate timing
+        _ = linear_layer(input_tensor)
 
-        # Synchronize CUDA to ensure the GPU is ready
-        torch.cuda.synchronize()
-        # Start timing
-        start_time = time.perf_counter_ns()
+    # Synchronize CUDA to ensure the GPU is ready
+    torch.cuda.synchronize()
+    # Start timing
+    start_time = time.perf_counter_ns()
 
-        for _ in range(num_iterations):
-            # Perform the matrix multiplication
-            output = linear_layer(input_tensor)
-            
-        # Synchronize CUDA to ensure completion of the operation
-        torch.cuda.synchronize()
-        
-        # End timing
-        end_time = time.perf_counter_ns()
-        
-        # Calculate and append the elapsed time to the list
-        avg_latency = (end_time - start_time) / num_iterations
-        avg_latency = avg_latency / 1e6  # Convert to milliseconds
-        
-        profile_results[batch_size] = avg_latency
+    for _ in range(num_iterations):
+        # Perform the matrix multiplication
+        output = linear_layer(input_tensor)
 
-        print(f"Batch Size: {batch_size}, Average Time Taken: {avg_latency:.3f} ms")
+    # Synchronize CUDA to ensure completion of the operation
+    torch.cuda.synchronize()
+    # End timing
+    end_time = time.perf_counter_ns()
+    
+    # Calculate and append the elapsed time to the list
+    elapsed_time_ns = (end_time - start_time)
+    elapsed_time_s = elapsed_time_ns / 1e9  # Convert to seconds
+    avg_elapsed_time_s = elapsed_time_s / num_iterations
+    
+    # Calculate FLOPs per operation
+    flops_per_operation = 2 * batch_size * input_features * output_features
 
-# At this point, `profile_results` contains the average profiling information for each batch size
-# save it to csv file 
+    # Calculate MOPs per operation
+    mops_per_operation = 2 * (batch_size * input_features + input_features * output_features + batch_size * output_features)
+
+    # Calculate total FLOPs
+    total_flops = flops_per_operation * num_iterations
+    total_mops = mops_per_operation * num_iterations
+
+    # Calculate TFLOPS
+    tflops = (total_flops / elapsed_time_s) / 1e12
+
+    # Calculate Arithmetic Intensity
+    ai = total_flops / total_mops
+
+    profile_results[batch_size] = avg_elapsed_time_s * 1e3  # Convert to milliseconds for readability
+    tflops_results[batch_size] = tflops
+    ai_results[batch_size] = ai
+
+    print(f"Batch Size: {batch_size}, Average Time Taken: {profile_results[batch_size]:.3f} ms, TFLOPS: {tflops_results[batch_size]:.3f}, AI: {ai_results[batch_size]:.3f}")
+
+# At this point, `profile_results` and `tflops_results` contain the average profiling information and TFLOPS for each batch size.
+# save csv file
 import csv
-with open('linear_profiling_results.csv', 'w') as f:
+with open('linear.csv', 'w') as f:
     writer = csv.writer(f)
-    writer.writerow(['Batch Size', 'Average Latency (ms)'])
-    for key, value in profile_results.items():
-        writer.writerow([key, value])
+    writer.writerow(['Batch Size', 'Average Time (ms)', 'TFLOPS', 'AI'])
+    for batch_size in profile_results:
+        writer.writerow([batch_size, profile_results[batch_size], tflops_results[batch_size], ai_results[batch_size]])
