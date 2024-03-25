@@ -95,6 +95,7 @@ __device__ void paged_attention_kernel(
   const int max_num_partitions = gridDim.z;
   constexpr bool USE_PARTITIONING = PARTITION_SIZE > 0;
   const int context_len = context_lens[seq_idx];
+
   if (USE_PARTITIONING && partition_idx * PARTITION_SIZE >= context_len) {
     // No work to do. Terminate the thread block.
     return;
