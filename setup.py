@@ -138,7 +138,7 @@ for capability in compute_capabilities:
 
 # Use NVCC threads to parallelize the build.
 if nvcc_cuda_version >= Version("11.2"):
-    num_threads = min(os.cpu_count(), 8)
+    num_threads = min(os.cpu_count(), 4)
     NVCC_FLAGS += ["--threads", str(num_threads)]
 
 ext_modules = []
