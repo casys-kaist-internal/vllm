@@ -1,3 +1,5 @@
+#!/bin/bash
+
 for dataset in "gsm8k" "humaneval" "alpaca" "mt-bench" "sharegpt"; do
     for (( batch_size=1; batch_size <= 128; batch_size*=2 ))
     do
