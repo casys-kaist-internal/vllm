@@ -1,10 +1,15 @@
 import torch
 import numpy as np
 import time
+import sys
 
-# Define the dimensions for the matrix multiplication
-input_features = 4096
-output_features = 4096
+# check number of arguments
+if len(sys.argv) != 3:
+    raise SystemExit(f"Usage: {sys.argv[0]} <input_features> <output_features>")
+
+# Get input_features and output_features from command line arguments
+input_features = int(sys.argv[1])
+output_features = int(sys.argv[2])
 num_iterations = 100
 
 # Create a placeholder for profiling results and TFLOPS
@@ -15,7 +20,7 @@ ai_results = {}
 # Ensure CUDA is available and set the device
 if torch.cuda.is_available():
     device = torch.device('cuda')
-    print("CUDA is available. Using:", torch.cuda.get_device_name(device))
+    print("Using:", torch.cuda.get_device_name(device), "input_features:", input_features, "output_features:", output_features)
 else:
     raise SystemExit("CUDA is not available. This script requires a GPU.")
 
@@ -27,7 +32,7 @@ for batch_size in range(1, 1025):
 
     for _ in range(3):
         # Warm-up run for more accurate timing
-        _ = linear_layer(input_tensor)
+        output = linear_layer(input_tensor)
 
     # Synchronize CUDA to ensure the GPU is ready
     torch.cuda.synchronize()
@@ -73,7 +78,8 @@ for batch_size in range(1, 1025):
 # At this point, `profile_results` and `tflops_results` contain the average profiling information and TFLOPS for each batch size.
 # save csv file
 import csv
-with open('linear.csv', 'w') as f:
+import sys
+with open(f"{torch.cuda.get_device_name(device)}_{input_features}_{output_features}.csv", 'w') as f:
     writer = csv.writer(f)
     writer.writerow(['Batch Size', 'Average Time (ms)', 'TFLOPS', 'AI'])
     for batch_size in profile_results:
