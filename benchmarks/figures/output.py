@@ -43,7 +43,7 @@ def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    #random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -75,7 +75,7 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -107,7 +107,7 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+     # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -145,13 +145,13 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/sjlim/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -183,7 +183,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -258,11 +258,14 @@ def main(args: argparse.Namespace):
     latencies = []
     throughputs = []
     output_lens = []
-
-    for _ in range(args.num_iters):
-        sampled_requests = random.sample(requests, args.batch_size)
+    tot_input_prompts = []
+    tot_output_texts = []
+    print(requests[0])
+    for iter in range(args.num_iters):
+        sampled_requests = requests[args.batch_size * iter: args.batch_size * (iter + 1) ]
 
         for prompt, _, output_len in sampled_requests:
+            #print(prompt)
             sampling_params = SamplingParams(
                 n=1,
                 temperature=args.temperature,
@@ -277,19 +280,19 @@ def main(args: argparse.Namespace):
                 prompt_token_ids=None,
                 sampling_params=sampling_params,
             )
-        generation_latency, output_len = llm._run_engine_benchmark()
+        input_prompts, output_texts = llm._run_engine_benchmark()
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")
 
         # per request per output token latency
-        latency = generation_latency / np.mean(output_len)
-        throughput = np.sum(output_len) / generation_latency
-        latencies.append(latency)
-        throughputs.append(throughput)
-        output_lens.append(np.mean(output_len))
-
-    print(
-        f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
+        tot_input_prompts.extend(input_prompts)
+        tot_output_texts.extend(output_texts)
+    for input_prompts, output_texts in zip(tot_input_prompts, tot_output_texts):
+        # remove '\n' from output_texts
+        input_prompts = input_prompts.replace('\n', '')
+        output_texts = output_texts.replace('\n', '')
+        
+        print(f"result, Input: {input_prompts}, Output: {output_texts}")
 
 
 if __name__ == '__main__':

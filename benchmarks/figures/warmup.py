@@ -188,19 +188,24 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
     return filtered_dataset
 
 
-def warmup(llm):
-    dummy_prompt_token_ids = [[0] * 32] * 32
-    dummy_sampling_params = SamplingParams(
-        n=1,
-        temperature=0.0,
-        top_p=1.0,
-        use_beam_search=False,
-        ignore_eos=True,
-        max_tokens=128,
-    )
-    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+def warmup(llm, requests, batch_size):
+    print("Warmup")
+    dummy_requests = random.sample(requests, batch_size)
+    for prompt, _, output_len in dummy_requests:
+        dummy_sampling_params = SamplingParams(
+            n=1,
+            temperature=0.0,
+            top_p=1.0,
+            use_beam_search=False,
+            ignore_eos=True,
+            max_tokens=output_len,
+        )
+        # FIXME(woosuk): Do not use internal method.
+        llm.generate(prompts=prompt,
                  sampling_params=dummy_sampling_params,
                  use_tqdm=False)
+    print("Warmup done")
+
 
 
 def main(args: argparse.Namespace):
@@ -253,7 +258,7 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     # Warmup
-    warmup(llm)
+    warmup(llm, requests, 32)
 
     latencies = []
     throughputs = []
