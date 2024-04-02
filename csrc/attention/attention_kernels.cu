@@ -412,12 +412,6 @@ namespace vllm
     }
   }
 
-  // 기존 코드
-  inline int logits_idx(int num_tokens, int query_idx, int token_idx)
-  {
-    return query_idx * num_tokens + token_idx;
-  }
-
   // TODO(woosuk): Merge the last two dimensions of the grid.
   // Grid: (num_heads, num_seqs, max_num_partitions).
   template <
@@ -1140,6 +1134,8 @@ namespace vllm
       global_exp_sum[query_idx] = 0.0f;
     }
 
+    float *shared_exp_sums = reinterpret_cast<float *>(shared_mem + sizeof(float) * num_partitions * QUERY_SIZE);
+
     for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
     {
       // Reduce across warps.
@@ -1153,7 +1149,6 @@ namespace vllm
       max_logit[query_idx] = __shfl_sync(uint32_t(-1), max_logit[query_idx], 0);
 
       // Load rescaled exp sums to shared memory.
-      float *shared_exp_sums = reinterpret_cast<float *>(shared_mem + sizeof(float) * num_partitions * QUERY_SIZE);
       const float *exp_sums_ptr = exp_sums + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions;
       for (int i = threadIdx.x; i < num_partitions; i += blockDim.x)
       {
