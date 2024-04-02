@@ -442,7 +442,15 @@ namespace vllm
     const int partition_idx = blockIdx.z;
     const int max_num_partitions = gridDim.z;
     constexpr bool USE_PARTITIONING = PARTITION_SIZE > 0;
-    const int context_len = context_lens[seq_idx];
+
+    int cum_query_len = 0;
+    for (int i = 0; i < seq_idx; i++)
+    {
+      cum_query_len += query_lens[i];
+    }
+
+    // Context length for the last query in the sequence.
+    const int context_len = context_lens[cum_query_len + query_lens[seq_idx] - 1];
 
     // TODO: Get LARGEST context from sequence (window_size + 1th context len)
 
@@ -500,11 +508,6 @@ namespace vllm
     // has 0, 4, 8, ... th vectors of the query, and the second thread has 1, 5, 9, ...
     // th vectors of the query, and so on.
     // NOTE(woosuk): Because q is split from a qkv tensor, it may not be contiguous.
-    int cum_query_len = 0;
-    for (int i = 0; i < seq_idx; i++)
-    {
-      cum_query_len += query_lens[i];
-    }
 
     __shared__ Q_vec q_vecs[QUERY_SIZE][THREAD_GROUP_SIZE][NUM_VECS_PER_THREAD];
 #pragma unroll
