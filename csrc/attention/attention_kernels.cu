@@ -543,7 +543,8 @@ namespace vllm
     // Each warp fetches a block of keys for each iteration.
     // Each thread group in a warp fetches a key from the block, and computes
     // dot product with the query.
-    const int *block_table = block_tables + (cum_query_len + query_idx) * max_num_blocks_per_seq;
+    // get the block table for the last query in the sequence since the block table is the same for all queries in the sequence and longest for the last query
+    const int *block_table = block_tables + (cum_query_len + query_lens[seq_idx] - 1) * max_num_blocks_per_seq;
     for (int block_idx = start_block_idx + warp_idx; block_idx < end_block_idx; block_idx += NUM_WARPS)
     {
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
