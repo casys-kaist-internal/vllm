@@ -543,7 +543,7 @@ namespace vllm
     // Each warp fetches a block of keys for each iteration.
     // Each thread group in a warp fetches a key from the block, and computes
     // dot product with the query.
-    const int *block_table = block_tables + seq_idx * max_num_blocks_per_seq;
+    const int *block_table = block_tables + (cum_query_len + query_idx) * max_num_blocks_per_seq;
     for (int block_idx = start_block_idx + warp_idx; block_idx < end_block_idx; block_idx += NUM_WARPS)
     {
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
@@ -1322,7 +1322,8 @@ void paged_attention_v1_target_launcher(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  int num_seqs = query.size(0);
+  // int num_seqs = query.size(0);
+  int num_seqs = query_lens.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
   int max_num_blocks_per_seq = block_tables.size(1);
@@ -1680,7 +1681,8 @@ void paged_attention_v2_target_launcher(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  int num_seqs = query.size(0);
+  // int num_seqs = query.size(0);
+  int num_seqs = query_lens.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
   int max_num_blocks_per_seq = block_tables.size(1);
