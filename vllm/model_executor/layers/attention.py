@@ -16,7 +16,6 @@ _SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
 
-
 class PagedAttention(nn.Module):
     """MHA/MQA/GQA layer with PagedAttention.
 
@@ -237,22 +236,37 @@ def _paged_attention(
         max_num_partitions == 1 or num_seqs * num_heads > 512)
 
     if use_v1:
-        # Run PagedAttention V1.
-        ops.paged_attention_v1(
-            output,
-            query,
-            key_cache,
-            value_cache,
-            head_mapping,
-            scale,
-            input_metadata.block_tables,
-            input_metadata.context_lens,
-            block_size,
-            input_metadata.max_context_len,
-            alibi_slopes,
-        )
+        if input_metadata.is_target_decode: 
+            # Run PagedAttention V1.
+            ops.paged_attention_v1_target(
+                output,
+                query,
+                key_cache,
+                value_cache,
+                head_mapping,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                input_metadata.query_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+            )
+        else:
+            ops.paged_attention_v1(
+                output,
+                query,
+                key_cache,
+                value_cache,
+                head_mapping,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+            )
     else:
-        # Run PagedAttention V2.
         assert _PARTITION_SIZE % block_size == 0
         tmp_output = torch.empty(
             size=(num_seqs, num_heads, max_num_partitions, head_size),
@@ -265,20 +279,40 @@ def _paged_attention(
             device=output.device,
         )
         max_logits = torch.empty_like(exp_sums)
-        ops.paged_attention_v2(
-            output,
-            exp_sums,
-            max_logits,
-            tmp_output,
-            query,
-            key_cache,
-            value_cache,
-            head_mapping,
-            scale,
-            input_metadata.block_tables,
-            input_metadata.context_lens,
-            block_size,
-            input_metadata.max_context_len,
-            alibi_slopes,
-        )
+        if input_metadata.is_target_decode: 
+            # Run PagedAttention V2.
+            ops.paged_attention_v2_target(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                head_mapping,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                input_metadata.query_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+            )
+        else: 
+            ops.paged_attention_v2(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                head_mapping,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+            )
     return output
