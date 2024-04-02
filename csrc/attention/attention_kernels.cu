@@ -27,7 +27,7 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b)-1) / (b))
-#define QUERY_SIZE 16
+#define QUERY_SIZE 17
 
 namespace vllm
 {
@@ -442,17 +442,24 @@ namespace vllm
     const int partition_idx = blockIdx.z;
     const int max_num_partitions = gridDim.z;
     constexpr bool USE_PARTITIONING = PARTITION_SIZE > 0;
-    const int context_len = context_lens[seq_idx];
+
+    int cum_query_len = 0;
+    for (int i = 0; i < seq_idx; i++)
+    {
+      cum_query_len += query_lens[i];
+    }    
+    const int context_len = context_lens[cum_query_len]; // (hj) This is minimum. Add query_idx to get query-specific context_len    
+    const int max_context_len = context_lens[cum_query_len] + query_lens[seq_idx] - 1; // (hj) This is maximum
 
     // TODO: Get LARGEST context from sequence (window_size + 1th context len)
 
-    if (USE_PARTITIONING && partition_idx * PARTITION_SIZE >= context_len)
+    if (USE_PARTITIONING && partition_idx * PARTITION_SIZE >= max_context_len)
     {
       // No work to do. Terminate the thread block.
       return;
     }
 
-    const int num_context_blocks = DIVIDE_ROUND_UP(context_len, BLOCK_SIZE);
+    const int num_context_blocks = DIVIDE_ROUND_UP(max_context_len, BLOCK_SIZE);
     const int num_blocks_per_partition = USE_PARTITIONING ? PARTITION_SIZE / BLOCK_SIZE : num_context_blocks;
 
     // [start_block_idx, end_block_idx) is the range of blocks to process.
@@ -462,8 +469,8 @@ namespace vllm
 
     // [start_token_idx, end_token_idx) is the range of tokens to process.
     const int start_token_idx = start_block_idx * BLOCK_SIZE;
-    const int end_token_idx = MIN(start_token_idx + num_blocks * BLOCK_SIZE, context_len);
-    const int num_tokens = end_token_idx - start_token_idx;
+    const int end_token_idx = MIN(start_token_idx + num_blocks * BLOCK_SIZE, max_context_len);
+    const int max_num_tokens = end_token_idx - start_token_idx;
 
     constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
     constexpr int NUM_THREAD_GROUPS = NUM_THREADS / THREAD_GROUP_SIZE; // Note: This assumes THREAD_GROUP_SIZE divides NUM_THREADS
@@ -500,11 +507,6 @@ namespace vllm
     // has 0, 4, 8, ... th vectors of the query, and the second thread has 1, 5, 9, ...
     // th vectors of the query, and so on.
     // NOTE(woosuk): Because q is split from a qkv tensor, it may not be contiguous.
-    int cum_query_len = 0;
-    for (int i = 0; i < seq_idx; i++)
-    {
-      cum_query_len += query_lens[i];
-    }
 
     __shared__ Q_vec q_vecs[QUERY_SIZE][THREAD_GROUP_SIZE][NUM_VECS_PER_THREAD];
 #pragma unroll
@@ -574,7 +576,8 @@ namespace vllm
 
         for (int query_idx = 0; query_idx < QUERY_SIZE; query_idx++)
         {
-          int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
+          // int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
+          int n_context_len = context_len + query_idx;
 
           // Compute dot product.
           // This includes a reduction across the threads in the same thread group.
@@ -588,8 +591,7 @@ namespace vllm
             // NOTE(woosuk): It is required to zero out the masked logits.
             const bool mask = token_idx >= n_context_len;
 
-            logits[logits_idx(num_tokens, query_idx, token_idx - start_token_idx)] = mask ? 0.f : qk;
-            // logits[query_idx * num_tokens + token_idx - start_token_idx] = mask ? 0.f : qk;
+            logits[logits_idx(max_num_tokens, query_idx, token_idx - start_token_idx)] = mask ? 0.f : qk;
             // Update the max value.
             qk_max[query_idx] = mask ? qk_max[query_idx] : fmaxf(qk_max[query_idx], qk);
           }
@@ -633,10 +635,14 @@ namespace vllm
 
       // Get the sum of the exp values.
       float exp_sum = 0.f;
+
+      int num_tokens = max_num_tokens - (query_lens[seq_idx] - query_idx - 1);
+      if(num_tokens < 0) num_tokens = 0;
+
       for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
       {
-        float val = __expf(logits[logits_idx(num_tokens, query_idx, i)] - qk_max[query_idx]);
-        logits[logits_idx(num_tokens, query_idx, i)] = val;
+        float val = __expf(logits[logits_idx(max_num_tokens, query_idx, i)] - qk_max[query_idx]);
+        logits[logits_idx(max_num_tokens, query_idx, i)] = val;
         exp_sum += val;
       }
       exp_sum = block_sum<NUM_WARPS>(&red_smem[query_idx][NUM_WARPS], exp_sum);
@@ -647,9 +653,12 @@ namespace vllm
       const float inv_sum = __fdividef(1.f, exp_sum + 1e-6f);
       for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
       {
-        logits[logits_idx(num_tokens, query_idx, i)] *= inv_sum;
+        logits[logits_idx(max_num_tokens, query_idx, i)] *= inv_sum;
       }
     }
+
+    // QK:max good
+    // logits -> Corruption during softmax procedure!
 
     __syncthreads();
 
@@ -708,7 +717,8 @@ namespace vllm
 
           for (int query_idx = query_lens[seq_idx] - 1; query_idx >= 0; query_idx--)
           {
-            int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
+            // int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
+            int n_context_len = context_len + query_idx;
             if (block_idx == num_context_blocks - 1)
             {
               // NOTE(woosuk): When v_vec contains the tokens that are out of the context,
@@ -722,7 +732,7 @@ namespace vllm
               }
             }
             L_vec logits_vec;
-            from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[logits_idx(num_tokens, query_idx, token_idx - start_token_idx)]));
+            from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[logits_idx(max_num_tokens, query_idx, token_idx - start_token_idx)]));
             accs[query_idx][i] += dot(logits_vec, v_vec);
           }
         }
@@ -762,7 +772,7 @@ namespace vllm
       {
         for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
         {
-          float *dst = &out_smem[query_idx * HEAD_SIZE * NUM_WARPS + (warp_idx - mid) * HEAD_SIZE];
+          float *dst = &out_smem[query_idx * HEAD_SIZE * NUM_WARPS + (warp_idx - mid) * HEAD_SIZE]; // TODO
 #pragma unroll
           for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
           {
@@ -1322,7 +1332,8 @@ void paged_attention_v1_target_launcher(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  int num_seqs = query.size(0);
+  // int num_seqs = query.size(0);
+  int num_seqs = query_lens.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
   int max_num_blocks_per_seq = block_tables.size(1);
@@ -1349,7 +1360,9 @@ void paged_attention_v1_target_launcher(
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   int padded_max_context_len = DIVIDE_ROUND_UP(max_context_len, BLOCK_SIZE) * BLOCK_SIZE;
   int logits_size = QUERY_SIZE * padded_max_context_len * sizeof(float);
-  int outputs_size = QUERY_SIZE * (NUM_WARPS / 2) * head_size * sizeof(float);
+  // int outputs_size = QUERY_SIZE * (NUM_WARPS / 2) * head_size * sizeof(float);
+  int outputs_size = QUERY_SIZE * NUM_WARPS * head_size * sizeof(float); // Indexing 잘못해서..
+
   // Python-side check in vllm.worker.worker._check_if_can_support_max_seq_len
   // Keep that in sync with the logic here!
   int shared_mem_size = std::max(logits_size, outputs_size);
@@ -1680,7 +1693,8 @@ void paged_attention_v2_target_launcher(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  int num_seqs = query.size(0);
+  // int num_seqs = query.size(0);
+  int num_seqs = query_lens.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
   int max_num_blocks_per_seq = block_tables.size(1);
@@ -1710,7 +1724,8 @@ void paged_attention_v2_target_launcher(
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   int max_num_partitions = DIVIDE_ROUND_UP(max_context_len, PARTITION_SIZE);
   int logits_size = QUERY_SIZE * PARTITION_SIZE * sizeof(float);
-  int outputs_size = QUERY_SIZE * (NUM_WARPS / 2) * head_size * sizeof(float);
+  // int outputs_size = QUERY_SIZE * (NUM_WARPS / 2) * head_size * sizeof(float);
+  int outputs_size = QUERY_SIZE * NUM_WARPS * head_size * sizeof(float);
 
   // For paged attention v2 kernel.
   dim3 grid(num_heads, num_seqs, max_num_partitions);
