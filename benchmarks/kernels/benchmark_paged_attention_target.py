@@ -9,7 +9,7 @@ from vllm._C import ops
 from typing import List
 
 NUM_BLOCKS = 1024
-PARTITION_SIZE = 512
+PARTITION_SIZE = 8
 
 
 @torch.inference_mode()
@@ -41,9 +41,13 @@ def main(
     query = torch.empty(
         sum_query_lens, num_query_heads, head_size, dtype=dtype, device="cuda"
     )
-    # query.uniform_(-scale, scale)
-    # Fill with ones
-    query.fill_(1.0)
+    if use_random or True:
+        query.uniform_(-scale, scale)
+    else:
+        n_query_lens = [0] + query_lens
+        # for i in range(len(query_lens)):
+            # query[n_query_lens[i]:n_query_lens[i+1], :, :] = i
+        query.fill_(1.0)
 
     assert num_query_heads % num_kv_heads == 0
     num_queries_per_kv = num_query_heads // num_kv_heads
@@ -69,15 +73,31 @@ def main(
         ]
         block_tables.append(block_table)
     block_tables = torch.tensor(block_tables, dtype=torch.int, device="cuda")
+    
+    # For original kernel, all sequences have same block tables
+    block_tables_validation = []
+    block_table = [
+        random.randint(0, NUM_BLOCKS - 1) for _ in range(max_num_blocks_per_seq)
+    ]
+    for _ in range(sum_query_lens):
+        block_tables_validation.append(block_table)
+    block_tables_validation = torch.tensor(block_tables_validation, dtype=torch.int, device="cuda")
+
 
     # Create the KV cache.
     x = 16 // torch.tensor([], dtype=dtype).element_size()
     key_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size // x, block_size, x)
     key_cache = torch.empty(size=key_cache_shape, dtype=dtype, device="cuda")
-    key_cache.uniform_(-scale, scale)
+    if use_random:
+        key_cache.uniform_(-scale, scale)
+    else:
+        key_cache.fill_(1.0)
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
     value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
-    value_cache.uniform_(-scale, scale)
+    if use_random:
+        value_cache.uniform_(-scale, scale)
+    else:
+        value_cache.fill_(1.0)
 
     # Prepare for the paged attention kernel.
     output = torch.empty_like(query)
@@ -104,6 +124,18 @@ def main(
         max_logits = torch.empty_like(exp_sums)
 
     def run_benchmark(num_iters: int, profile: bool = False) -> float:
+        
+        print("Running benchmark with shapes:")
+        print(f"  query: {query.shape}")
+        print(f"  key_cache: {key_cache.shape}")
+        print(f"  value_cache: {value_cache.shape}")
+        
+        print("Query Information")
+        print("Num Seqs : ", num_seqs)
+        print("Query Lens : ", query_lens)
+        print("Context Lens : ", context_lens)
+        
+        
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
@@ -133,7 +165,7 @@ def main(
                     value_cache,
                     head_mapping,
                     scale,
-                    block_tables,
+                    block_tables_validation,
                     context_lens,
                     block_size,
                     max_context_len,
@@ -169,7 +201,7 @@ def main(
                     value_cache,
                     head_mapping,
                     scale,
-                    block_tables,
+                    block_tables_validation,
                     context_lens,
                     block_size,
                     max_context_len,
@@ -206,14 +238,14 @@ def main(
 
     # Warmup.
     print("Warming up...")
-    run_benchmark(num_iters=3, profile=False)
+    run_benchmark(num_iters=1, profile=False)
 
     # Benchmark.
-    if do_profile:
-        latency = run_benchmark(num_iters=1, profile=True)
-    else:
-        latency = run_benchmark(num_iters=100, profile=False)
-    print(f"Kernel running time: {latency:.3f} ms")
+    # if do_profile:
+    #     latency = run_benchmark(num_iters=1, profile=True)
+    # else:
+    #     latency = run_benchmark(num_iters=100, profile=False)
+    # print(f"Kernel running time: {latency:.3f} ms")
 
 
 if __name__ == "__main__":
@@ -221,10 +253,10 @@ if __name__ == "__main__":
         description="Benchmark the paged attention kernel."
     )
     parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v1")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--context-len", type=int, default=4096)
-    parser.add_argument("--num-query-heads", type=int, default=64)
-    parser.add_argument("--num-kv-heads", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--context-len", type=int, default=16)
+    parser.add_argument("--num-query-heads", type=int, default=1)
+    parser.add_argument("--num-kv-heads", type=int, default=1)
     parser.add_argument(
         "--head-size", type=int, choices=[64, 80, 96, 112, 128, 256], default=128
     )
@@ -234,6 +266,8 @@ if __name__ == "__main__":
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--use-random", type=bool, default=False)
+
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
     print(args)
@@ -247,8 +281,22 @@ if __name__ == "__main__":
     }
 
     # (hj) : Added context_lens and query_lens as input
-    context_lens = [args.context_len] * args.batch_size
-    query_lens = [2] * args.batch_size  # TODO : Add query lens as arg
+    # context_lens = [args.context_len] * args.batch_size
+
+    # For context len, do it for each query
+    def gen_context_len(max_context_len_per_query : List[int], query_lens : List[int]):
+        res = []
+        for query_len, c_max in zip(query_lens, max_context_len_per_query):
+            for i in range(query_len):
+                res.append(c_max - (query_len - i - 1))
+        return res
+        
+    query_lens = [10] * args.batch_size  # TODO : Add query lens as arg
+
+    context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)
+    
+    print("Context Lens : ", context_lens)    
+    
 
     main(
         version=args.version,
@@ -263,4 +311,5 @@ if __name__ == "__main__":
         dtype=dtype_to_torch_dtype[args.dtype],
         seed=args.seed,
         do_profile=args.profile,
+        use_random=args.use_random,
     )
