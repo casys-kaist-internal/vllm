@@ -268,6 +268,9 @@ class SpSModelRunner:
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
                                     device="cuda")
+        query_lens = torch.tensor(target_lens, 
+                                  dtype=torch.int, 
+                                  device="cuda")
         max_block_table_len = max([len(t) for t in block_tables])
         block_tables = _make_tensor_with_pad(block_tables,
                                              max_len=max_block_table_len,
@@ -281,6 +284,7 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            query_lens=query_lens,
             block_tables=block_tables,
         )
         return input_tokens, input_positions, input_metadata
