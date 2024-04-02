@@ -72,8 +72,7 @@ def main(args: argparse.Namespace):
             seed=args.seed,
             trust_remote_code=args.trust_remote_code,
             dtype=args.dtype,
-            download_dir=download_dir,
-            load_format="dummy"
+            download_dir=download_dir
         )
     elif args.engine == "sps":
         llm = SpSLLM(

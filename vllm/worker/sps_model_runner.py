@@ -114,6 +114,7 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            query_lens=None,
             block_tables=None,
         )
         return input_tokens, input_positions, input_metadata
@@ -197,6 +198,7 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            query_lens=None,
             block_tables=block_tables,
         )
         return input_tokens, input_positions, input_metadata
