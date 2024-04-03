@@ -25,6 +25,9 @@ def main(
     block_size: int,
     dtype: torch.dtype,
     seed: int,
+    do_profile: bool,
+    use_random : bool,
+    target: bool,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
@@ -39,7 +42,13 @@ def main(
     query = torch.empty(
         sum_query_lens, num_query_heads, head_size, dtype=dtype, device="cuda"
     )
-    query.uniform_(-scale, scale)
+    if use_random:
+        query.uniform_(-scale, scale)
+    else:
+        n_query_lens = [0] + query_lens
+        # for i in range(len(query_lens)):
+            # query[n_query_lens[i]:n_query_lens[i+1], :, :] = i
+        query.fill_(1.0)
 
     assert num_query_heads % num_kv_heads == 0
     num_queries_per_kv = num_query_heads // num_kv_heads
@@ -76,11 +85,16 @@ def main(
     x = 16 // torch.tensor([], dtype=dtype).element_size()
     key_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size // x, block_size, x)
     key_cache = torch.empty(size=key_cache_shape, dtype=dtype, device="cuda")
-    key_cache.uniform_(-scale, scale)
-
+    if use_random:
+        key_cache.uniform_(-scale, scale)
+    else:
+        key_cache.fill_(1.0)
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
     value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
-    value_cache.uniform_(-scale, scale)
+    if use_random:
+        value_cache.uniform_(-scale, scale)
+    else:
+        value_cache.fill_(1.0)
 
     # Prepare for the paged attention kernel.
     output = torch.empty_like(query)
@@ -106,84 +120,7 @@ def main(
         )
         max_logits = torch.empty_like(exp_sums)
 
-    def run_validation() -> bool:
-        if version == "v1":
-            ops.paged_attention_v1(
-                validation_output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                block_tables_validation,
-                context_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-            )
-            ops.paged_attention_v1_target(
-                output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                block_tables,
-                context_lens,
-                query_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-            )
-        elif version == "v2":
-            ops.paged_attention_v2(
-                validation_output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                block_tables_validation,
-                context_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-            )
-            ops.paged_attention_v2_target(
-                output,
-                exp_sums,
-                max_logits,
-                tmp_output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                block_tables,
-                context_lens,
-                query_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-            )
-        else:
-            raise ValueError(f"Invalid version: {version}")
-
-        # Print output and validation 
-        # print("Output : ", output)
-        # print("Validation Output : ", validation_output)
-        # (hj) Output format is [num_seqs x query_lens, num_query_heads, head_size]
-        
-        # Compare differences
-        print("Max diff : ", torch.max(torch.abs(output - validation_output)))
-        print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
-
-        # check difference of output and validation_output is same as 0 
-        validation_success = torch.allclose(output, validation_output)
-        
-        return validation_success
-
-    def run_benchmark(target:bool, num_iters: int) -> float:
+    def run_benchmark(target: bool, num_iters: int, profile: bool = False) -> float:
         
         # print("Running benchmark with shapes:")
         # print(f"  query: {query.shape}")
@@ -195,7 +132,14 @@ def main(
         # print("Query Lens : ", query_lens)
         # print("Context Lens : ", context_lens)
 
-        def run():
+        print("Running benchmark with target:", target)
+        
+        torch.cuda.synchronize()
+        if profile:
+            torch.cuda.cudart().cudaProfilerStart()
+        start_time = time.perf_counter_ns()
+
+        for _ in range(num_iters):
             if version == "v1":
                 if target:
                     ops.paged_attention_v1_target(
@@ -213,6 +157,7 @@ def main(
                         alibi_slopes,
                     )
                 else:
+                    # Validation
                     ops.paged_attention_v1(
                         validation_output,
                         query,
@@ -226,6 +171,7 @@ def main(
                         max_context_len,
                         alibi_slopes,
                     )
+                
             elif version == "v2":
                 if target:
                     ops.paged_attention_v2_target(
@@ -246,6 +192,7 @@ def main(
                         alibi_slopes,
                     )
                 else:
+                    # Validation
                     ops.paged_attention_v2(
                         validation_output,
                         exp_sums,
@@ -264,41 +211,49 @@ def main(
                     )
             else:
                 raise ValueError(f"Invalid version: {version}")
-        
-        # Warmup.
-        for _ in range(3):
-            run()
+        torch.cuda.synchronize()
 
-        torch.cuda.synchronize()
-        start_time = time.perf_counter_ns()
-        for _ in range(num_iters):
-            run()
-        torch.cuda.synchronize()
         end_time = time.perf_counter_ns()
+        if profile:
+            torch.cuda.cudart().cudaProfilerStart()
 
         elasped_time_ns = (end_time - start_time) / num_iters
         elasped_time_ms = elasped_time_ns / 1e6
         
+        # # Print output and validation 
+        # print(output.shape)
+        # # print("Output : ", output)
+        # # print("Validation Output : ", validation_output)
+        # # (hj) Output format is [num_seqs x query_lens, num_query_heads, head_size]
+        
+        # # Compare differences
+        # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
+        # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
+        # # Visualize the differences
+        # print("Output : ", output[0, 0, :])
+        # print("Validation Output : ", validation_output[0, 0, :])
+        
         return elasped_time_ms
 
-    # Validation
-    success = run_validation()
-    print("Validation success: ", success)
+    # Warmup.
+    print("Warming up...")
+    run_benchmark(target=target, num_iters=3, profile=False)
 
-    original_latency = run_benchmark(target=False, num_iters=100)
-    target_latency = run_benchmark(target=True, num_iters=100)
+    # Benchmark.
+    if do_profile:
+        latency = run_benchmark(target=target, num_iters=1, profile=True)
+    else:
+        latency = run_benchmark(target=target, num_iters=100, profile=False)
+    print(f"Kernel running time: {latency:.3f} ms")
 
-    print(f"Original kernel running time: {original_latency:.3f} ms")
-    print(f"Target kernel running time: {target_latency:.3f} ms")
-    print(f"Speedup : {original_latency / target_latency:.3f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the paged attention kernel."
     )
-    parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v1")
-    parser.add_argument("--batch-size", type=int, default=108)
-    parser.add_argument("--context-len", type=int, default=1024)
+    parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v2")
+    parser.add_argument("--batch-size", type=int, default=12)
+    parser.add_argument("--context-len", type=int, default=16)
     parser.add_argument("--num-query-heads", type=int, default=16)
     parser.add_argument("--num-kv-heads", type=int, default=16)
     parser.add_argument(
@@ -310,7 +265,9 @@ if __name__ == "__main__":
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--query-len", type=int, default=-1) # -1 is random
+    parser.add_argument("--use-random", type=bool, default=True)
+    parser.add_argument("--target", action="store_true")
+    parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
     if args.num_query_heads % args.num_kv_heads != 0:
@@ -321,6 +278,9 @@ if __name__ == "__main__":
         "float": torch.float,
     }
 
+    # (hj) : Added context_lens and query_lens as input
+    # context_lens = [args.context_len] * args.batch_size
+
     # For context len, do it for each query
     def gen_context_len(max_context_len_per_query : List[int], query_lens : List[int]):
         res = []
@@ -329,15 +289,13 @@ if __name__ == "__main__":
                 res.append(c_max - (query_len - i - 1))
         return res
         
-    if args.query_len == -1:
-        query_lens = [random.randint(2, 16) for _ in range(args.batch_size)]
-    else:
-        query_lens = [args.query_len] * args.batch_size
+    # query_lens = [10] * args.batch_size  # TODO : Add query lens as arg
+    query_lens = [random.randint(4, 16) for _ in range(args.batch_size)]
 
-    if args.context_len == -1:
-        context_lens = gen_context_len([random.randint(256, 1024) for _ in range(args.batch_size)], query_lens)
-    else:
-        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)    
+    context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)
+    
+    # print("Context Lens : ", context_lens)    
+    
 
     main(
         version=args.version,
@@ -350,5 +308,8 @@ if __name__ == "__main__":
         block_size=args.block_size,
         use_alibi=args.use_alibi,
         dtype=dtype_to_torch_dtype[args.dtype],
-        seed=args.seed
+        seed=args.seed,
+        do_profile=args.profile,
+        use_random=args.use_random,
+        target=args.target,
     )
