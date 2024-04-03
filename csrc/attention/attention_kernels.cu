@@ -447,8 +447,8 @@ namespace vllm
     for (int i = 0; i < seq_idx; i++)
     {
       cum_query_len += query_lens[i];
-    }    
-    const int context_len = context_lens[cum_query_len]; // (hj) This is minimum. Add query_idx to get query-specific context_len    
+    }
+    const int context_len = context_lens[cum_query_len];                               // (hj) This is minimum. Add query_idx to get query-specific context_len
     const int max_context_len = context_lens[cum_query_len] + query_lens[seq_idx] - 1; // (hj) This is maximum
 
     // TODO: Get LARGEST context from sequence (window_size + 1th context len)
@@ -637,7 +637,8 @@ namespace vllm
       float exp_sum = 0.f;
 
       int num_tokens = max_num_tokens - (query_lens[seq_idx] - query_idx - 1);
-      if(num_tokens < 0) num_tokens = 0;
+      if (num_tokens < 0)
+        num_tokens = 0;
 
       for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
       {
