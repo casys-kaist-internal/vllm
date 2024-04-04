@@ -21,8 +21,8 @@ SUPPORTED_ARCHS = {"8.0", "8.6"}
 # Compiler flags.
 CXX_FLAGS = ["-g", "-O2", "-std=c++17"]
 # TODO(woosuk): Should we use -O3?
-# NVCC_FLAGS = ["-O2", "-std=c++17", "-G"]
-NVCC_FLAGS = ["-O2", "-std=c++17"]
+NVCC_FLAGS = ["-O0", "-std=c++17", "-g", "-G", "-lineinfo"] # Debugigng mode
+# NVCC_FLAGS = ["-O2", "-std=c++17"]
 
 ABI = 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
 CXX_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
