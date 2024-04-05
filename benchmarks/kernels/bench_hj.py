@@ -9,8 +9,8 @@ from vllm._C import ops
 
 from typing import List
 
-NUM_BLOCKS = 1024
-PARTITION_SIZE = 16
+NUM_BLOCKS = 2048
+PARTITION_SIZE = 512
 
 # too_many_blocks exception define
 class TooManyBlocks(Exception):
@@ -218,51 +218,50 @@ def main(
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
                 
         
-        for head in range(0,1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    print("Seq : ", s, " Head : ", head, " Query : ", q)
-                    out = output[s * query_lens[s] + q, head]
-                    val = validation_output[s * query_lens[s] + q, head]
-                    # to list
-                    out = out.tolist()
-                    val = val.tolist()
-                    # Print both, format to 3 decimal places   
-                    r1 = [round(x, 3) for x in out]
-                    r2 = [round(x, 3) for x in val]
-                    
-                    # Print both, format to 3 decimal places
-                    # All values formatted to fit in 10 space 
-                    for i in range(len(r1)):
-                        print(f"{r1[i]:<10} {r2[i]:<10}")
-
-                    
-                    
-        # print("-------------------")
-        # # TEMP 결과물 비교비교
-        # for s in range(num_seqs):
-        #     for head in range(num_query_heads):
+        # for head in range(0,1):
+        #     for s in range(num_seqs):
         #         for q in range(query_lens[s]):
         #             print("Seq : ", s, " Head : ", head, " Query : ", q)
-                    
-
-        #             print(s*query_lens[s] + q, 0, head)
-        #             print(tmp_output_target.shape, tmp_output.shape)
-                    
-        #             # sum_query_lens, num_query_heads, num_partitions, head_size
-                    
-        #             out = tmp_output_target[s * query_lens[s] + q, head, 0]
-        #             val = tmp_output[s * query_lens[s] + q, head, 0]
-                    
-        #             print(out.shape)
-        #             print(val.shape)
-                    
+        #             out = output[s * query_lens[s] + q, head]
+        #             val = validation_output[s * query_lens[s] + q, head]
         #             # to list
         #             out = out.tolist()
         #             val = val.tolist()
+        #             # Print both, format to 3 decimal places   
+        #             r1 = [round(x, 3) for x in out]
+        #             r2 = [round(x, 3) for x in val]
+                    
         #             # Print both, format to 3 decimal places
-        #             print([round(x, 3) for x in out])
-        #             print([round(x, 3) for x in val])        
+        #             # All values formatted to fit in 10 space 
+        #             for i in range(len(r1)):
+        #                 print(f"{r1[i]:<10} {r2[i]:<10}")
+
+        
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        
+        # for head in range(0,1):
+        #     for s in range(num_seqs):
+        #         for q in range(query_lens[s]):
+        #             for part in range(num_partitions):
+        #                 print("Seq : ", s, " Head : ", head, " Query : ", q)
+        #                 out = tmp_output_target[s * query_lens[s] + q, head, part]
+        #                 val = tmp_output[s * query_lens[s] + q, head, part]
+        #                 # to list
+        #                 out = out.tolist()
+        #                 val = val.tolist()
+        #                 # Print both, format to 3 decimal places   
+        #                 r1 = [round(x, 3) for x in out]
+        #                 r2 = [round(x, 3) for x in val]
+                        
+        #                 # Print both, format to 3 decimal places
+        #                 # All values formatted to fit in 10 space 
+        #                 print("Part : ", part)
+        #                 for i in range(len(r1)):
+        #                     print(f"{r1[i]:<10} {r2[i]:<10}")
 
         
         if not torch.allclose(output, validation_output):
@@ -446,30 +445,34 @@ if __name__ == "__main__":
         seed=args.seed
     )
 
-    # # FUZZING
-    # for query_len in range(2,3):
-    #     for context_len in range(query_len,1024,1):
-    #         for num_seqs in range(1, 150): # Realistically will not go up to 150
-    #             query_lens = [query_len] * num_seqs
-    #             context_lens = gen_context_len([context_len] * num_seqs, query_lens)
-    #             try :
-    #                 main(
-    #                     version=args.version,
-    #                     num_seqs=num_seqs,
-    #                     context_lens=context_lens,
-    #                     query_lens=query_lens,
-    #                     num_query_heads=args.num_query_heads,
-    #                     num_kv_heads=args.num_kv_heads,
-    #                     head_size=args.head_size,
-    #                     block_size=args.block_size,
-    #                     use_alibi=args.use_alibi,
-    #                     dtype=dtype_to_torch_dtype[args.dtype],
-    #                     seed=args.seed
-    #                 )
-    #                 print("PASS query_len : ", query_len, " context_len : ", context_len, " num_seqs : ", num_seqs)
-    #             except TooManyBlocks as e:
-    #                 print("SKIP : ", query_len, " context_len : ", context_len, " num_seqs : ", num_seqs)
-    #             except Exception as e:
-    #                 print("Failed with query_len : ", query_len, " context_len : ", context_len, " num_seqs : ", num_seqs)
-    #                 print(e)
-    #                 break
+    # FUZZING
+    # for query_len in range(1,16):
+    # for context_len in range(query_len,1024,15):
+    # for num_seqs in range(1, 150, 1): # Realistically will not go up to 150
+    #     # query_lens = [query_len] * num_seqs
+    #     query_lens = [random.randint(1, 16) for _ in range(num_seqs)]
+    #     # context_lens = gen_context_len([context_len] * num_seqs, query_lens)
+    #     context_lens = gen_context_len([random.randint(256, 4096) for _ in range(num_seqs)], query_lens)
+    #     try :
+    #         main(
+    #             version=args.version,
+    #             num_seqs=num_seqs,
+    #             context_lens=context_lens,
+    #             query_lens=query_lens,
+    #             num_query_heads=args.num_query_heads,
+    #             num_kv_heads=args.num_kv_heads,
+    #             head_size=args.head_size,
+    #             block_size=args.block_size,
+    #             use_alibi=args.use_alibi,
+    #             dtype=dtype_to_torch_dtype[args.dtype],
+    #             seed=args.seed
+    #         )
+    #         average_query_len = sum(query_lens) / num_seqs
+    #         average_context_len = sum(context_lens) / num_seqs
+    #         print("PASS query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
+    #     except TooManyBlocks as e:
+    #         print("SKIP : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
+    #     except Exception as e:
+    #         print("Failed with query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
+    #         print(e)
+    #         break
