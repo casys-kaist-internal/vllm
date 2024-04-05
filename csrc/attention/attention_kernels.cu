@@ -645,9 +645,27 @@ namespace vllm
       // Get the sum of the exp values.
       float exp_sum = 0.f;
 
-      int num_tokens = max_num_tokens - (query_lens[seq_idx] - query_idx - 1);
-      if (num_tokens < 0)
-        num_tokens = 0;
+      // 1. query 당 num_token
+      // 2. query 당 parition 갯수
+      // 3. if last, subtract
+      int context_len_for_query = context_lens[cum_query_len + query_idx];
+      int partitions_needed = DIVIDE_ROUND_UP(context_len_for_query, PARTITION_SIZE);
+
+      // If last, subtract
+      int num_tokens;
+
+      if(partitions_needed > partition_idx + 1)
+      {
+        num_tokens = PARTITION_SIZE;
+      }
+      else if (partitions_needed == partition_idx + 1)
+      {
+        num_tokens = context_len_for_query - partition_idx * PARTITION_SIZE;
+      }
+      else
+      {
+        continue;
+      }
 
       for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
       {
@@ -728,7 +746,8 @@ namespace vllm
           {
             // int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
             int n_context_len = context_len + query_idx;
-            if (block_idx == num_context_blocks - 1)
+            int n_num_context_blocks = DIVIDE_ROUND_UP(n_context_len, BLOCK_SIZE);
+            if (block_idx == n_num_context_blocks - 1)
             {
               // NOTE(woosuk): When v_vec contains the tokens that are out of the context,
               // we should explicitly zero out the values since they may contain NaNs.
@@ -770,7 +789,7 @@ namespace vllm
 
     // Perform reduction across warps.
     float *out_smem = reinterpret_cast<float *>(shared_mem); // TODO 배열 정하기
-                                                             // out_smem : [QUERY_SIZE ,NUM_WARPS, HEAD_SIZE]
+
 
 #pragma unroll
     for (int i = NUM_WARPS; i > 1; i /= 2)
@@ -1081,8 +1100,11 @@ namespace vllm
     {
       cum_query_len += query_lens[i];
     }
-    const int context_len = context_lens[cum_query_len + query_lens[seq_idx] - 1];
-    const int num_partitions = DIVIDE_ROUND_UP(context_len, PARTITION_SIZE);
+    // const int context_len = context_lens[cum_query_len + query_lens[seq_idx] - 1];
+    const int context_len = context_lens[cum_query_len];                               // (hj) This is minimum. Add query_idx to get query-specific context_len
+    const int max_context_len = context_lens[cum_query_len] + query_lens[seq_idx] - 1; // (hj) This is maximum
+
+    const int num_partitions = DIVIDE_ROUND_UP(max_context_len, PARTITION_SIZE);
 
     if (num_partitions == 1)
     {
@@ -1383,24 +1405,24 @@ void paged_attention_v1_target_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  case 64:
-    LAUNCH_PAGED_ATTENTION_V1_TARGET(64);
-    break;
-  case 80:
-    LAUNCH_PAGED_ATTENTION_V1_TARGET(80);
-    break;
-  case 96:
-    LAUNCH_PAGED_ATTENTION_V1_TARGET(96);
-    break;
-  case 112:
-    LAUNCH_PAGED_ATTENTION_V1_TARGET(112);
-    break;
+  // case 64:
+  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(64);
+  //   break;
+  // case 80:
+  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(80);
+  //   break;
+  // case 96:
+  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(96);
+  //   break;
+  // case 112:
+  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(112);
+  //   break;
   case 128:
     LAUNCH_PAGED_ATTENTION_V1_TARGET(128);
     break;
-  case 256:
-    LAUNCH_PAGED_ATTENTION_V1_TARGET(256);
-    break;
+  // case 256:
+  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(256);
+  //   break;
   default:
     TORCH_CHECK(false, "Unsupported head size: ", head_size);
     break;
@@ -1439,14 +1461,8 @@ void paged_attention_v1_target_launcher(
 #define CALL_V1_LAUNCHER_BLOCK_SIZE(T)                          \
   switch (block_size)                                           \
   {                                                             \
-  case 8:                                                       \
-    CALL_V1_LAUNCHER(T, 8);                                     \
-    break;                                                      \
   case 16:                                                      \
     CALL_V1_LAUNCHER(T, 16);                                    \
-    break;                                                      \
-  case 32:                                                      \
-    CALL_V1_LAUNCHER(T, 32);                                    \
     break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
@@ -1458,14 +1474,8 @@ void paged_attention_v1_target_launcher(
 #define CALL_V1_TARGET_LAUNCHER_BLOCK_SIZE(T)                   \
   switch (block_size)                                           \
   {                                                             \
-  case 8:                                                       \
-    CALL_V1_TARGET_LAUNCHER(T, 8);                              \
-    break;                                                      \
   case 16:                                                      \
     CALL_V1_TARGET_LAUNCHER(T, 16);                             \
-    break;                                                      \
-  case 32:                                                      \
-    CALL_V1_TARGET_LAUNCHER(T, 32);                             \
     break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
@@ -1517,17 +1527,9 @@ void paged_attention_v1_target(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  if (query.dtype() == at::ScalarType::Float)
-  {
-    CALL_V1_TARGET_LAUNCHER_BLOCK_SIZE(float);
-  }
-  else if (query.dtype() == at::ScalarType::Half)
+  if (query.dtype() == at::ScalarType::Half)
   {
     CALL_V1_TARGET_LAUNCHER_BLOCK_SIZE(uint16_t);
-  }
-  else if (query.dtype() == at::ScalarType::BFloat16)
-  {
-    CALL_V1_TARGET_LAUNCHER_BLOCK_SIZE(__nv_bfloat16);
   }
   else
   {
@@ -1656,24 +1658,24 @@ void paged_attention_v2_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  case 64:
-    LAUNCH_PAGED_ATTENTION_V2(64);
-    break;
-  case 80:
-    LAUNCH_PAGED_ATTENTION_V2(80);
-    break;
-  case 96:
-    LAUNCH_PAGED_ATTENTION_V2(96);
-    break;
-  case 112:
-    LAUNCH_PAGED_ATTENTION_V2(112);
-    break;
+  // case 64:
+  //   LAUNCH_PAGED_ATTENTION_V2(64);
+  //   break;
+  // case 80:
+  //   LAUNCH_PAGED_ATTENTION_V2(80);
+  //   break;
+  // case 96:
+  //   LAUNCH_PAGED_ATTENTION_V2(96);
+  //   break;
+  // case 112:
+  //   LAUNCH_PAGED_ATTENTION_V2(112);
+  //   break;
   case 128:
     LAUNCH_PAGED_ATTENTION_V2(128);
     break;
-  case 256:
-    LAUNCH_PAGED_ATTENTION_V2(256);
-    break;
+  // case 256:
+  //   LAUNCH_PAGED_ATTENTION_V2(256);
+  //   break;
   default:
     TORCH_CHECK(false, "Unsupported head size: ", head_size);
     break;
@@ -1748,24 +1750,24 @@ void paged_attention_v2_target_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  case 64:
-    LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
-    break;
-  case 80:
-    LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
-    break;
-  case 96:
-    LAUNCH_PAGED_ATTENTION_V2_TARGET(96);
-    break;
-  case 112:
-    LAUNCH_PAGED_ATTENTION_V2_TARGET(112);
-    break;
+  // case 64:
+  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
+  //   break;
+  // case 80:
+  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
+  //   break;
+  // case 96:
+  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(96);
+  //   break;
+  // case 112:
+  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(112);
+  //   break;
   case 128:
     LAUNCH_PAGED_ATTENTION_V2_TARGET(128);
     break;
-  case 256:
-    LAUNCH_PAGED_ATTENTION_V2_TARGET(256);
-    break;
+  // case 256:
+  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(256);
+  //   break;
   default:
     TORCH_CHECK(false, "Unsupported head size: ", head_size);
     break;
@@ -1810,14 +1812,8 @@ void paged_attention_v2_target_launcher(
 #define CALL_V2_LAUNCHER_BLOCK_SIZE(T)                          \
   switch (block_size)                                           \
   {                                                             \
-  case 8:                                                       \
-    CALL_V2_LAUNCHER(T, 8);                                     \
-    break;                                                      \
   case 16:                                                      \
     CALL_V2_LAUNCHER(T, 16);                                    \
-    break;                                                      \
-  case 32:                                                      \
-    CALL_V2_LAUNCHER(T, 32);                                    \
     break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
@@ -1829,14 +1825,8 @@ void paged_attention_v2_target_launcher(
 #define CALL_V2_TARGET_LAUNCHER_BLOCK_SIZE(T)                   \
   switch (block_size)                                           \
   {                                                             \
-  case 8:                                                       \
-    CALL_V2_TARGET_LAUNCHER(T, 8);                              \
-    break;                                                      \
   case 16:                                                      \
     CALL_V2_TARGET_LAUNCHER(T, 16);                             \
-    break;                                                      \
-  case 32:                                                      \
-    CALL_V2_TARGET_LAUNCHER(T, 32);                             \
     break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
@@ -1894,17 +1884,9 @@ void paged_attention_v2_target(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes)
 {
-  if (query.dtype() == at::ScalarType::Float)
-  {
-    CALL_V2_TARGET_LAUNCHER_BLOCK_SIZE(float);
-  }
-  else if (query.dtype() == at::ScalarType::Half)
+  if (query.dtype() == at::ScalarType::Half)
   {
     CALL_V2_TARGET_LAUNCHER_BLOCK_SIZE(uint16_t);
-  }
-  else if (query.dtype() == at::ScalarType::BFloat16)
-  {
-    CALL_V2_TARGET_LAUNCHER_BLOCK_SIZE(__nv_bfloat16);
   }
   else
   {
