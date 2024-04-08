@@ -709,7 +709,7 @@ namespace vllm
 
     const int query_len = query_lens[seq_idx]; // Number of queries for current seq
 
-    constexpr int NUM_HEADS_PER_WARP = 32;
+    constexpr int NUM_HEADS_PER_WARP = HEAD_SIZE / 4;
     constexpr int WARPS_PER_WARP_GROUP = HEAD_SIZE / NUM_HEADS_PER_WARP; // 8
     constexpr int NUM_WARP_GROUPS = NUM_WARPS / WARPS_PER_WARP_GROUP; // 8 / 8 = 1
     constexpr int NUM_THREADS_PER_WARP_GROUP = WARPS_PER_WARP_GROUP * WARP_SIZE; // = 32 * 8 = 256
