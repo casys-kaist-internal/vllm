@@ -388,8 +388,8 @@ if __name__ == "__main__":
     parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v1")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--context-len", type=int, default=1024)
-    parser.add_argument("--num-query-heads", type=int, default=1)
-    parser.add_argument("--num-kv-heads", type=int, default=1)
+    parser.add_argument("--num-query-heads", type=int, default=64)
+    parser.add_argument("--num-kv-heads", type=int, default=8)
     parser.add_argument(
         "--head-size", type=int, choices=[64, 80, 96, 112, 128, 256], default=128
     )
