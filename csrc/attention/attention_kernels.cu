@@ -707,23 +707,37 @@ namespace vllm
     using L_vec = typename Vec<scalar_t, V_VEC_SIZE>::Type;
     using Float_L_vec = typename FloatVec<L_vec>::Type;
 
+    constexpr int QUERIES_PER_WARP_GROUP = 4; // QUERY_SIZE
+    constexpr int NUM_WARPS_PER_HEAD = 2;     // Tiling parameter for head_size
+
+    constexpr int NUM_WARPS_PER_QUERY_SIZE = QUERY_SIZE / QUERIES_PER_WARP_GROUP;
+
+    constexpr int NUM_WARPS_Z = NUM_WARPS_PER_QUERY_SIZE;              // query_len tiling
+    constexpr int NUM_WARPS_Y = NUM_WARPS_PER_HEAD;                    // head_size tiling
+    constexpr int NUM_WARPS_X = NUM_WARPS / NUM_WARPS_Y / NUM_WARPS_Z; // context_len tiling
+
+    constexpr int NUM_COLS_PER_WARP = HEAD_SIZE / NUM_WARPS_PER_HEAD; // 128 / 1 = 128
+
     constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;
     constexpr int NUM_ROWS_PER_ITER = WARP_SIZE / NUM_V_VECS_PER_ROW;
-    constexpr int NUM_ROWS_PER_THREAD = DIVIDE_ROUND_UP(HEAD_SIZE, NUM_ROWS_PER_ITER);
+    constexpr int NUM_ROWS_PER_THREAD = DIVIDE_ROUND_UP(NUM_COLS_PER_WARP, NUM_ROWS_PER_ITER);
 
-    constexpr int QUERIES_PER_WARP_GROUP = 2;                        // QUERY_SIZE
-    constexpr int NUM_WARPS_Y = QUERY_SIZE / QUERIES_PER_WARP_GROUP; // 4
-    constexpr int NUM_WARPS_X = NUM_WARPS / NUM_WARPS_Y;             // 1
+    assert(NUM_WARPS_X * NUM_WARPS_Y * NUM_WARPS_Z == NUM_WARPS);
 
     // TODO: may change w.r.t scheduling
-    int warp_idx_x = warp_idx % NUM_WARPS_X; // for now, x is contiguious
-    int warp_idx_y = warp_idx / NUM_WARPS_X;
+    int warp_idx_x = warp_idx % NUM_WARPS_X;                 // context_len tiling
+    int warp_idx_y = (warp_idx / NUM_WARPS_X) % NUM_WARPS_Y; // head_size tiling
+    int warp_idx_z = warp_idx / NUM_WARPS_X / NUM_WARPS_Y;   // query_len tiling
 
+    // Row w.r.t head_size
+    const int start_row_idx = warp_idx_y * NUM_COLS_PER_WARP;
+    const int max_row_idx = start_row_idx + NUM_COLS_PER_WARP;
     // NOTE(woosuk): We use FP32 for the accumulator for better accuracy.
     float accs[QUERIES_PER_WARP_GROUP][NUM_ROWS_PER_THREAD];
 
     int query_len = query_lens[seq_idx];
 
+#pragma unroll
     for (int query_idx = 0; query_idx < QUERIES_PER_WARP_GROUP; query_idx++) // For loop with undetermined size. This may be critical to performance (ie. unrolling)
     {
 #pragma unroll
@@ -734,7 +748,7 @@ namespace vllm
     }
     scalar_t zero_value;
     zero(zero_value);
-    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X) // TODO: warp_idx ->
+    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X)
     {
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
       // because int32 can lead to overflow when this variable is multiplied by large numbers
@@ -747,15 +761,19 @@ namespace vllm
 #pragma unroll
       for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
       {
-        const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
-        if (row_idx < HEAD_SIZE)
+        const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+        if (row_idx < max_row_idx)
         {
           const int offset = row_idx * BLOCK_SIZE + physical_block_offset;
           V_vec v_vec = *reinterpret_cast<const V_vec *>(v_ptr + offset);
           scalar_t *v_vec_ptr = reinterpret_cast<scalar_t *>(&v_vec);
-          for (int query_idx = query_len - 1 - warp_idx_y; query_idx >= 0; query_idx -= NUM_WARPS_Y)
+#pragma unroll
+          for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
           {
-            int acc_idx = query_idx / NUM_WARPS_Y;
+            int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+            if (query_idx < 0)
+              break;
+            int acc_idx = query_idx / NUM_WARPS_Z;
             // int n_context_len = context_len - (query_len - query_idx - 1);
             int n_context_len = context_len + query_idx;
             int n_num_context_blocks = DIVIDE_ROUND_UP(n_context_len, BLOCK_SIZE);
@@ -773,28 +791,32 @@ namespace vllm
             L_vec logits_vec;
             int idx = logits_idx(pad_max_num_tokens, query_idx, token_idx - start_token_idx);
             from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[idx]));
-            accs[acc_idx][i] += dot(logits_vec, v_vec);
+            accs[it][i] += dot(logits_vec, v_vec);
           }
         }
       }
     }
 
     // Perform reduction within each warp.
-    for (int query_idx = query_len - 1 - warp_idx_y; query_idx >= 0; query_idx -= NUM_WARPS_Y)
+#pragma unroll
+    for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
     {
+      int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+      if (query_idx < 0)
+        break;
 
       // Reduce within the warp.
       // #pragma unroll
       for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
       {
-        int acc_idx = query_idx / NUM_WARPS_Y;
-        float acc = accs[acc_idx][i];
+        int acc_idx = query_idx / NUM_WARPS_Z;
+        float acc = accs[it][i];
         // #pragma unroll
         for (int mask = NUM_V_VECS_PER_ROW / 2; mask >= 1; mask /= 2)
         {
           acc += __shfl_xor_sync(uint32_t(-1), acc, mask);
         }
-        accs[acc_idx][i] = acc;
+        accs[it][i] = acc;
       }
     }
     // NOTE(woosuk): A barrier is required because the shared memory space for logits
@@ -803,6 +825,8 @@ namespace vllm
 
     // Perform reduction across warps.
     float *out_smem = reinterpret_cast<float *>(shared_mem); // TODO 배열 정하기
+                                                             // Before : out_smem : [QUERY_SIZE, NUM_WARPS / 2, HEAD_SIZE]
+                                                             // After : out_smem : [QUERY_SIZE, NUM_WARPS / 2, NUM_WARPS_Y, HEAD_SIZE]
 
 #pragma unroll
     for (int i = NUM_WARPS_X; i > 1; i /= 2)
@@ -811,17 +835,22 @@ namespace vllm
       // Upper warps write to shared memory.
       if (warp_idx_x >= mid && warp_idx_x < i)
       {
-        for (int query_idx = query_len - 1 - warp_idx_y; query_idx >= 0; query_idx -= NUM_WARPS_Y)
+#pragma unroll
+        for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
         {
-          int acc_idx = query_idx / NUM_WARPS_Y;
-          float *dst = &out_smem[query_idx * NUM_WARPS_X * HEAD_SIZE + (warp_idx_x - mid) * HEAD_SIZE]; // TODO
+          int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+          if (query_idx < 0)
+            break;
+          int acc_idx = query_idx / NUM_WARPS_Z;
+          // float *dst = &out_smem[query_idx * NUM_WARPS_X * HEAD_SIZE + (warp_idx_x - mid) * HEAD_SIZE]; // TODO
+          float *dst = &out_smem[query_idx * NUM_WARPS_X * NUM_WARPS_Y / 2 * HEAD_SIZE + (warp_idx_x - mid) * NUM_WARPS_Y * HEAD_SIZE + warp_idx_y * HEAD_SIZE];
 #pragma unroll
           for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
           {
-            const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
-            if (row_idx < HEAD_SIZE && lane % NUM_V_VECS_PER_ROW == 0)
+            const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+            if (row_idx < max_row_idx && lane % NUM_V_VECS_PER_ROW == 0)
             {
-              dst[row_idx] = accs[acc_idx][i];
+              dst[row_idx] = accs[it][i];
             }
           }
         }
@@ -831,17 +860,22 @@ namespace vllm
       // Lower warps update the output.
       if (warp_idx_x < mid)
       {
-        for (int query_idx = query_len - 1 - warp_idx_y; query_idx >= 0; query_idx -= NUM_WARPS_Y)
+#pragma unroll
+        for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
         {
-          int acc_idx = query_idx / NUM_WARPS_Y;
-          const float *src = &out_smem[query_idx * NUM_WARPS_X * HEAD_SIZE + warp_idx_x * HEAD_SIZE];
+          int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+          if (query_idx < 0)
+            break;
+          int acc_idx = query_idx / NUM_WARPS_Z;
+          // const float *src = &out_smem[query_idx * NUM_WARPS_X * HEAD_SIZE + warp_idx_x * HEAD_SIZE];
+          const float *src = &out_smem[query_idx * NUM_WARPS_X * NUM_WARPS_Y / 2 * HEAD_SIZE + warp_idx_x * NUM_WARPS_Y * HEAD_SIZE + warp_idx_y * HEAD_SIZE];
 #pragma unroll
           for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
           {
-            const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
-            if (row_idx < HEAD_SIZE && lane % NUM_V_VECS_PER_ROW == 0)
+            const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+            if (row_idx < max_row_idx && lane % NUM_V_VECS_PER_ROW == 0)
             {
-              accs[acc_idx][i] += src[row_idx];
+              accs[it][i] += src[row_idx];
             }
           }
         }
@@ -852,19 +886,23 @@ namespace vllm
     // Write the final output.
     if (warp_idx_x == 0)
     {
-      for (int query_idx = query_len - 1 - warp_idx_y; query_idx >= 0; query_idx -= NUM_WARPS_Y)
+#pragma unroll
+      for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
       {
-        int acc_idx = query_idx / NUM_WARPS_Y;
+        int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+        if (query_idx < 0)
+          break;
+        int acc_idx = query_idx / NUM_WARPS_Z;
         scalar_t *out_ptr = out + (cum_query_len + query_idx) * num_heads * max_num_partitions * HEAD_SIZE + head_idx * max_num_partitions * HEAD_SIZE + partition_idx * HEAD_SIZE;
         // 원래 [num_seqs, num_heads, head_size]
         // Now [num_seqs x query_lens, num_heads, head_size]
 #pragma unroll
         for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
         {
-          const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
-          if (row_idx < HEAD_SIZE && lane % NUM_V_VECS_PER_ROW == 0)
+          const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+          if (row_idx < max_row_idx && lane % NUM_V_VECS_PER_ROW == 0)
           {
-            from_float(*(out_ptr + row_idx), accs[acc_idx][i]);
+            from_float(*(out_ptr + row_idx), accs[it][i]);
           }
         }
       }
