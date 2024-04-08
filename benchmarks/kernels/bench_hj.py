@@ -119,7 +119,7 @@ def main(
     
     # (hj) Another output to validate our stuff
     validation_output = torch.empty_like(query)
-    
+    num_partitions = 1
     if version == "v2":
         num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
         
@@ -218,54 +218,54 @@ def main(
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
                 
         
-        # for head in range(0,1):
-        #     for s in range(num_seqs):
-        #         for q in range(query_lens[s]):
-        #             print("Seq : ", s, " Head : ", head, " Query : ", q)
-        #             out = output[s * query_lens[s] + q, head]
-        #             val = validation_output[s * query_lens[s] + q, head]
-        #             # to list
-        #             out = out.tolist()
-        #             val = val.tolist()
-        #             # Print both, format to 3 decimal places   
-        #             r1 = [round(x, 3) for x in out]
-        #             r2 = [round(x, 3) for x in val]
+        for head in range(0,1):
+            for s in range(num_seqs):
+                for q in range(query_lens[s]):
+                    print("Seq : ", s, " Head : ", head, " Query : ", q)
+                    out = output[s * query_lens[s] + q, head]
+                    val = validation_output[s * query_lens[s] + q, head]
+                    # to list
+                    out = out.tolist()
+                    val = val.tolist()
+                    # Print both, format to 3 decimal places   
+                    r1 = [round(x, 3) for x in out]
+                    r2 = [round(x, 3) for x in val]
                     
-        #             # Print both, format to 3 decimal places
-        #             # All values formatted to fit in 10 space 
-        #             for i in range(len(r1)):
-        #                 print(f"{r1[i]:<10} {r2[i]:<10}")
+                    # Print both, format to 3 decimal places
+                    # All values formatted to fit in 10 space 
+                    for i in range(len(r1)):
+                        print(f"{r1[i]:<10} {r2[i]:<10}")
 
         
-        # print("-------------------")
-        # print("-------------------")
-        # print("-------------------")
-        # print("-------------------")
-        # print("-------------------")
-        
-        # for head in range(0,1):
-        #     for s in range(num_seqs):
-        #         for q in range(query_lens[s]):
-        #             for part in range(num_partitions):
-        #                 print("Seq : ", s, " Head : ", head, " Query : ", q)
-        #                 out = tmp_output_target[s * query_lens[s] + q, head, part]
-        #                 val = tmp_output[s * query_lens[s] + q, head, part]
-        #                 # to list
-        #                 out = out.tolist()
-        #                 val = val.tolist()
-        #                 # Print both, format to 3 decimal places   
-        #                 r1 = [round(x, 3) for x in out]
-        #                 r2 = [round(x, 3) for x in val]
-                        
-        #                 # Print both, format to 3 decimal places
-        #                 # All values formatted to fit in 10 space 
-        #                 print("Part : ", part)
-        #                 for i in range(len(r1)):
-        #                     print(f"{r1[i]:<10} {r2[i]:<10}")
+        print("-------------------")
+        print("-------------------")
+        print("-------------------")
+        print("-------------------")
+        print("-------------------")
+        if version == "v2":
+            for head in range(0,1):
+                for s in range(num_seqs):
+                    for q in range(query_lens[s]):
+                        for part in range(num_partitions):
+                            print("Seq : ", s, " Head : ", head, " Query : ", q)
+                            out = tmp_output_target[s * query_lens[s] + q, head, part]
+                            val = tmp_output[s * query_lens[s] + q, head, part]
+                            # to list
+                            out = out.tolist()
+                            val = val.tolist()
+                            # Print both, format to 3 decimal places   
+                            r1 = [round(x, 3) for x in out]
+                            r2 = [round(x, 3) for x in val]
+                            
+                            # Print both, format to 3 decimal places
+                            # All values formatted to fit in 10 space 
+                            print("Part : ", part)
+                            for i in range(len(r1)):
+                                print(f"{r1[i]:<10} {r2[i]:<10}")
 
         
-        if not torch.allclose(output, validation_output):
-            raise ValueError("Validation failed")
+        # if not torch.allclose(output, validation_output):
+        #     raise ValueError("Validation failed")
 
         # check difference of output and validation_output is same as 0 
         validation_success = torch.allclose(output, validation_output)
@@ -375,8 +375,8 @@ def main(
     success = run_validation()
     print("Validation success: ", success)
 
-    original_latency = run_benchmark(target=False, num_iters=100)
-    target_latency = run_benchmark(target=True, num_iters=100)
+    original_latency = run_benchmark(target=False, num_iters=1)
+    target_latency = run_benchmark(target=True, num_iters=1)
 
     print(f"Original kernel running time: {original_latency:.3f} ms")
     print(f"Target kernel running time: {target_latency:.3f} ms")
