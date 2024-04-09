@@ -9,7 +9,7 @@ from vllm._C import ops
 
 from typing import List
 
-NUM_BLOCKS = 4096
+NUM_BLOCKS = 8192
 PARTITION_SIZE = 512
 PARTITION_SIZE_TARGET = 64
 
@@ -91,10 +91,9 @@ def main(
 
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
     value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
+    value_cache.uniform_(-scale, scale)
 
     # for each value_cache block
-    # for i in range(NUM_BLOCKS):
-    # for j in range(num_kv_heads):
     for k in range(head_size):
         value_cache[:, :, k, :].fill_(k + 1)
 
@@ -235,7 +234,7 @@ def main(
         # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
 
-        # for head in range(0,1):
+        # for head in range(0, 1):
         #     for s in range(num_seqs):
         #         for q in range(query_lens[s]):
         #             print("Seq : ", s, " Head : ", head, " Query : ", q)
@@ -279,8 +278,8 @@ def main(
         #                 for i in range(len(r1)):
         #                     print(f"{r1[i]:<10} {r2[i]:<10}")
         # if version == "v2":
-            # if not torch.allclose(tmp_output, tmp_output_target):
-            #     raise ValueError("Validation failed for intermediate")
+        # if not torch.allclose(tmp_output, tmp_output_target):
+        #     raise ValueError("Validation failed for intermediate")
 
         if not torch.allclose(output, validation_output):
             raise ValueError("Validation failed")
@@ -458,49 +457,74 @@ if __name__ == "__main__":
 
     # Failed with query_len :  2  context_len :  65  num_seqs :  1
 
-    main(
-        version=args.version,
-        num_seqs=args.batch_size,
-        context_lens=context_lens,
-        query_lens=query_lens,
-        num_query_heads=args.num_query_heads,
-        num_kv_heads=args.num_kv_heads,
-        head_size=args.head_size,
-        block_size=args.block_size,
-        use_alibi=args.use_alibi,
-        dtype=dtype_to_torch_dtype[args.dtype],
-        seed=args.seed,
-        is_ncu=args.ncu,
-    )
+    # main(
+    #     version=args.version,
+    #     num_seqs=args.batch_size,
+    #     context_lens=context_lens,
+    #     query_lens=query_lens,
+    #     num_query_heads=args.num_query_heads,
+    #     num_kv_heads=args.num_kv_heads,
+    #     head_size=args.head_size,
+    #     block_size=args.block_size,
+    #     use_alibi=args.use_alibi,
+    #     dtype=dtype_to_torch_dtype[args.dtype],
+    #     seed=args.seed,
+    #     is_ncu=args.ncu,
+    # )
 
     # FUZZING
     # for query_len in range(1,16):
     # for context_len in range(query_len,1024,15):
-    # for num_seqs in range(1, 150, 1): # Realistically will not go up to 150
-    #     # query_lens = [query_len] * num_seqs
-    #     query_lens = [random.randint(1, 16) for _ in range(num_seqs)]
-    #     # context_lens = gen_context_len([context_len] * num_seqs, query_lens)
-    #     context_lens = gen_context_len([random.randint(256, 4096) for _ in range(num_seqs)], query_lens)
-    #     try :
-    #         main(
-    #             version=args.version,
-    #             num_seqs=num_seqs,
-    #             context_lens=context_lens,
-    #             query_lens=query_lens,
-    #             num_query_heads=args.num_query_heads,
-    #             num_kv_heads=args.num_kv_heads,
-    #             head_size=args.head_size,
-    #             block_size=args.block_size,
-    #             use_alibi=args.use_alibi,
-    #             dtype=dtype_to_torch_dtype[args.dtype],
-    #             seed=args.seed
-    #         )
-    #         average_query_len = sum(query_lens) / num_seqs
-    #         average_context_len = sum(context_lens) / num_seqs
-    #         print("PASS query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #     except TooManyBlocks as e:
-    #         print("SKIP : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #     except Exception as e:
-    #         print("Failed with query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #         print(e)
-    #         break
+    for num_seqs in range(1, 150, 1):  # Realistically will not go up to 150
+        # query_lens = [query_len] * num_seqs
+        query_lens = [random.randint(1, 8) for _ in range(num_seqs)]
+        # context_lens = gen_context_len([context_len] * num_seqs, query_lens)
+        context_lens = gen_context_len(
+            [random.randint(256, 4096) for _ in range(num_seqs)], query_lens
+        )
+        average_query_len = sum(query_lens) / num_seqs
+        average_context_len = sum(context_lens) / num_seqs
+
+        try:
+            main(
+                version=args.version,
+                num_seqs=num_seqs,
+                context_lens=context_lens,
+                query_lens=query_lens,
+                num_query_heads=args.num_query_heads,
+                num_kv_heads=args.num_kv_heads,
+                head_size=args.head_size,
+                block_size=args.block_size,
+                use_alibi=args.use_alibi,
+                dtype=dtype_to_torch_dtype[args.dtype],
+                seed=args.seed,
+                is_ncu=args.ncu,
+            )
+            print(
+                "PASS query_len : ",
+                average_query_len,
+                " context_len : ",
+                average_context_len,
+                " num_seqs : ",
+                num_seqs,
+            )
+        except TooManyBlocks as e:
+            print(
+                "SKIP : ",
+                average_query_len,
+                " context_len : ",
+                average_context_len,
+                " num_seqs : ",
+                num_seqs,
+            )
+        except Exception as e:
+            print(
+                "Failed with query_len : ",
+                average_query_len,
+                " context_len : ",
+                average_context_len,
+                " num_seqs : ",
+                num_seqs,
+            )
+            print(e)
+            break

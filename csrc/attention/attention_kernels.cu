@@ -751,7 +751,25 @@ namespace vllm
     }
     scalar_t zero_value;
     zero(zero_value);
-    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X)
+
+    V_vec v_vec_regs[NUM_ROWS_PER_THREAD];
+    L_vec logits_vec_regs[QUERIES_PER_WARP_GROUP];
+
+    V_vec zero_v_vec;
+    zero(zero_v_vec);
+    L_vec zero_l_vec;
+    zero(zero_l_vec);
+
+    constexpr int TM = 4;
+    constexpr int TN = 4;
+
+    assert(NUM_ROWS_PER_THREAD % TM == 0);
+    assert(QUERIES_PER_WARP_GROUP % TN == 0);
+
+    constexpr int NUM_ROWS_PER_THREAD_TM = NUM_ROWS_PER_THREAD / TM;
+    constexpr int QUERIES_PER_WARP_GROUP_TN = QUERIES_PER_WARP_GROUP / TN;
+
+    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X) // equiv to dot_idx
     {
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
       // because int32 can lead to overflow when this variable is multiplied by large numbers
@@ -759,42 +777,50 @@ namespace vllm
       const int64_t physical_block_number = static_cast<int64_t>(block_table[block_idx]);
       const int physical_block_offset = (lane % NUM_V_VECS_PER_ROW) * V_VEC_SIZE;
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
-
       const scalar_t *v_ptr = v_cache + physical_block_number * kv_block_stride + kv_head_idx * kv_head_stride;
-#pragma unroll
-      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
+
+      // Populate registers for whole warptiling
+      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) // equiv to WNTiling.. head_size warptiling
       {
+        v_vec_regs[i] = zero_v_vec;
         const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
         if (row_idx < max_row_idx)
         {
           const int offset = row_idx * BLOCK_SIZE + physical_block_offset;
           V_vec v_vec = *reinterpret_cast<const V_vec *>(v_ptr + offset);
-          scalar_t *v_vec_ptr = reinterpret_cast<scalar_t *>(&v_vec);
+          v_vec_regs[i] = v_vec;
+        }
+      }
+      for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++) // equiv to WMTiling.. query_len warptiling
+      {
+        int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+        if (query_idx < 0)
+          continue;
+        int acc_idx = query_idx / NUM_WARPS_Z;
+        L_vec logits_vec = zero_l_vec;
+        int idx = logits_idx(PAD_MAX_NUM_TOKENS, query_idx, token_idx - start_token_idx);
+        from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[idx]));
+        logits_vec_regs[it] = logits_vec;
+      }
+
 #pragma unroll
-          for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
+      for (int i_tm = 0; i_tm < NUM_ROWS_PER_THREAD_TM; i_tm++) // equiv to WNTiling.. head_size warptiling
+      {
+#pragma unroll
+        for (int it_tn = 0; it_tn < QUERIES_PER_WARP_GROUP_TN; it_tn++) // equiv to WMTiling.. query_len warptiling
+        {
+#pragma unroll
+          for (int i = 0; i < TM; i++)
           {
-            int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
-            if (query_idx < 0)
-              break;
-            int acc_idx = query_idx / NUM_WARPS_Z;
-            // int n_context_len = context_len - (query_len - query_idx - 1);
-            int n_context_len = context_len + query_idx;
-            int n_num_context_blocks = DIVIDE_ROUND_UP(n_context_len, BLOCK_SIZE);
-            if (block_idx == n_num_context_blocks - 1)
-            {
-              // NOTE(woosuk): When v_vec contains the tokens that are out of the context,
-              // we should explicitly zero out the values since they may contain NaNs.
-              // See https://github.com/vllm-project/vllm/issues/641#issuecomment-1682544472
 #pragma unroll
-              for (int j = 0; j < V_VEC_SIZE; j++)
-              {
-                v_vec_ptr[j] = token_idx + j < n_context_len ? v_vec_ptr[j] : zero_value;
-              }
+            for (int j = 0; j < TN; j++)
+            {
+              int i_idx = i_tm * TM + i;
+              int j_idx = it_tn * TN + j;
+              int query_idx = query_len - 1 - warp_idx_z - j_idx * NUM_WARPS_Z;
+
+              accs[j_idx][i_idx] += dot(logits_vec_regs[j_idx], v_vec_regs[i_idx]);
             }
-            L_vec logits_vec;
-            int idx = logits_idx(PAD_MAX_NUM_TOKENS, query_idx, token_idx - start_token_idx);
-            from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[idx]));
-            accs[it][i] += dot(logits_vec, v_vec);
           }
         }
       }
