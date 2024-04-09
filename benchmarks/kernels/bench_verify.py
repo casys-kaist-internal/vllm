@@ -96,14 +96,14 @@ def main(
     value_cache.uniform_(-scale, scale)
 
     # Create the KV cache.
-    x = 16 // torch.tensor([], dtype=dtype).element_size()
-    key_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size // x, block_size, x)
-    key_cache = torch.empty(size=key_cache_shape, dtype=dtype, device="cuda")
-    key_cache.uniform_(-scale, scale)
+    # x = 16 // torch.tensor([], dtype=dtype).element_size()
+    # key_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size // x, block_size, x)
+    # key_cache = torch.empty(size=key_cache_shape, dtype=dtype, device="cuda")
+    # key_cache.uniform_(-scale, scale)
 
-    value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
-    value_cache = torch.empty(size=value_cache_shape,
-                              dtype=dtype, device="cuda")
+    # value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
+    # value_cache = torch.empty(size=value_cache_shape,
+    #                           dtype=dtype, device="cuda")
 
     # for each value_cache block
     # for i in range(NUM_BLOCKS):
@@ -234,50 +234,50 @@ def main(
         # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
 
-        for head in range(0, 1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    print("Seq : ", s, " Head : ", head, " Query : ", q)
-                    out = output[s * query_lens[s] + q, head]
-                    val = validation_output[s * query_lens[s] + q, head]
-                    # to list
-                    out = out.tolist()
-                    val = val.tolist()
-                    # Print both, format to 3 decimal places
-                    r1 = [round(x, 3) for x in out]
-                    r2 = [round(x, 3) for x in val]
+        # for head in range(0, 1):
+        #     for s in range(num_seqs):
+        #         for q in range(query_lens[s]):
+        #             print("Seq : ", s, " Head : ", head, " Query : ", q)
+        #             out = output[s * query_lens[s] + q, head]
+        #             val = validation_output[s * query_lens[s] + q, head]
+        #             # to list
+        #             out = out.tolist()
+        #             val = val.tolist()
+        #             # Print both, format to 3 decimal places
+        #             r1 = [round(x, 3) for x in out]
+        #             r2 = [round(x, 3) for x in val]
 
-                    # Print both, format to 3 decimal places
-                    # All values formatted to fit in 10 space
-                    for i in range(len(r1)):
-                        print(f"{r1[i]:<10} {r2[i]:<10}")
+        #             # Print both, format to 3 decimal places
+        #             # All values formatted to fit in 10 space
+        #             for i in range(len(r1)):
+        #                 print(f"{r1[i]:<10} {r2[i]:<10}")
 
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
 
-        for head in range(0, 1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    for part in range(num_partitions):
-                        print("Seq : ", s, " Head : ", head, " Query : ", q)
-                        out = tmp_output_target[s *
-                                                query_lens[s] + q, head, part]
-                        val = tmp_output[s * query_lens[s] + q, head, part]
-                        # to list
-                        out = out.tolist()
-                        val = val.tolist()
-                        # Print both, format to 3 decimal places
-                        r1 = [round(x, 3) for x in out]
-                        r2 = [round(x, 3) for x in val]
+        # for head in range(0, 1):
+        #     for s in range(num_seqs):
+        #         for q in range(query_lens[s]):
+        #             for part in range(num_partitions):
+        #                 print("Seq : ", s, " Head : ", head, " Query : ", q)
+        #                 out = tmp_output_target[s *
+        #                                         query_lens[s] + q, head, part]
+        #                 val = tmp_output[s * query_lens[s] + q, head, part]
+        #                 # to list
+        #                 out = out.tolist()
+        #                 val = val.tolist()
+        #                 # Print both, format to 3 decimal places
+        #                 r1 = [round(x, 3) for x in out]
+        #                 r2 = [round(x, 3) for x in val]
 
-                        # Print both, format to 3 decimal places
-                        # All values formatted to fit in 10 space
-                        print("Part : ", part)
-                        for i in range(len(r1)):
-                            print(f"{r1[i]:<10} {r2[i]:<10}")
+        #                 # Print both, format to 3 decimal places
+        #                 # All values formatted to fit in 10 space
+        #                 print("Part : ", part)
+        #                 for i in range(len(r1)):
+        #                     print(f"{r1[i]:<10} {r2[i]:<10}")
 
         if not torch.allclose(output, validation_output):
             raise ValueError("Validation failed")
@@ -297,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument("--version", type=str,
                         choices=["v1", "v2"], default="v2")
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--context-len", type=int, default=1024)
+    parser.add_argument("--context-len", type=int, default=512)
     parser.add_argument("--num-query-heads", type=int, default=16)
     parser.add_argument("--num-kv-heads", type=int, default=16)
     parser.add_argument(
