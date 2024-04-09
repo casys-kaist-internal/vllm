@@ -44,16 +44,18 @@ def main(
     assert num_query_heads % num_kv_heads == 0
     num_queries_per_kv = num_query_heads // num_kv_heads
     head_mapping = torch.repeat_interleave(
-        torch.arange(num_kv_heads, dtype=torch.int32, device="cuda"), num_queries_per_kv
+        torch.arange(num_kv_heads, dtype=torch.int32,
+                     device="cuda"), num_queries_per_kv
     )
     alibi_slopes = None
     if use_alibi:
-        alibi_slopes = torch.randn(num_query_heads, dtype=torch.float, device="cuda")
+        alibi_slopes = torch.randn(
+            num_query_heads, dtype=torch.float, device="cuda")
 
     # (hj) Changed as we are passing context_lens as input
     context_lens = torch.tensor(context_lens, dtype=torch.int, device="cuda")
     max_context_len = context_lens.max().item()
-    
+
     query_lens = torch.tensor(query_lens, dtype=torch.int, device="cuda")
 
     # Create the block tables.
@@ -70,7 +72,8 @@ def main(
             block_tables_validation.append(block_table)
 
     block_tables = torch.tensor(block_tables, dtype=torch.int, device="cuda")
-    block_tables_validation = torch.tensor(block_tables_validation, dtype=torch.int, device="cuda")
+    block_tables_validation = torch.tensor(
+        block_tables_validation, dtype=torch.int, device="cuda")
 
     # Create the KV cache.
     x = 16 // torch.tensor([], dtype=dtype).element_size()
@@ -79,17 +82,19 @@ def main(
     key_cache.uniform_(-scale, scale)
 
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
-    value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
+    value_cache = torch.empty(size=value_cache_shape,
+                              dtype=dtype, device="cuda")
     value_cache.uniform_(-scale, scale)
 
     # Prepare for the paged attention kernel.
     output = torch.empty_like(query)
-    
+
     # (hj) Another output to validate our stuff
     validation_output = torch.empty_like(query)
-    
+
     if version == "v2":
-        num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
+        num_partitions = (max_context_len +
+                          PARTITION_SIZE - 1) // PARTITION_SIZE
 
         # (hj) : num_seqs -> sum_query_lens
         tmp_output = torch.empty(
@@ -169,27 +174,27 @@ def main(
         else:
             raise ValueError(f"Invalid version: {version}")
 
-        # Print output and validation 
+        # Print output and validation
         # print("Output : ", output)
         # print("Validation Output : ", validation_output)
         # (hj) Output format is [num_seqs x query_lens, num_query_heads, head_size]
-        
+
         # Compare differences
         print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
 
-        # check difference of output and validation_output is same as 0 
+        # check difference of output and validation_output is same as 0
         validation_success = torch.allclose(output, validation_output)
-        
+
         return validation_success
 
-    def run_benchmark(target:bool, num_iters: int) -> float:
-        
+    def run_benchmark(target: bool, num_iters: int) -> float:
+
         # print("Running benchmark with shapes:")
         # print(f"  query: {query.shape}")
         # print(f"  key_cache: {key_cache.shape}")
         # print(f"  value_cache: {value_cache.shape}")
-        
+
         # print("Query Information")
         # print("Num Seqs : ", num_seqs)
         # print("Query Lens : ", query_lens)
@@ -264,7 +269,7 @@ def main(
                     )
             else:
                 raise ValueError(f"Invalid version: {version}")
-        
+
         # Warmup.
         for _ in range(3):
             run()
@@ -278,26 +283,28 @@ def main(
 
         elasped_time_ns = (end_time - start_time) / num_iters
         elasped_time_ms = elasped_time_ns / 1e6
-        
+
         return elasped_time_ms
 
     # Validation
     success = run_validation()
     print("Validation success: ", success)
 
-    original_latency = run_benchmark(target=False, num_iters=100)
-    target_latency = run_benchmark(target=True, num_iters=100)
+    original_latency = run_benchmark(target=False, num_iters=1)
+    target_latency = run_benchmark(target=True, num_iters=1)
 
     print(f"Original kernel running time: {original_latency:.3f} ms")
     print(f"Target kernel running time: {target_latency:.3f} ms")
     print(f"Speedup : {original_latency / target_latency:.3f}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the paged attention kernel."
     )
-    parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v1")
-    parser.add_argument("--batch-size", type=int, default=108)
+    parser.add_argument("--version", type=str,
+                        choices=["v1", "v2"], default="v1")
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--context-len", type=int, default=1024)
     parser.add_argument("--num-query-heads", type=int, default=16)
     parser.add_argument("--num-kv-heads", type=int, default=16)
@@ -310,7 +317,7 @@ if __name__ == "__main__":
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--query-len", type=int, default=-1) # -1 is random
+    parser.add_argument("--query-len", type=int, default=8)  # -1 is random
     args = parser.parse_args()
 
     if args.num_query_heads % args.num_kv_heads != 0:
@@ -322,22 +329,24 @@ if __name__ == "__main__":
     }
 
     # For context len, do it for each query
-    def gen_context_len(max_context_len_per_query : List[int], query_lens : List[int]):
+    def gen_context_len(max_context_len_per_query: List[int], query_lens: List[int]):
         res = []
         for query_len, c_max in zip(query_lens, max_context_len_per_query):
             for i in range(query_len):
                 res.append(c_max - (query_len - i - 1))
         return res
-        
+
     if args.query_len == -1:
         query_lens = [random.randint(2, 16) for _ in range(args.batch_size)]
     else:
         query_lens = [args.query_len] * args.batch_size
 
     if args.context_len == -1:
-        context_lens = gen_context_len([random.randint(256, 1024) for _ in range(args.batch_size)], query_lens)
+        context_lens = gen_context_len(
+            [random.randint(256, 1024) for _ in range(args.batch_size)], query_lens)
     else:
-        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)    
+        context_lens = gen_context_len(
+            [args.context_len] * args.batch_size, query_lens)
 
     main(
         version=args.version,
