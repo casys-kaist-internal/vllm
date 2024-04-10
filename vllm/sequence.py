@@ -124,11 +124,12 @@ class SequenceData:
 
         return uncached_draft_token_ids
 
+    # TODO(noppanat): can be optimized.
     def get_uncached_draft_len(self) -> int:
         all_tokens_including_draft = self.get_token_ids() + self.get_draft_token_ids()
-        uncached_draft_token_ids = all_tokens_including_draft[self.draft_cache_cnt:]
+        uncached_draft_len = len(all_tokens_including_draft) - self.draft_cache_cnt
 
-        return len(uncached_draft_token_ids)
+        return uncached_draft_len
 
     def get_draft_cache_cnt(self) -> int:
         return self.draft_cache_cnt

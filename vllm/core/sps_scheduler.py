@@ -1,6 +1,6 @@
 import enum
 import time
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.sps_block_manager import SpSAllocStatus, SpSBlockSpaceManager
@@ -93,17 +93,14 @@ class SpSScheduler:
         self.waiting.append(seq_group)
 
     def abort_seq_group(self, request_id: Union[str, Iterable[str]]) -> None:
-        if isinstance(request_id, str):
-            request_id = (request_id, )
-        request_ids = set(request_id)
-        for state_queue in [self.waiting, self.running, self.swapped]:
-            # We need to reverse the list as we are removing elements
-            # from it as we iterate over it. If we don't do it,
-            # indices will get messed up and we will skip over elements.
-            for seq_group in reversed(state_queue):
+        def clear_state_queue(
+            state_queue: List[SequenceGroup], request_ids: Set[str]
+        ) -> List[SequenceGroup]:
+            if len(request_ids) == 0:
+                return state_queue
+            to_add = []
+            for seq_group in state_queue:
                 if seq_group.request_id in request_ids:
-                    # Remove the sequence group from the state queue.
-                    state_queue.remove(seq_group)
                     for seq in seq_group.get_seqs():
                         if seq.is_finished():
                             continue
@@ -111,15 +108,23 @@ class SpSScheduler:
                         self.free_seq(seq)
                     request_ids.remove(seq_group.request_id)
                     if not request_ids:
-                        return
+                        return to_add
+                else:
+                    to_add.append(seq_group)
+            return to_add
+
+        request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
+        self.waiting = clear_state_queue(self.waiting, request_ids)
+        self.running = clear_state_queue(self.running, request_ids)
+        self.swapped = clear_state_queue(self.swapped, request_ids)
 
     def abort_all_seq_groups(self) -> None:
         self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.waiting])
-        self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.running])
-        self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.swapped])
+            [
+                seq_group.request_id
+                for seq_group in self.waiting + self.running + self.swapped
+            ]
+        )
 
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.running or self.swapped or self.draft_exit
@@ -260,7 +265,6 @@ class SpSScheduler:
 
             # Reserve new token slots for the running sequence groups.
             running: List[SequenceGroup] = []
-            preempted: List[SequenceGroup] = []
             while self.running:
                 seq_group = self.running.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
@@ -277,12 +281,10 @@ class SpSScheduler:
                             # Preempt the lowest-priority sequence groups.
                             victim_seq_group = self.running.pop(-1)
                             self._preempt(victim_seq_group, blocks_to_swap_out)
-                            preempted.append(victim_seq_group)
                         else:
                             # No other sequence groups can be preempted.
                             # Preempt the current sequence group.
                             self._preempt(seq_group, blocks_to_swap_out)
-                            preempted.append(seq_group)
                             break
                     else:
                         # Append new slots to the sequence group.
@@ -342,7 +344,6 @@ class SpSScheduler:
 
             # Reserve new token slots for the running sequence groups.
             running: List[SequenceGroup] = []
-            preempted: List[SequenceGroup] = []
             while self.running:
                 seq_group = self.running.pop(0)
                 while not self.block_manager.can_append_slot(seq_group):
@@ -350,12 +351,10 @@ class SpSScheduler:
                         # Preempt the lowest-priority sequence groups.
                         victim_seq_group = self.running.pop(-1)
                         self._preempt(victim_seq_group, blocks_to_swap_out)
-                        preempted.append(victim_seq_group)
                     else:
                         # No other sequence groups can be preempted.
                         # Preempt the current sequence group.
                         self._preempt(seq_group, blocks_to_swap_out)
-                        preempted.append(seq_group)
                         break
                 else:
                     # Append new slots to the sequence group.

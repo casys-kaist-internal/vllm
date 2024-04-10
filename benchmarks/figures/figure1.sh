@@ -20,6 +20,6 @@ for dataset in "gsm8k" "humaneval" "alpaca" "mt-bench" "sharegpt"; do
             --batch-size "$batch_size" \
             | grep "result" >> "result/fig1_sps_$dataset.csv"
         done
-        slack "Done $dataset $batch_size"
+        echo "Done $dataset $batch_size"
     done
 done
