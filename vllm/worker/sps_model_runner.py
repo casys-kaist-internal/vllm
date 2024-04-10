@@ -168,18 +168,9 @@ class SpSModelRunner:
                         block_table = block_table[-sliding_window_blocks:]
                     block_tables.append(block_table)
 
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long)
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long)
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long)
+        input_tokens = torch.tensor(input_tokens, dtype=torch.long, device="cuda")
+        input_positions = torch.tensor(input_positions, dtype=torch.long, device="cuda")
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device="cuda")
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
@@ -251,19 +242,9 @@ class SpSModelRunner:
                                                  self.block_size)
                         block_table = block_table[-sliding_window_blocks:]
                     block_tables.append(block_table)
-
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long)
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long)
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long)
+        input_tokens = torch.tensor(input_tokens, dtype=torch.long, device="cuda")
+        input_positions = torch.tensor(input_positions, dtype=torch.long, device="cuda")
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device="cuda")
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
@@ -408,7 +389,7 @@ class SpSModelRunner:
     def execute_model(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        kv_caches: List[Tuple[torch.Tensor, torch.Tensor]],
+        kv_caches: List[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]],
         cache_events: Optional[List[torch.cuda.Event]] = None,
     ) -> SamplerOutput:
         # NOTE: We assume that all sequences in the group are all prompts or
