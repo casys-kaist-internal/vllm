@@ -27,7 +27,7 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b)-1) / (b))
-#define QUERY_SIZE 16
+#define QUERY_SIZE 8
 
 namespace vllm
 {
@@ -70,6 +70,50 @@ namespace vllm
     }
 
     // Broadcast to other threads.
+    return __shfl_sync(uint32_t(-1), sum, 0);
+  }
+
+  template <int NUM_WARPS_X_QK>
+  inline __device__ float block_sum_query_group(float *red_smem, float sum)
+  {
+    // Decompose the thread index into warp / lane.
+    int warp = threadIdx.x / WARP_SIZE;
+    int lane = threadIdx.x % WARP_SIZE;
+
+    int warp_idx_y = warp / NUM_WARPS_X_QK;
+    int warp_idx_x = warp % NUM_WARPS_X_QK;
+
+    // Compute the sum per warp.
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask >= 1; mask /= 2)
+    {
+      sum += __shfl_xor_sync(uint32_t(-1), sum, mask);
+    }
+
+    // Warp leaders store the data to shared memory.
+    if (lane == 0)
+    {
+      red_smem[warp] = sum;
+    }
+
+    // Make sure the data is in shared memory.
+    __syncthreads();
+
+    // The warps compute the final sums.
+    if (lane < NUM_WARPS_X_QK)
+    {
+      int idx = warp_idx_y * NUM_WARPS_X_QK + lane;
+      sum = red_smem[idx];
+    }
+
+    // Parallel reduction inside the warp.
+#pragma unroll
+    for (int mask = NUM_WARPS_X_QK / 2; mask >= 1; mask /= 2)
+    {
+      sum += __shfl_xor_sync(uint32_t(-1), sum, mask);
+    }
+
+    // Broadcast to other threads within warp
     return __shfl_sync(uint32_t(-1), sum, 0);
   }
 
@@ -443,15 +487,19 @@ namespace vllm
     const int max_num_partitions = gridDim.z;
     constexpr bool USE_PARTITIONING = PARTITION_SIZE > 0;
 
+    int query_len = query_lens[seq_idx];
+
     int cum_query_len = 0;
     for (int i = 0; i < seq_idx; i++)
     {
       cum_query_len += query_lens[i];
     }
-    const int context_len = context_lens[cum_query_len];                               // (hj) This is minimum. Add query_idx to get query-specific context_len
-    const int max_context_len = context_lens[cum_query_len] + query_lens[seq_idx] - 1; // (hj) This is maximum
+    const int context_len = context_lens[cum_query_len];     // (hj) This is minimum. Add query_idx to get query-specific context_len
+    const int max_context_len = context_len + query_len - 1; // (hj) This is maximum
 
     // TODO: Get LARGEST context from sequence (window_size + 1th context len)
+
+    assert(USE_PARTITIONING);
 
     if (USE_PARTITIONING && partition_idx * PARTITION_SIZE >= max_context_len)
     {
@@ -476,12 +524,21 @@ namespace vllm
     const int max_num_tokens = end_token_idx - start_token_idx; // V_VEC_SIZE
 
     // (hj) As logits is x QUERY_LEN, we need to pad to BLOCK_SIZE
-    const int pad_max_num_tokens = DIVIDE_ROUND_UP(max_num_tokens, BLOCK_SIZE) * BLOCK_SIZE;
+    // const int PAD_MAX_NUM_TOKENS = DIVIDE_ROUND_UP(max_num_tokens, BLOCK_SIZE) * BLOCK_SIZE;
+    constexpr int PAD_MAX_NUM_TOKENS = PARTITION_SIZE;
 
-    constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
+    // constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
+    constexpr int THREAD_GROUP_SIZE = 1;                               // (hj) 1 thread per token
     constexpr int NUM_THREAD_GROUPS = NUM_THREADS / THREAD_GROUP_SIZE; // Note: This assumes THREAD_GROUP_SIZE divides NUM_THREADS
+
+    assert(WARP_SIZE % BLOCK_SIZE == 0);
+    assert(WARP_SIZE >= BLOCK_SIZE);
+    constexpr int NUM_BLOCKS_PER_WARP = WARP_SIZE / BLOCK_SIZE;
+    // constexpr int NUM_BLOCKS_PER_WARP = 1;
+
     assert(NUM_THREADS % THREAD_GROUP_SIZE == 0);
-    constexpr int NUM_TOKENS_PER_THREAD_GROUP = DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
+    // constexpr int NUM_TOKENS_PER_THREAD_GROUP = DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
+    constexpr int NUM_TOKENS_PER_THREAD_GROUP = 1;
     constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
     const int thread_idx = threadIdx.x;
     const int warp_idx = thread_idx / WARP_SIZE;
@@ -500,6 +557,8 @@ namespace vllm
     constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1);
     using K_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
     using Q_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
+
+    using A_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
 
     constexpr int NUM_ELEMS_PER_THREAD = HEAD_SIZE / THREAD_GROUP_SIZE;
     constexpr int NUM_VECS_PER_THREAD = NUM_ELEMS_PER_THREAD / VEC_SIZE;
@@ -527,24 +586,38 @@ namespace vllm
       }
     }
     __syncthreads(); // TODO(naed90): possible speedup if this is replaced with a memory wall right before we use q_vecs
+    constexpr int QUERIES_PER_WARP_GROUP_QK = 8;
+    constexpr int NUM_WARPS_Y_QK = QUERY_SIZE / QUERIES_PER_WARP_GROUP_QK;
+    constexpr int NUM_WARPS_X_QK = NUM_WARPS / NUM_WARPS_Y_QK;
+
+    const int warp_idx_x_qk = warp_idx % NUM_WARPS_X_QK;
+    const int warp_idx_y_qk = warp_idx / NUM_WARPS_X_QK;
 
     // Memory planning.
     extern __shared__ char shared_mem[];
     // NOTE(woosuk): We use FP32 for the softmax logits for better accuracy.
     float *logits = reinterpret_cast<float *>(shared_mem);
     // Workspace for reduction.
-    __shared__ float red_smem[QUERY_SIZE][2 * NUM_WARPS];
+    __shared__ float red_smem[QUERY_SIZE][2 * NUM_WARPS_X_QK];
 
     // x == THREAD_GROUP_SIZE * VEC_SIZE
     // Each thread group fetches x elements from the key at a time.
     constexpr int x = 16 / sizeof(scalar_t);
     // float qk_max = -FLT_MAX;
-    float qk_max[QUERY_SIZE];
+    __shared__ float qk_max[QUERIES_PER_WARP_GROUP_QK][NUM_THREADS];
+    float qk_max_reg[QUERIES_PER_WARP_GROUP_QK];
+
+    for (int i = 0; i < QUERIES_PER_WARP_GROUP_QK; i++)
+    {
+      qk_max_reg[i] = -FLT_MAX;
+    }
+
+    Q_vec q_vec_regs[QUERY_SIZE][NUM_VECS_PER_THREAD];
 
 #pragma unroll
-    for (int i = 0; i < QUERY_SIZE; i++)
+    for (int i = 0; i < QUERIES_PER_WARP_GROUP_QK; i++)
     {
-      qk_max[i] = -FLT_MAX;
+      qk_max[i][thread_idx] = -FLT_MAX;
     }
 
     // Iterate over the key blocks.
@@ -552,9 +625,15 @@ namespace vllm
     // Each thread group in a warp fetches a key from the block, and computes
     // dot product with the query.
     // get the block table for the last query in the sequence since the block table is the same for all queries in the sequence and longest for the last query
-    const int *block_table = block_tables + (cum_query_len + query_lens[seq_idx] - 1) * max_num_blocks_per_seq;
-    for (int block_idx = start_block_idx + warp_idx; block_idx < end_block_idx; block_idx += NUM_WARPS)
+    const int *block_table = block_tables + (cum_query_len + query_len - 1) * max_num_blocks_per_seq;
+    for (int warp_block_idx_start = start_block_idx + warp_idx_x_qk * NUM_BLOCKS_PER_WARP; warp_block_idx_start < end_block_idx; warp_block_idx_start += NUM_WARPS_X_QK * NUM_BLOCKS_PER_WARP)
     {
+      const int block_idx = warp_block_idx_start + lane / BLOCK_SIZE;
+
+      // int block_idx = warp_block_idx_start;
+      if (block_idx >= end_block_idx)
+        continue;
+
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
       // because int32 can lead to overflow when this variable is multiplied by large numbers
       // (e.g., kv_block_stride).
@@ -569,6 +648,7 @@ namespace vllm
       {
         const int physical_block_offset = (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE;
         const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+        const int tok_offset = token_idx - start_token_idx;
         K_vec k_vecs[NUM_VECS_PER_THREAD];
 
 #pragma unroll
@@ -580,48 +660,72 @@ namespace vllm
           const int offset2 = (vec_idx * VEC_SIZE) % x;
           k_vecs[j] = *reinterpret_cast<const K_vec *>(k_ptr + offset1 * BLOCK_SIZE * x + offset2);
         }
-
-        for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+#pragma unroll
+        for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
         {
-          // int n_context_len = context_len - (query_lens[seq_idx] - query_idx - 1);
+          int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+          if (query_idx >= query_len)
+            break;
           int n_context_len = context_len + query_idx;
 
           // Compute dot product.
           // This includes a reduction across the threads in the same thread group.
-          float qk = scale * Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs[query_idx][thread_group_offset], k_vecs);
+          // float qk = scale * Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot_nosync(q_vecs[query_idx][thread_group_offset], k_vecs);
+          float qk = 0;
+#pragma unroll
+          for (int j = 0; j < NUM_VECS_PER_THREAD; j++)
+          {
+            // Cast both as A_vec
+            A_vec q_vec = *reinterpret_cast<A_vec *>(&q_vecs[query_idx][thread_group_offset][j]);
+            A_vec k_vec = *reinterpret_cast<A_vec *>(&k_vecs[j]);
+            qk += dot(q_vec, k_vec);
+          }
+          qk *= scale;
+
           // Add the ALiBi bias if slopes are given.
           qk += (alibi_slope != 0) ? alibi_slope * (token_idx - n_context_len + 1) : 0;
 
-          if (thread_group_offset == 0)
-          {
-            // Store the partial reductions to shared memory.
-            // NOTE(woosuk): It is required to zero out the masked logits.
-            const bool mask = token_idx >= n_context_len;
-
-            int tok_idx = token_idx - start_token_idx;
-            int logits_index = logits_idx(pad_max_num_tokens, query_idx, tok_idx);
-            logits[logits_index] = mask ? 0.f : qk;
-            // Update the max value.
-            qk_max[query_idx] = mask ? qk_max[query_idx] : fmaxf(qk_max[query_idx], qk);
-          }
+          // if (thread_group_offset == 0)
+          // {
+          // Store the partial reductions to shared memory.
+          // NOTE(woosuk): It is required to zero out the masked logits.
+          const bool mask = token_idx >= n_context_len;
+          int logits_index = logits_idx(PAD_MAX_NUM_TOKENS, query_idx, tok_offset);
+          logits[logits_index] = mask ? 0.f : qk;
+          // Update the max value.
+          qk_max_reg[it] = mask ? qk_max_reg[it] : fmaxf(qk_max_reg[it], qk);
+          // }
         } // query_idx end
       }
     }
+
+    for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
+    {
+      qk_max[it][thread_idx] = qk_max_reg[it];
+    }
+    // local qk_max -> shared qk_max
+    // for (int query_idx = 0; query_idx < QUERY_SIZE; query_idx++)
+    // {
+    //   qk_max[it][thread_idx] = qk_max[it][thread_idx];
+    // }
 
     // Perform reduction across the threads in the same warp to get the
     // max qk value for each "warp" (not across the thread block yet).
     // The 0-th thread of each thread group already has its max qk value.
 #pragma unroll
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
     {
+      int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+      if (query_idx >= query_len)
+        break;
 #pragma unroll
       for (int mask = WARP_SIZE / 2; mask >= THREAD_GROUP_SIZE; mask /= 2)
       {
-        qk_max[query_idx] = fmaxf(qk_max[query_idx], __shfl_xor_sync(uint32_t(-1), qk_max[query_idx], mask));
+        qk_max[it][thread_idx] = fmaxf(qk_max[it][thread_idx], __shfl_xor_sync(uint32_t(-1), qk_max[it][thread_idx], mask));
       }
       if (lane == 0)
       {
-        red_smem[query_idx][warp_idx] = qk_max[query_idx];
+        red_smem[query_idx][warp_idx_x_qk] = qk_max[it][thread_idx];
       }
     }
     __syncthreads();
@@ -629,76 +733,76 @@ namespace vllm
     // TODO(woosuk): Refactor this part.
     // Get the max qk value for the sequence.
 
-    float exp_sum_arr[QUERY_SIZE];
+    float exp_sum_arr[QUERIES_PER_WARP_GROUP_QK];
 
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
     {
-      qk_max[query_idx] = lane < NUM_WARPS ? red_smem[query_idx][lane] : -FLT_MAX;
+      int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+      if (query_idx >= query_len)
+        break;
+      qk_max[it][thread_idx] = lane < NUM_WARPS_X_QK ? red_smem[query_idx][lane] : -FLT_MAX;
 #pragma unroll
-      for (int mask = NUM_WARPS / 2; mask >= 1; mask /= 2)
+      for (int mask = NUM_WARPS_X_QK / 2; mask >= 1; mask /= 2)
       {
-        qk_max[query_idx] = fmaxf(qk_max[query_idx], __shfl_xor_sync(uint32_t(-1), qk_max[query_idx], mask));
+        qk_max[it][thread_idx] = fmaxf(qk_max[it][thread_idx], __shfl_xor_sync(uint32_t(-1), qk_max[it][thread_idx], mask));
       }
       // Broadcast the max qk value to all threads.
-      qk_max[query_idx] = __shfl_sync(uint32_t(-1), qk_max[query_idx], 0);
+      qk_max[it][thread_idx] = __shfl_sync(uint32_t(-1), qk_max[it][thread_idx], 0);
+    }
 
+    for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
+    {
+      int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+      if (query_idx >= query_len)
+        break;
       // Get the sum of the exp values.
       float exp_sum = 0.f;
 
-      // 1. query 당 num_token
-      // 2. query 당 parition 갯수
-      // 3. if last, subtract
       int context_len_for_query = context_lens[cum_query_len + query_idx];
       int partitions_needed = DIVIDE_ROUND_UP(context_len_for_query, PARTITION_SIZE);
 
       // If last, subtract
       int num_tokens;
-
       if (partitions_needed > partition_idx + 1)
-      {
         num_tokens = PARTITION_SIZE;
-      }
       else if (partitions_needed == partition_idx + 1)
-      {
         num_tokens = context_len_for_query - partition_idx * PARTITION_SIZE;
-      }
       else
-      {
         continue;
-      }
 
-      for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
+      // Now, threads sharing same warp_idx_y_qk will compute softmax for the same query_idx
+      for (int i = thread_idx - (warp_idx_y_qk * NUM_WARPS_X_QK * WARP_SIZE); i < num_tokens; i += NUM_THREADS / NUM_WARPS_Y_QK)
       {
-        float val = __expf(logits[logits_idx(pad_max_num_tokens, query_idx, i)] - qk_max[query_idx]);
-        logits[logits_idx(pad_max_num_tokens, query_idx, i)] = val;
+        float val = __expf(logits[logits_idx(PAD_MAX_NUM_TOKENS, query_idx, i)] - qk_max[it][thread_idx]);
+        logits[logits_idx(PAD_MAX_NUM_TOKENS, query_idx, i)] = val;
         exp_sum += val;
       }
-      exp_sum = block_sum<NUM_WARPS>(&red_smem[query_idx][NUM_WARPS], exp_sum);
+      exp_sum = block_sum_query_group<NUM_WARPS_X_QK>(&red_smem[query_idx][NUM_WARPS_X_QK], exp_sum);
 
-      exp_sum_arr[query_idx] = exp_sum;
+      exp_sum_arr[it] = exp_sum;
 
       // Compute softmax.
       const float inv_sum = __fdividef(1.f, exp_sum + 1e-6f);
-      for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
+      for (int i = thread_idx - (warp_idx_y_qk * NUM_WARPS_X_QK * WARP_SIZE); i < num_tokens; i += NUM_THREADS / NUM_WARPS_Y_QK)
       {
-        logits[logits_idx(pad_max_num_tokens, query_idx, i)] *= inv_sum;
+        logits[logits_idx(PAD_MAX_NUM_TOKENS, query_idx, i)] *= inv_sum;
       }
     }
-
-    // QK:max good
-    // logits -> Corruption during softmax procedure!
 
     __syncthreads();
 
     // If partitioning is enabled, store the max logit and exp_sum.
-    if (USE_PARTITIONING && thread_idx == 0)
+    if (USE_PARTITIONING)
     {
-      for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+      for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
       {
+        int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+        if (query_idx >= query_len)
+          continue;
         float *max_logits_ptr = max_logits + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions + partition_idx;
-        *max_logits_ptr = qk_max[query_idx];
+        *max_logits_ptr = qk_max[it][thread_idx];
         float *exp_sums_ptr = exp_sums + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions + partition_idx;
-        *exp_sums_ptr = exp_sum_arr[query_idx];
+        *exp_sums_ptr = exp_sum_arr[it];
       }
     }
 
@@ -712,9 +816,9 @@ namespace vllm
 
     constexpr int NUM_WARPS_PER_QUERY_SIZE = QUERY_SIZE / QUERIES_PER_WARP_GROUP;
 
-    constexpr int NUM_WARPS_Z = NUM_WARPS_PER_QUERY_SIZE;              // query_len tiling
-    constexpr int NUM_WARPS_Y = NUM_WARPS_PER_HEAD;                    // head_size tiling
-    constexpr int NUM_WARPS_X = NUM_WARPS / NUM_WARPS_Y / NUM_WARPS_Z; // context_len tiling
+    constexpr int NUM_WARPS_Z = NUM_WARPS_PER_QUERY_SIZE;              // query_len tiling   2
+    constexpr int NUM_WARPS_Y = NUM_WARPS_PER_HEAD;                    // head_size tiling   2
+    constexpr int NUM_WARPS_X = NUM_WARPS / NUM_WARPS_Y / NUM_WARPS_Z; // context_len tiling 2
 
     constexpr int NUM_COLS_PER_WARP = HEAD_SIZE / NUM_WARPS_PER_HEAD; // 128 / 1 = 128
 
@@ -735,8 +839,6 @@ namespace vllm
     // NOTE(woosuk): We use FP32 for the accumulator for better accuracy.
     float accs[QUERIES_PER_WARP_GROUP][NUM_ROWS_PER_THREAD];
 
-    int query_len = query_lens[seq_idx];
-
 #pragma unroll
     for (int query_idx = 0; query_idx < QUERIES_PER_WARP_GROUP; query_idx++) // For loop with undetermined size. This may be critical to performance (ie. unrolling)
     {
@@ -748,7 +850,25 @@ namespace vllm
     }
     scalar_t zero_value;
     zero(zero_value);
-    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X)
+
+    V_vec v_vec_regs[NUM_ROWS_PER_THREAD];
+    L_vec logits_vec_regs[QUERIES_PER_WARP_GROUP];
+
+    V_vec zero_v_vec;
+    zero(zero_v_vec);
+    L_vec zero_l_vec;
+    zero(zero_l_vec);
+
+    constexpr int TM = 4;
+    constexpr int TN = 4;
+
+    assert(NUM_ROWS_PER_THREAD % TM == 0);
+    assert(QUERIES_PER_WARP_GROUP % TN == 0);
+
+    constexpr int NUM_ROWS_PER_THREAD_TM = NUM_ROWS_PER_THREAD / TM;
+    constexpr int QUERIES_PER_WARP_GROUP_TN = QUERIES_PER_WARP_GROUP / TN;
+
+    for (int block_idx = start_block_idx + warp_idx_x; block_idx < end_block_idx; block_idx += NUM_WARPS_X) // equiv to dot_idx
     {
       // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
       // because int32 can lead to overflow when this variable is multiplied by large numbers
@@ -756,42 +876,50 @@ namespace vllm
       const int64_t physical_block_number = static_cast<int64_t>(block_table[block_idx]);
       const int physical_block_offset = (lane % NUM_V_VECS_PER_ROW) * V_VEC_SIZE;
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
-
       const scalar_t *v_ptr = v_cache + physical_block_number * kv_block_stride + kv_head_idx * kv_head_stride;
-#pragma unroll
-      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
+
+      // Populate registers for whole warptiling
+      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) // equiv to WNTiling.. head_size warptiling
       {
+        v_vec_regs[i] = zero_v_vec;
         const int row_idx = start_row_idx + lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
         if (row_idx < max_row_idx)
         {
           const int offset = row_idx * BLOCK_SIZE + physical_block_offset;
           V_vec v_vec = *reinterpret_cast<const V_vec *>(v_ptr + offset);
-          scalar_t *v_vec_ptr = reinterpret_cast<scalar_t *>(&v_vec);
+          v_vec_regs[i] = v_vec;
+        }
+      }
+      for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++) // equiv to WMTiling.. query_len warptiling
+      {
+        int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
+        if (query_idx < 0)
+          continue;
+        int acc_idx = query_idx / NUM_WARPS_Z;
+        L_vec logits_vec = zero_l_vec;
+        int idx = logits_idx(PAD_MAX_NUM_TOKENS, query_idx, token_idx - start_token_idx);
+        from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[idx]));
+        logits_vec_regs[it] = logits_vec;
+      }
+
 #pragma unroll
-          for (int it = 0; it < QUERIES_PER_WARP_GROUP; it++)
+      for (int i_tm = 0; i_tm < NUM_ROWS_PER_THREAD_TM; i_tm++) // equiv to WNTiling.. head_size warptiling
+      {
+#pragma unroll
+        for (int it_tn = 0; it_tn < QUERIES_PER_WARP_GROUP_TN; it_tn++) // equiv to WMTiling.. query_len warptiling
+        {
+#pragma unroll
+          for (int i = 0; i < TM; i++)
           {
-            int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
-            if (query_idx < 0)
-              break;
-            int acc_idx = query_idx / NUM_WARPS_Z;
-            // int n_context_len = context_len - (query_len - query_idx - 1);
-            int n_context_len = context_len + query_idx;
-            int n_num_context_blocks = DIVIDE_ROUND_UP(n_context_len, BLOCK_SIZE);
-            if (block_idx == n_num_context_blocks - 1)
-            {
-              // NOTE(woosuk): When v_vec contains the tokens that are out of the context,
-              // we should explicitly zero out the values since they may contain NaNs.
-              // See https://github.com/vllm-project/vllm/issues/641#issuecomment-1682544472
 #pragma unroll
-              for (int j = 0; j < V_VEC_SIZE; j++)
-              {
-                v_vec_ptr[j] = token_idx + j < n_context_len ? v_vec_ptr[j] : zero_value;
-              }
+            for (int j = 0; j < TN; j++)
+            {
+              int i_idx = i_tm * TM + i;
+              int j_idx = it_tn * TN + j;
+              int query_idx = query_len - 1 - warp_idx_z - j_idx * NUM_WARPS_Z;
+
+              accs[j_idx][i_idx] += dot(logits_vec_regs[j_idx], v_vec_regs[i_idx]);
             }
-            L_vec logits_vec;
-            int idx = logits_idx(pad_max_num_tokens, query_idx, token_idx - start_token_idx);
-            from_float(logits_vec, *reinterpret_cast<Float_L_vec *>(&logits[idx]));
-            accs[it][i] += dot(logits_vec, v_vec);
           }
         }
       }
@@ -1154,15 +1282,17 @@ namespace vllm
     {
       cum_query_len += query_lens[i];
     }
-    // const int context_len = context_lens[cum_query_len + query_lens[seq_idx] - 1];
-    const int context_len = context_lens[cum_query_len];                               // (hj) This is minimum. Add query_idx to get query-specific context_len
-    const int max_context_len = context_lens[cum_query_len] + query_lens[seq_idx] - 1; // (hj) This is maximum
+    const int query_len = query_lens[seq_idx];
+
+    // const int context_len = context_lens[cum_query_len + query_len - 1];
+    const int context_len = context_lens[cum_query_len];                     // (hj) This is minimum. Add query_idx to get query-specific context_len
+    const int max_context_len = context_lens[cum_query_len] + query_len - 1; // (hj) This is maximum
 
     const int num_partitions = DIVIDE_ROUND_UP(max_context_len, PARTITION_SIZE);
 
     if (num_partitions == 1)
     {
-      for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+      for (int query_idx = 0; query_idx < query_len; query_idx++)
       {
         // No need to reduce. Only copy tmp_out to out.
         scalar_t *out_ptr = out + (cum_query_len + query_idx) * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE;
@@ -1189,12 +1319,12 @@ namespace vllm
     float *shared_max_logits = reinterpret_cast<float *>(shared_mem);
 
     float max_logit[QUERY_SIZE];
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       max_logit[query_idx] = -FLT_MAX;
     }
 
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       const float *max_logits_ptr = max_logits + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions;
 
@@ -1207,7 +1337,7 @@ namespace vllm
     }
     __syncthreads();
 
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       // Get the global max logit.
       // Reduce within the warp.
@@ -1224,14 +1354,14 @@ namespace vllm
     __syncthreads();
 
     float global_exp_sum[QUERY_SIZE];
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       global_exp_sum[query_idx] = 0.0f;
     }
 
     float *shared_exp_sums = reinterpret_cast<float *>(shared_mem + sizeof(float) * num_partitions * QUERY_SIZE);
 
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       // Reduce across warps.
       max_logit[query_idx] = lane < NUM_WARPS ? red_smem[query_idx][lane] : -FLT_MAX;
@@ -1255,7 +1385,7 @@ namespace vllm
     }
     __syncthreads();
 
-    for (int query_idx = 0; query_idx < query_lens[seq_idx]; query_idx++)
+    for (int query_idx = 0; query_idx < query_len; query_idx++)
     {
       global_exp_sum[query_idx] = block_sum<NUM_WARPS>(&red_smem[query_idx][NUM_WARPS], global_exp_sum[query_idx]);
       const float inv_global_exp_sum = __fdividef(1.0f, global_exp_sum[query_idx] + 1e-6f);
@@ -1275,7 +1405,6 @@ namespace vllm
       }
     }
   }
-
 } // namespace vllm
 
 #define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                  \
@@ -1739,7 +1868,7 @@ void paged_attention_v2_launcher(
 template <
     typename T,
     int BLOCK_SIZE,
-    int NUM_THREADS = 256,
+    int NUM_THREADS = 128,
     int PARTITION_SIZE = 512>
 void paged_attention_v2_target_launcher(
     torch::Tensor &out,
@@ -1869,6 +1998,9 @@ void paged_attention_v2_target_launcher(
   case 16:                                                      \
     CALL_V2_LAUNCHER(T, 16);                                    \
     break;                                                      \
+  case 32:                                                      \
+    CALL_V2_LAUNCHER(T, 32);                                    \
+    break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
     break;                                                      \
@@ -1881,6 +2013,9 @@ void paged_attention_v2_target_launcher(
   {                                                             \
   case 16:                                                      \
     CALL_V2_TARGET_LAUNCHER(T, 16);                             \
+    break;                                                      \
+  case 32:                                                      \
+    CALL_V2_TARGET_LAUNCHER(T, 32);                             \
     break;                                                      \
   default:                                                      \
     TORCH_CHECK(false, "Unsupported block size: ", block_size); \
