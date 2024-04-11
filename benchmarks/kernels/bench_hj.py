@@ -9,12 +9,18 @@ from vllm._C import ops
 
 from typing import List
 
-NUM_BLOCKS = 2048
+NUM_BLOCKS = 8192
 PARTITION_SIZE = 512
+
 
 # too_many_blocks exception define
 class TooManyBlocks(Exception):
     pass
+
+
+def all_close(a, b):
+    return torch.allclose(a, b, rtol=1e-5, atol=1e-4)
+
 
 @torch.inference_mode()
 def main(
@@ -29,6 +35,7 @@ def main(
     block_size: int,
     dtype: torch.dtype,
     seed: int,
+    is_ncu: bool,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
@@ -57,15 +64,17 @@ def main(
     # (hj) Changed as we are passing context_lens as input
     context_lens = torch.tensor(context_lens, dtype=torch.int, device="cuda")
     max_context_len = context_lens.max().item()
-    
+
     query_lens = torch.tensor(query_lens, dtype=torch.int, device="cuda")
 
     # Create the block tables.
     max_num_blocks_per_seq = (max_context_len + block_size - 1) // block_size
-    block_tables = [] # For original kernel
+    block_tables = []  # For original kernel
     total_num_blocks_needed = max_num_blocks_per_seq * num_seqs
     if total_num_blocks_needed > NUM_BLOCKS:
-        raise TooManyBlocks(f"Too many blocks needed: {total_num_blocks_needed} > {NUM_BLOCKS}")
+        raise TooManyBlocks(
+            f"Too many blocks needed: {total_num_blocks_needed} > {NUM_BLOCKS}"
+        )
     bt_idx = 0
     for seq_idx in range(num_seqs):  # (hj) : Valid in target context too!
         # Sequence 사이에는 공유하는 K/V 없다고 가정
@@ -85,44 +94,54 @@ def main(
 
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
     value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
-    
+    value_cache.uniform_(-scale, scale)
+
     # for each value_cache block
     # for i in range(NUM_BLOCKS):
-        # for j in range(num_kv_heads):
-    for k in range(head_size):
-        value_cache[:, :, k, :].fill_(k + 1)
-    
-    
+    # for j in range(num_kv_heads):
+
     # print(value_cache[2, 0, :, :])
-    
-    
-    ##########
-    ##########
-    ##########
-    ##########
-    ##########
-    
-    # Fill with 1
-    query = torch.ones_like(query)
-    key_cache = torch.ones_like(key_cache)
-    # value_cache = torch.ones_like(value_cache)
-    
+
     ##########
     ##########
     ##########
     ##########
     ##########
 
+    # Fill with 1
+    # query = torch.ones_like(query)
+    # key_cache = torch.ones_like(key_cache)
+
+    # query = torch.empty(
+    #     sum_query_lens, num_query_heads, head_size, dtype=dtype, device="cuda"
+    # )
+
+    # for q in range(sum_query_lens):
+    #     query[q, :, :].fill_(q + 1)
+
+    # for k in range(head_size):
+    # value_cache[:, :, k, :].fill_(k + 1)
+
+    # value_cache = torch.ones_like(value_cache)
+
+    # for i in range(1000):
+    #     for j in range(block_size):
+    #         key_cache[i, :, :, j, :].fill_(i * block_size + j + 1)
+
+    ##########
+    ##########
+    ##########
+    ##########
 
     # Prepare for the paged attention kernel.
     output = torch.empty_like(query)
-    
+
     # (hj) Another output to validate our stuff
     validation_output = torch.empty_like(query)
-    
+
     if version == "v2":
         num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
-        
+
         # (hj) : num_seqs -> sum_query_lens
         tmp_output = torch.empty(
             size=(sum_query_lens, num_query_heads, num_partitions, head_size),
@@ -137,7 +156,7 @@ def main(
             device=output.device,
         )
         max_logits = torch.empty_like(exp_sums)
-        
+
         tmp_output_target = torch.empty_like(tmp_output)
         exp_sums_target = torch.empty_like(exp_sums)
         max_logits_target = torch.empty_like(max_logits)
@@ -208,76 +227,85 @@ def main(
         else:
             raise ValueError(f"Invalid version: {version}")
 
-        # Print output and validation 
+        # Print output and validation
         # print("Output : ", output)
         # print("Validation Output : ", validation_output)
         # (hj) Output format is [num_seqs x query_lens, num_query_heads, head_size]
-        
+
         # Compare differences
         # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
-        
-        for head in range(0,1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    print("Seq : ", s, " Head : ", head, " Query : ", q)
-                    out = output[s * query_lens[s] + q, head]
-                    val = validation_output[s * query_lens[s] + q, head]
-                    # to list
-                    out = out.tolist()
-                    val = val.tolist()
-                    # Print both, format to 3 decimal places   
-                    r1 = [round(x, 3) for x in out]
-                    r2 = [round(x, 3) for x in val]
-                    
-                    # Print both, format to 3 decimal places
-                    # All values formatted to fit in 10 space 
-                    for i in range(len(r1)):
-                        print(f"{r1[i]:<10} {r2[i]:<10}")
 
-        
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        
-        for head in range(0,1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    for part in range(num_partitions):
+        for head in range(0, num_query_heads):
+            # Check if error exists in this subsectino
+            if not all_close(output[:, head], validation_output[:, head]):
+                print("---Head---: ", head)
+                for s in range(num_seqs):
+                    for q in range(query_lens[s]):
                         print("Seq : ", s, " Head : ", head, " Query : ", q)
-                        out = tmp_output_target[s * query_lens[s] + q, head, part]
-                        val = tmp_output[s * query_lens[s] + q, head, part]
+                        out = output[s * query_lens[s] + q, head]
+                        val = validation_output[s * query_lens[s] + q, head]
                         # to list
-                        out = out.tolist()
-                        val = val.tolist()
-                        # Print both, format to 3 decimal places   
-                        r1 = [round(x, 3) for x in out]
-                        r2 = [round(x, 3) for x in val]
-                        
+                        out_l = out.tolist()
+                        val_l = val.tolist()
                         # Print both, format to 3 decimal places
-                        # All values formatted to fit in 10 space 
-                        print("Part : ", part)
-                        for i in range(len(r1)):
-                            print(f"{r1[i]:<10} {r2[i]:<10}")
 
-        
-        if not torch.allclose(output, validation_output):
+                        r1 = [round(x, 3) for x in out_l]
+                        r2 = [round(x, 3) for x in val_l]
+
+                        # Print both, format to 3 decimal places
+                        # All values formatted to fit in 10 space
+                        if not all_close(out, val):
+                            for i in range(len(r1)):
+                                if not all_close(out[i], val[i]):
+                                    print(f"{out_l[i]} \t {val_l[i]} <--- Error")
+                                else:
+                                    print(f"{r1[i]:<10} {r2[i]:<10}")
+                        else:
+                            for i in range(len(r1)):
+                                print(f"{r1[i]:<10} {r2[i]:<10}")
+
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+
+        # for head in range(0, 1):
+        #     for s in range(num_seqs):
+        #         for q in range(query_lens[s]):
+        #             for part in range(num_partitions):
+        #                 print("Seq : ", s, " Head : ", head, " Query : ", q)
+        #                 out = tmp_output_target[s * query_lens[s] + q, head, part]
+        #                 val = tmp_output[s * query_lens[s] + q, head, part]
+        #                 # to list
+        #                 out = out.tolist()
+        #                 val = val.tolist()
+        #                 # Print both, format to 3 decimal places
+        #                 r1 = [round(x, 3) for x in out]
+        #                 r2 = [round(x, 3) for x in val]
+
+        #                 # Print both, format to 3 decimal places
+        #                 # All values formatted to fit in 10 space
+        #                 print("Part : ", part)
+        #                 for i in range(len(r1)):
+        #                     print(f"{r1[i]:<10} {r2[i]:<10}")
+
+        if not all_close(output, validation_output):
             raise ValueError("Validation failed")
 
-        # check difference of output and validation_output is same as 0 
-        validation_success = torch.allclose(output, validation_output)
-        
+        # check difference of output and validation_output is same as 0
+        validation_success = all_close(output, validation_output)
+
         return validation_success
 
-    def run_benchmark(target:bool, num_iters: int) -> float: 
-        
+    def run_benchmark(target: bool, num_iters: int) -> float:
+
         # print("Running benchmark with shapes:")
         # print(f"  query: {query.shape}")
         # print(f"  key_cache: {key_cache.shape}")
         # print(f"  value_cache: {value_cache.shape}")
-        
+
         # print("Query Information")
         # print("Num Seqs : ", num_seqs)
         # print("Query Lens : ", query_lens)
@@ -352,7 +380,7 @@ def main(
                     )
             else:
                 raise ValueError(f"Invalid version: {version}")
-        
+
         # Warmup.
         for _ in range(3):
             run()
@@ -366,7 +394,7 @@ def main(
 
         elasped_time_ns = (end_time - start_time) / num_iters
         elasped_time_ms = elasped_time_ns / 1e6
-        
+
         return elasped_time_ms
 
     # Validation
@@ -374,12 +402,17 @@ def main(
     success = run_validation()
     print("Validation success: ", success)
 
-    original_latency = run_benchmark(target=False, num_iters=100)
-    target_latency = run_benchmark(target=True, num_iters=100)
+    if is_ncu:
+        num_iters = 4
+    else:
+        num_iters = 100
+    original_latency = run_benchmark(target=False, num_iters=num_iters)
+    target_latency = run_benchmark(target=True, num_iters=num_iters)
 
     print(f"Original kernel running time: {original_latency:.3f} ms")
     print(f"Target kernel running time: {target_latency:.3f} ms")
     print(f"Speedup : {original_latency / target_latency:.3f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -395,11 +428,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--block-size", type=int, choices=[16, 32], default=16)
     parser.add_argument("--use-alibi", action="store_true")
+    parser.add_argument("--ncu", action="store_true")
     parser.add_argument(
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--query-len", type=int, default=-1) # -1 is random
+    parser.add_argument("--seed", type=int, default=random.randint(0, 1000000))
+    parser.add_argument("--query-len", type=int, default=-1)  # -1 is random
     args = parser.parse_args()
 
     if args.num_query_heads % args.num_kv_heads != 0:
@@ -411,22 +445,24 @@ if __name__ == "__main__":
     }
 
     # For context len, do it for each query
-    def gen_context_len(max_context_len_per_query : List[int], query_lens : List[int]):
+    def gen_context_len(max_context_len_per_query: List[int], query_lens: List[int]):
         res = []
         for query_len, c_max in zip(query_lens, max_context_len_per_query):
             for i in range(query_len):
                 res.append(c_max - (query_len - i - 1))
         return res
-        
+
     if args.query_len == -1:
-        query_lens = [random.randint(2, 16) for _ in range(args.batch_size)]
+        query_lens = [random.randint(2, 8) for _ in range(args.batch_size)]
     else:
         query_lens = [args.query_len] * args.batch_size
 
     if args.context_len == -1:
-        context_lens = gen_context_len([random.randint(256, 1024) for _ in range(args.batch_size)], query_lens)
+        context_lens = gen_context_len(
+            [random.randint(256, 1024) for _ in range(args.batch_size)], query_lens
+        )
     else:
-        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)    
+        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)
 
     # Failed with query_len :  2  context_len :  65  num_seqs :  1
 
@@ -441,7 +477,8 @@ if __name__ == "__main__":
         block_size=args.block_size,
         use_alibi=args.use_alibi,
         dtype=dtype_to_torch_dtype[args.dtype],
-        seed=args.seed
+        seed=args.seed,
+        is_ncu=args.ncu,
     )
 
     # FUZZING
