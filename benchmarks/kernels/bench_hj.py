@@ -19,7 +19,9 @@ class TooManyBlocks(Exception):
 
 
 def all_close(a, b):
-    return torch.allclose(a, b, rtol=1e-5, atol=1e-4)
+    # return torch.allclose(a, b, rtol=1e-5, atol=1e-4)
+    return torch.allclose(a, b, rtol=1e-5, atol=1e-5)
+    # return torch.allclose(a, b)
 
 
 @torch.inference_mode()
