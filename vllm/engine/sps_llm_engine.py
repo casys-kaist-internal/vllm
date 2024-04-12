@@ -610,26 +610,15 @@ class SpSLLMEngine:
                     check_cnt: int) -> None:
         """Stop the finished sequences."""
         for stop_str in sampling_params.stop:
-            # Initialize the index to start checking from
-            idx = -check_cnt + 1
-
-            # Continue checking until we've checked all characters in the check count
-            while idx != 0:
-                if seq.output_text[:idx].endswith(stop_str):
-                    # Truncate the output text so that the stop string is
-                    # not included in the output.
-                    seq.output_text = (seq.output_text[:idx][:-len(stop_str)])
-                    seq.status = SequenceStatus.FINISHED_STOPPED
-                    return
-                idx += 1
-
-            # If the entire output text ends with the stop string
-            if seq.output_text.endswith(stop_str):
-                # Truncate the output text so that the stop string is
-                # not included in the output.
-                seq.output_text = (seq.output_text[:-len(stop_str)])
+            try:
+                # Initialize the index to start checking from
+                start_idx = 1 - len(stop_str) - check_cnt
+                stop_str_idx = seq.output_text.index(stop_str, start_idx)
+                seq.output_text = seq.output_text[:stop_str_idx]
                 seq.status = SequenceStatus.FINISHED_STOPPED
                 return
+            except ValueError:
+                pass
 
         for idx in range(-check_cnt, 0):
             if seq.get_last_nth_token_id(idx) in sampling_params.stop_token_ids:
