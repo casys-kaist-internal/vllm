@@ -586,7 +586,7 @@ namespace vllm
       }
     }
     __syncthreads(); // TODO(naed90): possible speedup if this is replaced with a memory wall right before we use q_vecs
-    constexpr int QUERIES_PER_WARP_GROUP_QK = 8;
+    constexpr int QUERIES_PER_WARP_GROUP_QK = 4;
     constexpr int NUM_WARPS_Y_QK = QUERY_SIZE / QUERIES_PER_WARP_GROUP_QK;
     constexpr int NUM_WARPS_X_QK = NUM_WARPS / NUM_WARPS_Y_QK;
 
@@ -644,6 +644,8 @@ namespace vllm
       // For example, if the the thread group size is 4, then the first thread in the group
       // has 0, 4, 8, ... th vectors of the key, and the second thread has 1, 5, 9, ... th
       // vectors of the key, and so on.
+
+
       for (int i = 0; i < NUM_TOKENS_PER_THREAD_GROUP; i++)
       {
         const int physical_block_offset = (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE;
