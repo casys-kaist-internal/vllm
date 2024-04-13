@@ -144,7 +144,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.

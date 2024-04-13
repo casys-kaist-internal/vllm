@@ -20,7 +20,7 @@ fi
 echo "Running client at port $port with $request_rate reqs/sec"
 
 # Set the dataset path
-dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
+dataset="/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # Set target model 
 target_model="facebook/opt-6.7b"
