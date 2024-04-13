@@ -1,7 +1,7 @@
 import statistics
 
-base_file_path = "/home/sjchoi/workspace/vllm/benchmarks/base_{}.txt"
-sps_file_path = "/home/sjchoi/workspace/vllm/benchmarks/sps_{}_{}.txt"
+base_file_path = "/home/noppanat/workspace/vllm/benchmarks/base_{}.txt"
+sps_file_path = "/home/noppanat/workspace/vllm/benchmarks/sps_{}_{}.txt"
 
 for batch_size in range(1, 25):
     base_file = open(base_file_path.format(batch_size), "r")

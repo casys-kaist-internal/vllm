@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Set the dataset path
-dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
+dataset="/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # Set the output file path
-output_file="/home/sjchoi/workspace/vllm/benchmarks/results.csv"
+output_file="/home/noppanat/workspace/vllm/benchmarks/results.csv"
 
 # Set the number of prompts
 num_prompts=10
