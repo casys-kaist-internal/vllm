@@ -141,8 +141,30 @@ class SpSScheduler:
         # Fix the current time.
         now = time.monotonic()
 
+        # Target Execution Point Identifier (TEPI)
+        # Count the number of tokens that should be fed to the target model.
+        num_tokens_to_target = 0
+        for seq_group in self.running:
+            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+            # target model should run the last non-draft token and all the draft tokens
+            num_tokens_to_target += (seqs[0].get_draft_len() + 1)
+
+        num_draft_exit_tokens_to_target = 0
+        for seq_group in self.draft_exit:
+            seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
+            # target model should run the last non-draft token and all the draft tokens
+            num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
+
+        num_tokens_to_target += num_draft_exit_tokens_to_target
+        # print("num_tokens_to_target_draft_exit: ",
+        #       num_tokens_to_target_draft_exit)
+        # print("num_tokens_to_target: ", num_tokens_to_target)
+
+        # Calculate the number of tokens that can be additionally fed to the target model.
+        remaining_tokens = self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) - num_tokens_to_target
+
         # Join waiting sequences if possible.
-        if not self.swapped:
+        if not self.swapped and remaining_tokens > 0:
             ignored_seq_groups: List[SequenceGroup] = []
             scheduled: List[SequenceGroup] = []
             # The total number of sequences on the fly, including the
@@ -154,7 +176,7 @@ class SpSScheduler:
             # Optimization: We do not sort the waiting queue since the preempted
             # sequence groups are added to the front and the new sequence groups
             # are added to the back.
-            while self.waiting:
+            while self.waiting and remaining_tokens > 0:
                 seq_group = self.waiting[0]
 
                 assert seq_group.num_seqs() == 1, (
@@ -209,6 +231,7 @@ class SpSScheduler:
                 self.running.append(seq_group)
                 num_curr_seqs += num_new_seqs
                 scheduled.append(seq_group)
+                remaining_tokens -= 1
 
             if scheduled or ignored_seq_groups:
                 scheduler_outputs = SpSSchedulerOutputs(
@@ -223,36 +246,13 @@ class SpSScheduler:
                 )
                 return scheduler_outputs
 
-        # Target Execution Point Identifier (TEPI)
-        # Count the number of tokens that should be fed to the target model.
-        num_tokens_to_target = 0
-        for seq_group in self.running:
-            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-            # target model should run the last non-draft token and all the draft tokens
-            num_tokens_to_target += (seqs[0].get_draft_len() + 1)
-
-        num_draft_exit_tokens_to_target = 0
-        for seq_group in self.draft_exit:
-            seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
-            # target model should run the last non-draft token and all the draft tokens
-            num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
-
-        num_tokens_to_target += num_draft_exit_tokens_to_target
-        # print("num_tokens_to_target_draft_exit: ",
-        #       num_tokens_to_target_draft_exit)
-        # print("num_tokens_to_target: ", num_tokens_to_target)
-
         # Decision logic for executing the target or draft model:
-        # Compare the calculated number of tokens to the predefined threshold.
-        # If the number of tokens for the target model is below the threshold,
+        # With respect to the threshold, if more tokens can be fed to the target model,
         # continue running the draft model. Otherwise, switch to the target model.
-        run_target_model = (num_tokens_to_target >=
-                            self.sps_config.get_num_tokens_to_target_threshold(len(self.running))) or (len(self.running) == 0)
+        run_target_model = (remaining_tokens <= 0) or (len(self.running) == 0)
 
         if not run_target_model:
             sps_stage = SpSStage.DRAFT_DECODE
-            remaining_tokens = self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) - \
-                num_tokens_to_target
 
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
