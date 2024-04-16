@@ -250,6 +250,7 @@ class GPTNeoXForCausalLM(nn.Module):
         self.linear_method = linear_method
         self.gpt_neox = GPTNeoXModel(parallel_state, config, linear_method)
         self.embed_out = ParallelLMHead(
+            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )

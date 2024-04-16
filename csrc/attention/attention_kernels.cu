@@ -670,7 +670,10 @@ namespace vllm
       else if (partitions_needed == partition_idx + 1)
         num_tokens = context_len_for_query - partition_idx * PARTITION_SIZE;
       else
+      {
+        exp_sum_arr[query_idx] = 0.f;
         continue;
+      }
 
       for (int i = thread_idx; i < num_tokens; i += NUM_THREADS)
       {
@@ -1402,9 +1405,12 @@ void paged_attention_v1_launcher(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   switch (head_size)
   {
-  // NOTE(woosuk): To reduce the compilation time, we only compile for the
-  // head sizes that we use in the model. However, we can easily extend this
-  // to support any head size which is a multiple of 16.
+    // NOTE(woosuk): To reduce the compilation time, we only compile for the
+    // head sizes that we use in the model. However, we can easily extend this
+    // to support any head size which is a multiple of 16.
+  case 32:
+    LAUNCH_PAGED_ATTENTION_V1(32);
+    break;
   case 64:
     LAUNCH_PAGED_ATTENTION_V1(64);
     break;
@@ -1489,9 +1495,12 @@ void paged_attention_v1_target_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  // case 64:
-  //   LAUNCH_PAGED_ATTENTION_V1_TARGET(64);
-  //   break;
+  case 32:
+    LAUNCH_PAGED_ATTENTION_V1_TARGET(32);
+    break;
+  case 64:
+    LAUNCH_PAGED_ATTENTION_V1_TARGET(64);
+    break;
   // case 80:
   //   LAUNCH_PAGED_ATTENTION_V1_TARGET(80);
   //   break;
@@ -1739,12 +1748,15 @@ void paged_attention_v2_launcher(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   switch (head_size)
   {
-  // NOTE(woosuk): To reduce the compilation time, we only compile for the
-  // head sizes that we use in the model. However, we can easily extend this
-  // to support any head size which is a multiple of 16.
-  // case 64:
-  //   LAUNCH_PAGED_ATTENTION_V2(64);
-  //   break;
+    // NOTE(woosuk): To reduce the compilation time, we only compile for the
+    // head sizes that we use in the model. However, we can easily extend this
+    // to support any head size which is a multiple of 16.
+  case 32:
+    LAUNCH_PAGED_ATTENTION_V2(32);
+    break;
+  case 64:
+    LAUNCH_PAGED_ATTENTION_V2(64);
+    break;
   // case 80:
   //   LAUNCH_PAGED_ATTENTION_V2(80);
   //   break;
@@ -1831,12 +1843,15 @@ void paged_attention_v2_target_launcher(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   switch (head_size)
   {
-  // NOTE(woosuk): To reduce the compilation time, we only compile for the
-  // head sizes that we use in the model. However, we can easily extend this
-  // to support any head size which is a multiple of 16.
-  // case 64:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
-  //   break;
+    // NOTE(woosuk): To reduce the compilation time, we only compile for the
+    // head sizes that we use in the model. However, we can easily extend this
+    // to support any head size which is a multiple of 16.
+  case 32:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(32);
+    break;
+  case 64:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
+    break;
   // case 80:
   //   LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
   //   break;

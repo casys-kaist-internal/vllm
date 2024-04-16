@@ -483,6 +483,10 @@ class SpSScheduler:
         # over sequence groups with a single sequence.
         # TODO(woosuk): Support recomputation for sequence groups with multiple
         # sequences. This may require a more sophisticated CUDA kernel.
+
+        # Currently we don't support preemption raise assertion
+        raise AssertionError("Invalid preemption mode.")
+
         if preemption_mode is None:
             if seq_group.get_max_num_running_seqs() == 1:
                 preemption_mode = PreemptionMode.RECOMPUTE

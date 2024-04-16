@@ -1630,9 +1630,9 @@ void paged_attention_v2_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  // case 64:
-  //   LAUNCH_PAGED_ATTENTION_V2(64);
-  //   break;
+  case 64:
+    LAUNCH_PAGED_ATTENTION_V2(64);
+    break;
   // case 80:
   //   LAUNCH_PAGED_ATTENTION_V2(80);
   //   break;
@@ -1724,9 +1724,9 @@ void paged_attention_v2_target_launcher(
   // NOTE(woosuk): To reduce the compilation time, we only compile for the
   // head sizes that we use in the model. However, we can easily extend this
   // to support any head size which is a multiple of 16.
-  // case 64:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
-  //   break;
+  case 64:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
+    break;
   // case 80:
   //   LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
   //   break;

@@ -44,9 +44,9 @@ class SpSWorker:
         self.distributed_init_method = distributed_init_method
 
         self.target_model_runner = SpSModelRunner(target_model_config, parallel_config,
-                                                  scheduler_config)
+                                                  scheduler_config, sps_config)
         self.draft_model_runner = SpSModelRunner(draft_model_config, parallel_config,
-                                                 scheduler_config)
+                                                 scheduler_config, sps_config)
 
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
