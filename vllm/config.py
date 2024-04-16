@@ -467,8 +467,10 @@ def _get_and_verify_max_len(
 
 
 class SpSConfig:
-    def __init__(self, draft_size: int) -> None:
+    def __init__(self, draft_size: int, use_target_attention: bool) -> None:
         self.draft_size = draft_size
+        self.use_target_attention = use_target_attention
+
         # really large number to disable this feature
         self.num_tokens_to_target_threshold = 100000000000000
 

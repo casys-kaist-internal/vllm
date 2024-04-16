@@ -116,6 +116,7 @@ class ModelRunner:
             context_lens=None,
             query_lens=None,
             block_tables=None,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata
 
@@ -190,6 +191,7 @@ class ModelRunner:
             context_lens=context_lens,
             query_lens=None,
             block_tables=block_tables,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata
 

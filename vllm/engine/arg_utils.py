@@ -248,8 +248,9 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-    tokenizer: Optional[str] = None
     draft_size: int = 8
+    use_target_attention: bool = True
+    tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
@@ -299,6 +300,10 @@ class SpSEngineArgs:
                             type=int,
                             default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
+        parser.add_argument('--use-target-attention',
+                            type=bool,
+                            default=SpSEngineArgs.use_target_attention,
+                            help='use target attention kernel')
         parser.add_argument(
             '--tokenizer',
             type=str,
@@ -454,6 +459,7 @@ class SpSEngineArgs:
                                          self.dtype, self.seed, self.revision,
                                          self.tokenizer_revision, self.max_model_len,
                                          self.quantization)
+        # Change the vocab size of draft to match target
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space,
@@ -468,11 +474,17 @@ class SpSEngineArgs:
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.max_paddings)
-        sps_config = SpSConfig(self.draft_size)
+        sps_config = SpSConfig(self.draft_size, self.use_target_attention)
 
-        # Assertions for target model and draft model
-        assert (target_model_config.get_vocab_size()
-                == draft_model_config.get_vocab_size())
+        # If the model is Pythia, the target vocab and draft vocab is actually the same content
+        # with different length with 'None' token padded. So, we skip assertion
+        allowed_model = ['pythia']
+        # Check target_model_config.model and draft_model_config.model have substring allowed model
+        if not any(model in target_model_config.model for model in allowed_model) and not any(model in draft_model_config.model for model in allowed_model):
+            # Assertions for target model and draft model and print vocab size if fail
+            assert target_model_config.get_vocab_size() == draft_model_config.get_vocab_size(
+            ), f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}"
+
         assert (target_model_config.get_sliding_window()
                 == draft_model_config.get_sliding_window())
         assert (target_model_config.trust_remote_code ==
