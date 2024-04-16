@@ -256,41 +256,61 @@ def main(args: argparse.Namespace):
     # Warmup
     warmup(llm)
 
-    latencies = []
-    throughputs = []
-    output_lens = []
+    target_model = args.target_model.split('/')[-1]
+    draft_model = args.draft_model.split('/')[-1]
 
-    for _ in range(args.num_iters):
-        sampled_requests = random.sample(requests, args.batch_size)
+    directory = f'{target_model}_{draft_model}_{args.dataset}_{args.temperature}'
 
-        for prompt, _, output_len in sampled_requests:
-            sampling_params = SamplingParams(
-                n=1,
-                temperature=args.temperature,
-                top_p=1.0,
-                use_beam_search=False,
-                ignore_eos=True,
-                max_tokens=output_len,
-            )
-            # FIXME(woosuk): Do not use internal method.
-            llm._add_request(
-                prompt=prompt,
-                prompt_token_ids=None,
-                sampling_params=sampling_params,
-            )
-        generation_latency, output_len = llm._run_engine_benchmark()
-        # print(f"Generation latency: {generation_latency:.3f} seconds")
-        # print(f"Output length: {output_len}")
+    prompt_output_csv = f'result/{directory}/prompt_output.csv'
+    accept_probs_csv = f'result/{directory}/accept_probs.csv'
+    beta_list_csv = f'result/{directory}/beta_list.csv'
+    accept_cnt_list_csv = f'result/{directory}/accept_cnt_list.csv'
+    reject_pos_csv = f'result/{directory}/reject_pos.csv'
 
-        # per request per output token latency
-        latency = generation_latency / np.mean(output_len)
-        throughput = np.sum(output_len) / generation_latency
-        latencies.append(latency)
-        throughputs.append(throughput)
-        output_lens.append(np.mean(output_len))
+    # Make new directory remove if already exists
+    import os
+    if os.path.exists(f'result/{directory}'):
+        os.system(f'rm -rf result/{directory}')
+    os.makedirs(f'result/{directory}')
 
-    print(
-        f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
+    # Loop through requests
+    for req in tqdm(requests):
+        prompt = req[0]
+        output_len = req[2]
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=args.temperature,
+            top_p=1.0,
+            use_beam_search=False,
+            ignore_eos=True,
+            max_tokens=output_len,
+        )
+        llm._add_request(
+            prompt=prompt,
+            prompt_token_ids=None,
+            sampling_params=sampling_params,
+        )
+
+        output = llm._run_engine(use_tqdm=False)
+
+        if args.engine == "sps":
+            # print content of output here
+            # Write to csv file
+            with open(prompt_output_csv, 'a') as f:
+                # exchange '\n' in prompt and output with ' ' for csv
+                f.write(prompt.replace('\n', ' ') + ', ' +
+                        output[0].outputs[0].text.replace('\n', ' ') + '\n')
+            with open(accept_probs_csv, 'a') as f:
+                f.write(str(output[0].outputs[0].accept_probs)[1:-1] + '\n')
+            with open(beta_list_csv, 'a') as f:
+                f.write(str(output[0].outputs[0].beta_list)[1:-1] + '\n')
+            with open(accept_cnt_list_csv, 'a') as f:
+                f.write(str(output[0].outputs[0].accept_cnt_list)[1:-1] + '\n')
+            with open(reject_pos_csv, 'a') as f:
+                f.write(str(output[0].outputs[0].reject_pos)[1:-1] + '\n')
+        else:
+            print("PROMPT: ", output[0].prompt)
+            print("OUTPUT: ", output[0].outputs[0].text)
 
 
 if __name__ == '__main__':
@@ -315,7 +335,7 @@ if __name__ == '__main__':
                         choices=['awq', 'squeezellm', None],
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,

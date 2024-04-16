@@ -20,10 +20,11 @@ class InputMetadata:
         draft_lens: List[int],
         target_lens: List[int],
         slot_mapping: torch.Tensor,
-        max_context_len: Optional[int],
-        context_lens: Optional[torch.Tensor],
-        query_lens: Optional[torch.Tensor],
-        block_tables: Optional[torch.Tensor],
+        max_context_len: int,
+        context_lens: torch.Tensor,
+        query_lens: torch.Tensor,
+        block_tables: torch.Tensor,
+        use_target_attention: bool,
     ) -> None:
         self.prompt_lens = prompt_lens
         self.target_lens = target_lens
@@ -33,6 +34,7 @@ class InputMetadata:
         self.context_lens = context_lens
         self.query_lens = query_lens
         self.block_tables = block_tables
+        self.use_target_attention = use_target_attention
 
         # SpS PROMPT: is_prompt == True
         # SpS DRAFT_DECODE: is_prompt == False and is_target_decode == False

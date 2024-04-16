@@ -214,8 +214,10 @@ class Sequence:
         self.tokens: Optional[List[str]] = None
 
         # SpS related debugging (Hyunjae)
+        self.accept_cnt_list: List[int] = []
         self.reject_pos: List[int] = []
         self.accept_probs: List[float] = []
+        self.beta_list: List[float] = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -349,7 +351,9 @@ class Sequence:
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
     def accept_draft_tokens(self,
-                            accept_cnt: int) -> int:
+                            accept_cnt: int,
+                            accept_probs: List[float],
+                            beta_list: List[float]) -> int:
         # assert accept_cnt <= self.draft_size
         draft_size = self.get_draft_len()
         reject_cnt = draft_size - accept_cnt
@@ -358,7 +362,17 @@ class Sequence:
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
-        # self.accept_probs.extend(accept_probs)
+
+        if accept_cnt == draft_size:  # all accept bonus token
+            accept_probs.append(1)
+            beta_list.append(1)
+
+        accept_probs = accept_probs[:accept_cnt+1]
+        beta_list = beta_list[:accept_cnt+1]
+
+        self.accept_cnt_list.append(accept_cnt)
+        self.accept_probs.extend(accept_probs)
+        self.beta_list.extend(beta_list)
 
         return free_block_cnt
 
@@ -541,6 +555,7 @@ class SequenceOutput:
         total_cnt: Optional[int] = 0,
         accept_cnt: Optional[int] = 0,
         accept_probs: Optional[List[float]] = None,
+        beta_list: Optional[List[float]] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
@@ -551,6 +566,7 @@ class SequenceOutput:
         self.total_cnt = total_cnt
         self.accept_cnt = accept_cnt
         self.accept_probs = accept_probs
+        self.beta_list = beta_list
         # SpS related end
 
     def __repr__(self) -> str:
