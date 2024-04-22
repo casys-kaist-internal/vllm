@@ -6,6 +6,7 @@ import time
 import random
 from typing import List, Optional, Tuple
 
+
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -14,6 +15,7 @@ from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
 download_dir = '/home/sjlim/workspace/models'
+
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -42,8 +44,6 @@ def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
-    # random sort dataset
-    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -74,8 +74,6 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
-    # random sort dataset
-    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -106,8 +104,6 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
-    # random sort dataset
-    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -144,14 +140,12 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
-    # random sort dataset
-    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/sjlim/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -181,9 +175,6 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
             # Prune too long sequences.
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
-
-    # random sort dataset
-    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -289,7 +280,7 @@ def main(args: argparse.Namespace):
         output_lens.append(np.mean(output_len))
 
     print(
-        f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
+        f"readsult, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
 
 
 if __name__ == '__main__':
