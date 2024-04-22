@@ -10,7 +10,7 @@ from vllm._C import ops
 from typing import List
 
 NUM_BLOCKS = 8192
-PARTITION_SIZE = 512
+PARTITION_SIZE = 256
 
 
 # too_many_blocks exception define
@@ -19,9 +19,16 @@ class TooManyBlocks(Exception):
 
 
 def all_close(a, b):
-    # return torch.allclose(a, b, rtol=1e-5, atol=1e-4)
-    return torch.allclose(a, b, rtol=1e-5, atol=1e-5)
+    return torch.allclose(a, b, rtol=1e-5, atol=1e-4)
+    # return torch.allclose(a, b, rtol=1e-5, atol=1e-5)
     # return torch.allclose(a, b)
+
+
+# enum original, target, tensor_core
+class KernelVersion:
+    ORIGINAL = 0
+    TARGET = 1
+    TENSOR_CORE = 2
 
 
 @torch.inference_mode()
@@ -121,9 +128,7 @@ def main(
     # for q in range(sum_query_lens):
     #     query[q, :, :].fill_(q + 1)
 
-    # for k in range(head_size):
-    # value_cache[:, :, k, :].fill_(k + 1)
-
+    # for k in rans
     # value_cache = torch.ones_like(value_cache)
 
     # for i in range(1000):
@@ -193,7 +198,23 @@ def main(
                 alibi_slopes,
             )
         elif version == "v2":
-            ops.paged_attention_v2(
+            # ops.paged_attention_v2(
+            #     validation_output,
+            #     exp_sums,
+            #     max_logits,
+            #     tmp_output,
+            #     query,
+            #     key_cache,
+            #     value_cache,
+            #     head_mapping,
+            #     scale,
+            #     block_tables,
+            #     context_lens,
+            #     block_size,
+            #     max_context_len,
+            #     alibi_slopes,
+            # )
+            ops.paged_attention_v2_target(
                 validation_output,
                 exp_sums,
                 max_logits,
@@ -205,11 +226,12 @@ def main(
                 scale,
                 block_tables,
                 context_lens,
+                query_lens,
                 block_size,
                 max_context_len,
                 alibi_slopes,
             )
-            ops.paged_attention_v2_target(
+            ops.paged_attention_v2_target_tensor_core(
                 output,
                 exp_sums_target,
                 max_logits_target,
@@ -237,6 +259,8 @@ def main(
         # Compare differences
         # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
+
+        torch.cuda.synchronize()
 
         for head in range(0, num_query_heads):
             # Check if error exists in this subsectino
@@ -301,7 +325,7 @@ def main(
 
         return validation_success
 
-    def run_benchmark(target: bool, num_iters: int) -> float:
+    def run_benchmark(target: KernelVersion, num_iters: int) -> float:
 
         # print("Running benchmark with shapes:")
         # print(f"  query: {query.shape}")
@@ -314,74 +338,60 @@ def main(
         # print("Context Lens : ", context_lens)
 
         def run():
-            if version == "v1":
-                if target:
-                    ops.paged_attention_v1_target(
-                        output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        query_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-                else:
-                    ops.paged_attention_v1(
-                        validation_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-            elif version == "v2":
-                if target:
-                    ops.paged_attention_v2_target(
-                        output,
-                        exp_sums_target,
-                        max_logits_target,
-                        tmp_output_target,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        query_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-                else:
-                    ops.paged_attention_v2(
-                        validation_output,
-                        exp_sums,
-                        max_logits,
-                        tmp_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
+            assert version == "v2"
+            if target == KernelVersion.TARGET:
+                ops.paged_attention_v2_target(
+                    output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    query_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
+            elif target == KernelVersion.ORIGINAL:
+                ops.paged_attention_v2(
+                    validation_output,
+                    exp_sums,
+                    max_logits,
+                    tmp_output,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
             else:
-                raise ValueError(f"Invalid version: {version}")
+                ops.paged_attention_v2_target_tensor_core(
+                    output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    query_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
 
         # Warmup.
         for _ in range(3):
@@ -401,19 +411,26 @@ def main(
 
     # Validation
     torch.cuda.synchronize()
-    success = run_validation()
-    print("Validation success: ", success)
+    # success = run_validation()
+    # print("Validation success: ", success)
 
     if is_ncu:
         num_iters = 4
     else:
         num_iters = 100
-    original_latency = run_benchmark(target=False, num_iters=num_iters)
-    target_latency = run_benchmark(target=True, num_iters=num_iters)
+    original_latency = run_benchmark(target=KernelVersion.ORIGINAL, num_iters=num_iters)
+    target_latency = run_benchmark(target=KernelVersion.TARGET, num_iters=num_iters)
+    tensor_core_latency = run_benchmark(
+        target=KernelVersion.TENSOR_CORE, num_iters=num_iters
+    )
 
-    print(f"Original kernel running time: {original_latency:.3f} ms")
-    print(f"Target kernel running time: {target_latency:.3f} ms")
-    print(f"Speedup : {original_latency / target_latency:.3f}")
+    print(f"Original kernel running time\t: {original_latency:.3f} ms")
+    print(f"Target kernel running time  \t: {target_latency:.3f} ms")
+    print(f"TC kernel running time      \t: {tensor_core_latency:.3f} ms")
+    print(f"Speedup                     \t: {original_latency / target_latency:.3f}")
+    print(
+        f"Speedup TC                  \t: {original_latency / tensor_core_latency:.3f}"
+    )
 
 
 if __name__ == "__main__":

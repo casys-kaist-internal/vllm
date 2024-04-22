@@ -60,6 +60,23 @@ void paged_attention_v2_target(
     int max_context_len,
     const c10::optional<torch::Tensor> &alibi_slopes);
 
+void paged_attention_v2_target_tensor_core(
+    torch::Tensor &out,
+    torch::Tensor &exp_sums,
+    torch::Tensor &max_logits,
+    torch::Tensor &tmp_out,
+    torch::Tensor &query,
+    torch::Tensor &key_cache,
+    torch::Tensor &value_cache,
+    torch::Tensor &head_mapping,
+    float scale,
+    torch::Tensor &block_tables,
+    torch::Tensor &context_lens,
+    torch::Tensor &query_lens,
+    int block_size,
+    int max_context_len,
+    const c10::optional<torch::Tensor> &alibi_slopes);
+
 void rms_norm(
     torch::Tensor &out,
     torch::Tensor &input,

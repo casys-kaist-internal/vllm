@@ -81,9 +81,10 @@ namespace vllm
   };
 
   // 기존 코드
-  inline __device__ int logits_idx(int num_tokens, int query_idx, int token_idx)
+  template <int NUM_TOKENS>
+  inline __device__ int logits_idx(int query_idx, int token_idx)
   {
-    return query_idx * num_tokens + token_idx;
+    return query_idx * NUM_TOKENS + token_idx;
   }
 
 } // namespace vllm
