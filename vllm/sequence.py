@@ -214,7 +214,7 @@ class Sequence:
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
 
-        # SpS related debugging (Hyunjae)
+        # SpS related params
         self.accept_cnt_list: List[int] = []
         self.reject_pos: List[int] = []
         self.accept_probs: List[float] = []
@@ -364,10 +364,10 @@ class Sequence:
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
 
-        if accept_cnt != draft_size:  # all accept bonus token
+        if accept_cnt != draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-        else:
+        else:  # all accept bonus token
             accept_probs.append(None)
             beta_list.append(None)
 
