@@ -3,12 +3,12 @@ target_model="facebook/opt-6.7b"
 draft_model="facebook/opt-125m"
 draft_size=4
 request_rate=4
-num_iters=10
+num_iters=3
 num_prompts=$((request_rate * num_iters))
 
 port=8841
-delay=120
-duration=150
+delay=150
+duration=10
 
 download_dir="/home/noppanat/workspace/models"
 log_file="/home/noppanat/workspace/vllm/benchmarks/logs/profile_sps_async.log"
@@ -24,6 +24,7 @@ echo "Running sps server at port $port"
     --download-dir $download_dir \
     --target-model $target_model \
     --draft-model $draft_model \
+    --draft-size $draft_size \
     --disable-log-requests \
     > $log_file &
 sleep 30
@@ -41,9 +42,6 @@ python benchmark_serving.py \
     --dataset $dataset \
     --num-prompts $num_prompts \
     --request-rate $request_rate
-
-# kill server
-# kill $(ps aux | grep '[p]ython3 -m vllm.entrypoints.sps_api_server' | awk '{print $2}')
 
 sleep 10
 
