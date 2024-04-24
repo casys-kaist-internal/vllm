@@ -2,7 +2,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 
-from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig
+from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig, SpSConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
@@ -21,10 +21,12 @@ class SpSModelRunner:
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
+        sps_config: SpSConfig,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
+        self.sps_config = sps_config
 
         # model_config can be None in tests/samplers/test_sampler.py.
         # FIXME(woosuk): This is a hack to make the tests work. Refactor this.
@@ -114,7 +116,9 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            query_lens=None,
             block_tables=None,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata
 
@@ -188,7 +192,9 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            query_lens=None,
             block_tables=block_tables,
+            use_target_attention=False,  # Draft model does not use target attention
         )
         return input_tokens, input_positions, input_metadata
 
@@ -242,6 +248,7 @@ class SpSModelRunner:
                                                  self.block_size)
                         block_table = block_table[-sliding_window_blocks:]
                     block_tables.append(block_table)
+                    
         input_tokens = torch.tensor(input_tokens, dtype=torch.long, device="cuda")
         input_positions = torch.tensor(input_positions, dtype=torch.long, device="cuda")
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device="cuda")
@@ -249,6 +256,9 @@ class SpSModelRunner:
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
                                     device="cuda")
+        query_lens = torch.tensor(target_lens,
+                                  dtype=torch.int,
+                                  device="cuda")
         max_block_table_len = max([len(t) for t in block_tables])
         block_tables = _make_tensor_with_pad(block_tables,
                                              max_len=max_block_table_len,
@@ -262,7 +272,9 @@ class SpSModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            query_lens=query_lens,
             block_tables=block_tables,
+            use_target_attention=self.sps_config.use_target_attention
         )
         return input_tokens, input_positions, input_metadata
 

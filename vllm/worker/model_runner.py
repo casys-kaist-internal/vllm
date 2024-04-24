@@ -114,7 +114,9 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            query_lens=None,
             block_tables=None,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata
 
@@ -187,7 +189,9 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            query_lens=None,
             block_tables=block_tables,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata
 

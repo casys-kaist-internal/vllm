@@ -467,13 +467,27 @@ def _get_and_verify_max_len(
 
 
 class SpSConfig:
-    def __init__(self, draft_size: int) -> None:
+    def __init__(self,
+                 draft_size: int,
+                 tile_size: int,
+                 use_dynamic_draft_size: bool,
+                 use_tile_size_constraint: bool, 
+                 use_target_attention: bool,
+                 use_lazy_draft_kv_cache: bool,
+                ) -> None:
         self.draft_size = draft_size
-        # really large number to disable this feature
-        self.num_tokens_to_target_threshold = 100000000000000
+        self.use_dynamic_draft_size = use_dynamic_draft_size
+        self.use_tile_size_constraint = use_tile_size_constraint
+        self.use_target_attention = use_target_attention
+        self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
 
-    def get_num_tokens_to_target_threshold(self, current_running_seqs: int) -> int:
-        return self.num_tokens_to_target_threshold
+        if self.use_tile_size_constraint:
+            self.tile_size_constraint = tile_size
+        else:
+            self.tile_size_constraint = 10000
+
+    def get_tile_size_constraint(self, current_running_seqs: int) -> int:
+        return self.tile_size_constraint
 
         # for threshold in self.num_tokens_to_target_threshold:
         #     if current_running_seqs <= threshold:
