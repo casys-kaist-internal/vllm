@@ -159,7 +159,7 @@ if __name__ == '__main__':
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
     parser.add_argument('--input-len', type=int, default=32)
-    parser.add_argument('--output-len', type=int, default=2048)
+    parser.add_argument('--output-len', type=int, default=1024)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',

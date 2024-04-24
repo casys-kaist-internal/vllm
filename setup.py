@@ -16,7 +16,7 @@ MAIN_CUDA_VERSION = "12.1"
 
 # Supported NVIDIA GPU architectures.
 # SUPPORTED_ARCHS = {"7.0", "7.5", "8.0", "8.6", "8.9", "9.0"}
-SUPPORTED_ARCHS = {"8.6"}
+SUPPORTED_ARCHS = {"8.0", "8.6"}
 
 # Compiler flags.
 CXX_FLAGS = ["-g", "-O2", "-std=c++17"]
