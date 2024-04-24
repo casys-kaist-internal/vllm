@@ -228,6 +228,7 @@ def main(args: argparse.Namespace):
             target_model=args.target_model,
             draft_model=args.draft_model,
             draft_size=args.draft_size,
+            use_target_attention=args.use_target_attention,
             tokenizer=args.tokenizer,
             quantization=args.quantization,
             tensor_parallel_size=args.tensor_parallel_size,
@@ -306,6 +307,8 @@ if __name__ == '__main__':
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=4)
+    parser.add_argument('--use-target-attention',
+                        action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',

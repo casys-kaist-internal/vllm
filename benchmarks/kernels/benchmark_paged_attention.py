@@ -94,7 +94,7 @@ def main(
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
-        start_time = time.perf_counter()
+        start_time = time.perf_counter_ns()
 
         for _ in range(num_iters):
             if version == "v1":
@@ -132,10 +132,14 @@ def main(
                 raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
 
-        end_time = time.perf_counter()
+        end_time = time.perf_counter_ns()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
-        return (end_time - start_time) / num_iters
+
+        elasped_time_ns = (end_time - start_time) / num_iters
+        elasped_time_ms = elasped_time_ns / 1e6
+
+        return elasped_time_ms
 
     # Warmup.
     print("Warming up...")
@@ -146,7 +150,7 @@ def main(
         latency = run_benchmark(num_iters=1, profile=True)
     else:
         latency = run_benchmark(num_iters=100, profile=False)
-    print(f"Kernel running time: {latency * 1000000:.3f} us")
+    print(f"Kernel running time: {latency:.3f} ms")
 
 
 if __name__ == '__main__':
@@ -155,7 +159,7 @@ if __name__ == '__main__':
     parser.add_argument("--version",
                         type=str,
                         choices=["v1", "v2"],
-                        default="v2")
+                        default="v1")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context-len", type=int, default=4096)
     parser.add_argument("--num-query-heads", type=int, default=64)

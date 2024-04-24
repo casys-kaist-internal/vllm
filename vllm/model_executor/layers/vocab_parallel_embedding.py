@@ -116,11 +116,13 @@ class ParallelLMHead(VocabParallelEmbedding):
     """
 
     def __init__(self,
+                 parallel_state: ParallelState,
                  num_embeddings: int,
                  embedding_dim: int,
                  bias: bool = False,
                  params_dtype: Optional[torch.dtype] = None):
-        super().__init__(num_embeddings, embedding_dim, params_dtype)
+        super().__init__(parallel_state, num_embeddings, embedding_dim, params_dtype)
+        self.parallel_state = parallel_state
         if bias:
             self.bias = Parameter(
                 torch.empty(self.num_embeddings_per_partition,
