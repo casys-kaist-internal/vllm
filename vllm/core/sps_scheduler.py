@@ -161,8 +161,9 @@ class SpSScheduler:
         # print("num_tokens_to_target: ", num_tokens_to_target)
 
         # Calculate the number of tokens that can be additionally fed to the target model.
-        remaining_tokens = self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) - num_tokens_to_target
+        remaining_tokens = self.sps_config.get_tile_size_constraint(len(self.running)) - num_tokens_to_target
 
+        # PROMPT PHASE START
         # Join waiting sequences if possible.
         if not self.swapped and remaining_tokens > 0:
             ignored_seq_groups: List[SequenceGroup] = []
@@ -245,6 +246,7 @@ class SpSScheduler:
                     ignored_seq_groups=ignored_seq_groups,
                 )
                 return scheduler_outputs
+        # PROMPT PHASE END
 
         # Decision logic for executing the target or draft model:
         # With respect to the threshold, if more tokens can be fed to the target model,

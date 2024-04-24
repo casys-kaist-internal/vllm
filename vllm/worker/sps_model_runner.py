@@ -248,6 +248,7 @@ class SpSModelRunner:
                                                  self.block_size)
                         block_table = block_table[-sliding_window_blocks:]
                     block_tables.append(block_table)
+                    
         input_tokens = torch.tensor(input_tokens, dtype=torch.long, device="cuda")
         input_positions = torch.tensor(input_positions, dtype=torch.long, device="cuda")
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device="cuda")
