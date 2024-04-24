@@ -51,7 +51,7 @@ class CacheEngine:
         self.events = [torch.cuda.Event() for _ in range(self.num_layers)]
 
     def get_key_block_shape(self) -> Tuple[int, int, int, int]:
-        element_size = torch.tensor([], dtype=self.dtype).element_size()
+        element_size = _get_dtype_size(self.dtype)
         x = 16 // element_size
         return (
             self.num_heads,
