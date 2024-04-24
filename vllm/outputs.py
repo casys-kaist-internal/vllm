@@ -146,11 +146,15 @@ class SpSCompletionOutput(CompletionOutput):
         finish_reason: Optional[str] = None,
         accept_probs: Optional[List[float]] = None,
         reject_pos: Optional[List[int]] = None,
+        beta_list: Optional[List[float]] = None,
+        accept_cnt_list: Optional[List[int]] = None
     ) -> None:
         super().__init__(index, text, token_ids, cumulative_logprob, logprobs,
                          finish_reason)
         self.accept_probs = accept_probs
         self.reject_pos = reject_pos
+        self.beta_list = beta_list
+        self.accept_cnt_list = accept_cnt_list
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -158,7 +162,9 @@ class SpSCompletionOutput(CompletionOutput):
     def __repr__(self) -> str:
         return (super().__repr__() + ", "
                 f"accept_probabilities={self.accept_probs}, "
-                f"reject_positions={self.reject_pos})")
+                f"reject_positions={self.reject_pos}, "
+                f"beta_list={self.beta_list}, "
+                f"accept_cnt_list={self.accept_cnt_list})")
 
 
 class SpSRequestOutput(RequestOutput):
@@ -189,7 +195,7 @@ class SpSRequestOutput(RequestOutput):
                                          seq.get_output_token_ids(),
                                          seq.get_cumulative_logprob(), logprobs,
                                          finshed_reason, seq.accept_probs,
-                                         seq.reject_pos)
+                                         seq.reject_pos, seq.beta_list, seq.accept_cnt_list)
             outputs.append(output)
 
         # Every sequence in the sequence group should have the same prompt.

@@ -291,7 +291,8 @@ class LlamaForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.model = LlamaModel(parallel_state, config, linear_method)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
+        self.lm_head = ParallelLMHead(
+            parallel_state, config.vocab_size, config.hidden_size)
         self.sampler = Sampler(parallel_state, config.vocab_size)
 
     def forward(
