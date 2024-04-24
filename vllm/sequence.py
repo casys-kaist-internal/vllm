@@ -363,12 +363,12 @@ class Sequence:
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
 
-        if accept_cnt == draft_size:  # all accept bonus token
-            accept_probs.append(1)
-            beta_list.append(1)
-
-        accept_probs = accept_probs[:accept_cnt+1]
-        beta_list = beta_list[:accept_cnt+1]
+        if accept_cnt != draft_size:  # all accept bonus token
+            accept_probs = accept_probs[:accept_cnt+1]
+            beta_list = beta_list[:accept_cnt+1]
+        else:
+            accept_probs.append(None)
+            beta_list.append(None)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)

@@ -66,12 +66,12 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
     filtered_dataset = []
     for prompt, prompt_token_ids, output_len in tokenized_dataset:
         prompt_len = len(prompt_token_ids)
-        if prompt_len < 4 or output_len < 4:
+        # if prompt_len < 4 or output_len < 4:
             # Prune too short sequences.
-            continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # continue
+        # if prompt_len > 1024 or prompt_len + output_len > 2048:
             # Prune too long sequences.
-            continue
+            # continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
@@ -87,6 +87,39 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
     prompts = [data['instruction'] + data['input'] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
     completions = [data['output'] for data in dataset]
+    completion_token_ids = tokenizer(completions).input_ids
+
+    tokenized_dataset = []
+    for i in range(len(dataset)):
+        output_len = len(completion_token_ids[i])
+        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+    # Filter out too long sequences.
+    filtered_dataset = []
+    for prompt, prompt_token_ids, output_len in tokenized_dataset:
+        prompt_len = len(prompt_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    # random sort dataset
+    random.shuffle(filtered_dataset)
+
+    return filtered_dataset
+
+
+
+def load_apps(tokenizer: PreTrainedTokenizerBase):
+    dataset = load_dataset('codeparrot/apps')['train']
+
+    # Tokenize the prompts and completions.
+    prompts = [data['question'] for data in dataset]
+    prompt_token_ids = tokenizer(prompts).input_ids
+    completions = [data['solutions'] for data in dataset]
     completion_token_ids = tokenizer(completions).input_ids
 
     tokenized_dataset = []
@@ -187,6 +220,36 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
     return filtered_dataset
 
+def load_redpajama(tokenizer: PreTrainedTokenizerBase, subset):
+    dataset = load_dataset("togethercomputer/RedPajama-Data-1T", subset)
+
+    # Tokenize the prompts and completions.
+    prompts = [data['prompt'] for data in dataset]
+    prompt_token_ids = tokenizer(prompts).input_ids
+    completions = [data['canonical_solution'] for data in dataset]
+    completion_token_ids = tokenizer(completions).input_ids
+
+    tokenized_dataset = []
+    for i in range(len(dataset)):
+        output_len = len(completion_token_ids[i])
+        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+    # Filter out too long sequences.
+    filtered_dataset = []
+    for prompt, prompt_token_ids, output_len in tokenized_dataset:
+        prompt_len = len(prompt_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    # random sort dataset
+    random.shuffle(filtered_dataset)
+
+    return filtered_dataset
 
 def warmup(llm):
     dummy_prompt_token_ids = [[0] * 32] * 32
@@ -250,32 +313,43 @@ def main(args: argparse.Namespace):
         requests = load_mt_bench(tokenizer)
     elif args.dataset == "sharegpt":
         requests = load_sharegpt(tokenizer)
+    elif args.dataset == "apps":
+        requests = load_apps(tokenizer)
+    elif args.dataset.split("-")[0] =="redpajama":
+        requests = load_redpajama(tokenizer, args.dataset.split("-")[1])
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
+    if len(requests) > 1000:
+        requests = requests[:1000]
+
     # Warmup
-    warmup(llm)
+    # warmup(llm)
 
     target_model = args.target_model.split('/')[-1]
     draft_model = args.draft_model.split('/')[-1]
 
     directory = f'{target_model}_{draft_model}_{args.dataset}_{args.temperature}'
 
-    prompt_output_csv = f'result/{directory}/prompt_output.csv'
-    accept_probs_csv = f'result/{directory}/accept_probs.csv'
-    beta_list_csv = f'result/{directory}/beta_list.csv'
-    accept_cnt_list_csv = f'result/{directory}/accept_cnt_list.csv'
-    reject_pos_csv = f'result/{directory}/reject_pos.csv'
+    prompt_len_csv = f'result_4_18/{directory}/prompt_len.csv'
+    prompt_output_csv = f'result_4_18/{directory}/prompt_output.csv'
+    accept_probs_csv = f'result_4_18/{directory}/accept_probs.csv'
+    beta_list_csv = f'result_4_18/{directory}/beta_list.csv'
+    accept_cnt_list_csv = f'result_4_18/{directory}/accept_cnt_list.csv'
+    reject_pos_csv = f'result_4_18/{directory}/reject_pos.csv'
 
     # Make new directory remove if already exists
     import os
-    if os.path.exists(f'result/{directory}'):
-        os.system(f'rm -rf result/{directory}')
-    os.makedirs(f'result/{directory}')
+    if os.path.exists(f'result_4_18/{directory}'):
+        os.system(f'rm -rf result_4_18/{directory}')
+    os.makedirs(f'result_4_18/{directory}')
 
+    batch_size = 0
+    prompt_lens = []
     # Loop through requests
     for req in tqdm(requests):
         prompt = req[0]
+        prompt_lens.append(req[1])
         output_len = req[2]
         sampling_params = SamplingParams(
             n=1,
@@ -283,34 +357,46 @@ def main(args: argparse.Namespace):
             top_p=1.0,
             use_beam_search=False,
             ignore_eos=True,
-            max_tokens=output_len,
+            max_tokens=2048,
         )
         llm._add_request(
             prompt=prompt,
             prompt_token_ids=None,
             sampling_params=sampling_params,
         )
+        batch_size += 1
 
-        output = llm._run_engine(use_tqdm=False)
+        if batch_size == args.batch_size:
+            batch_size = 0
+            output = llm._run_engine(use_tqdm=False)
 
-        if args.engine == "sps":
-            # print content of output here
-            # Write to csv file
-            with open(prompt_output_csv, 'a') as f:
-                # exchange '\n' in prompt and output with ' ' for csv
-                f.write(prompt.replace('\n', ' ') + ', ' +
-                        output[0].outputs[0].text.replace('\n', ' ') + '\n')
-            with open(accept_probs_csv, 'a') as f:
-                f.write(str(output[0].outputs[0].accept_probs)[1:-1] + '\n')
-            with open(beta_list_csv, 'a') as f:
-                f.write(str(output[0].outputs[0].beta_list)[1:-1] + '\n')
-            with open(accept_cnt_list_csv, 'a') as f:
-                f.write(str(output[0].outputs[0].accept_cnt_list)[1:-1] + '\n')
-            with open(reject_pos_csv, 'a') as f:
-                f.write(str(output[0].outputs[0].reject_pos)[1:-1] + '\n')
-        else:
-            print("PROMPT: ", output[0].prompt)
-            print("OUTPUT: ", output[0].outputs[0].text)
+            if args.engine == "sps":
+                # print content of output here
+                # Write to csv file
+                with open(prompt_len_csv, 'a') as f:
+                    for i in range(len(output)):
+                        f.write(str(prompt_lens[i]) + '\n')
+                prompt_lens = []
+                with open(prompt_output_csv, 'a') as f:
+                    for i in range(len(output)):
+                        # exchange '\n' in prompt and output with ' ' for csv
+                        f.write(output[i].prompt.replace('\n', ' ') + ', ' +
+                                output[i].outputs[0].text.replace('\n', ' ') + '\n')
+                with open(accept_probs_csv, 'a') as f:
+                    for i in range(len(output)):
+                        f.write(str(output[i].outputs[0].accept_probs)[1:-1] + '\n')
+                with open(beta_list_csv, 'a') as f:
+                    for i in range(len(output)):
+                        f.write(str(output[i].outputs[0].beta_list)[1:-1] + '\n')
+                with open(accept_cnt_list_csv, 'a') as f:
+                    for i in range(len(output)):
+                        f.write(str(output[i].outputs[0].accept_cnt_list)[1:-1] + '\n')
+                with open(reject_pos_csv, 'a') as f:
+                    for i in range(len(output)):
+                        f.write(str(output[i].outputs[0].reject_pos)[1:-1] + '\n')
+            else:
+                print("PROMPT: ", output[0].prompt)
+                print("OUTPUT: ", output[0].outputs[0].text)
 
 
 if __name__ == '__main__':
@@ -318,15 +404,24 @@ if __name__ == '__main__':
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
     parser.add_argument("--engine", type=str, choices=["base", "sps"],
-                        default="base")
+                        default="sps")
     parser.add_argument("--dataset", type=str, default="gsm8k",
                         choices=["gsm8k", "humaneval",
-                                 "alpaca", "mt-bench", "sharegpt"],
+                                 "alpaca", "mt-bench", "sharegpt", 
+                                 "mbpp", "apps",
+                                 "redpajama-default",
+                                 "redpajama-arxiv",
+                                 "redpajama-book",
+                                 "redpajama-c4",
+                                 "redpajama-common_crawl",
+                                 "redpajama-github",
+                                 "redpajama-stackexchange",
+                                 "redpajama-wikipedia"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
-    parser.add_argument('--draft-size', type=int, default=4)
+    parser.add_argument('--draft-size', type=int, default=8)
     parser.add_argument('--use-target-attention',
                         action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
@@ -335,7 +430,7 @@ if __name__ == '__main__':
                         choices=['awq', 'squeezellm', None],
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
-    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
