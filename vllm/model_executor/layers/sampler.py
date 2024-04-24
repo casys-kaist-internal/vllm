@@ -592,7 +592,11 @@ def _sps_sample(
 
     # print("target", target_prob_for_sampled_draft_token)
     # print("draft", draft_prob_for_sampled_draft_token)
-    beta_list = _calculate_beta(
+
+    # beta_list = _calculate_beta(
+    #     target_probs, draft_probs, adjusted_target_lens)
+    
+    beta = _calculate_beta_vectorized(
         target_probs, draft_probs, adjusted_target_lens)
 
     # accept_prob: [seq_idx, max_draft_len]
@@ -610,6 +614,7 @@ def _sps_sample(
         torch.rand_like(accept_prob) < accept_prob,
         torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
+    # This part is for accepting all draft tokens with prob 1 
     # accepted = torch.where(
     #     torch.full_like(accept_prob, 0) < accept_prob,
     #     torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
@@ -622,9 +627,7 @@ def _sps_sample(
 
     # accept_cnt: [seq_idx]
     accept_cnt = torch.sum(accepted, dim=1)
-    # print("accept_cnt", accept_cnt)
     del accepted
-    # print(accept_cnt)
 
     # rejected_draft_idx: [seq_idx]
     target_lens_tensor = torch.tensor(
@@ -664,10 +667,11 @@ def _sps_sample(
 
     sps_results = []
     assert len(sample_results) == accept_prob.size(0)
-    assert len(sample_results) == len(beta_list)
+    assert len(sample_results) == len(beta)
+    
     for i in range(len(sample_results)):
         sps_results.append(
-            (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist(), beta_list[i]))
+            (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist(), beta[i]))
 
     return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
 
@@ -874,3 +878,34 @@ def _calculate_beta(
         seq_beta_list.append(beta_list)
 
     return seq_beta_list
+
+def _calculate_beta_vectorized(
+        target_probs: torch.Tensor, 
+        draft_probs: torch.Tensor, 
+        adjusted_target_lens: List[int]):
+    # Ensure adjusted_target_lens is a tensor
+    adjusted_target_lens = torch.tensor(adjusted_target_lens, dtype=torch.long, device=target_probs.device)
+    
+    # Find the minimum probabilities between target and draft probabilities
+    # Considering adjusted_target_lens, we need to mask irrelevant comparisons
+    max_len = torch.max(adjusted_target_lens).item()
+    mask = torch.arange(max_len, device=target_probs.device)[None, :] < adjusted_target_lens[:, None]
+    
+    # Use broadcasting to create masks for the dimensions [seq_idx, max_len, vocab_size]
+    mask = mask.unsqueeze(-1).expand(-1, -1, target_probs.shape[2])
+    
+    # Apply mask to probabilities (set non-considered positions to a very large negative value before taking min)
+    masked_target_probs = torch.where(mask, target_probs[:, :max_len, :], torch.tensor(float('-inf')).to(target_probs.device))
+    masked_draft_probs = torch.where(mask, draft_probs[:, :max_len, :], torch.tensor(float('-inf')).to(draft_probs.device))
+    
+    # Compute the minimum along the last dimension (vocab_size) after applying mask
+    min_probs = torch.min(masked_target_probs, masked_draft_probs)
+    
+    # Sum over the vocab_size dimension to get beta for each seq_idx and draft_idx
+    beta = torch.sum(min_probs, dim=2)
+
+    # Only keep the sums that are valid up to the lengths specified by adjusted_target_lens
+    valid_beta = [beta[i, :l].tolist() for i, l in enumerate(adjusted_target_lens)]
+    
+    return valid_beta
+

@@ -398,8 +398,6 @@ class SpSLLMEngine:
                                              child_sample.probs)
 
             elif sps_stage == SpSStage.TARGET_DECODE:
-                # parent.accept_draft_tokens(
-                #     child_sample.accept_cnt, child_sample.accept_probs)
                 free_block_cnt = parent.accept_draft_tokens(
                     child_sample.accept_cnt, child_sample.accept_probs, child_sample.beta_list)
                 self.scheduler.block_manager.free_blocks(
