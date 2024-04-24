@@ -1,6 +1,6 @@
 import enum
 import time
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.sps_block_manager import SpSAllocStatus, SpSBlockSpaceManager
@@ -93,17 +93,14 @@ class SpSScheduler:
         self.waiting.append(seq_group)
 
     def abort_seq_group(self, request_id: Union[str, Iterable[str]]) -> None:
-        if isinstance(request_id, str):
-            request_id = (request_id, )
-        request_ids = set(request_id)
-        for state_queue in [self.waiting, self.running, self.swapped]:
-            # We need to reverse the list as we are removing elements
-            # from it as we iterate over it. If we don't do it,
-            # indices will get messed up and we will skip over elements.
-            for seq_group in reversed(state_queue):
+        def clear_state_queue(
+            state_queue: List[SequenceGroup], request_ids: Set[str]
+        ) -> List[SequenceGroup]:
+            if len(request_ids) == 0:
+                return state_queue
+            to_add = []
+            for seq_group in state_queue:
                 if seq_group.request_id in request_ids:
-                    # Remove the sequence group from the state queue.
-                    state_queue.remove(seq_group)
                     for seq in seq_group.get_seqs():
                         if seq.is_finished():
                             continue
@@ -111,15 +108,23 @@ class SpSScheduler:
                         self.free_seq(seq)
                     request_ids.remove(seq_group.request_id)
                     if not request_ids:
-                        return
+                        return to_add
+                else:
+                    to_add.append(seq_group)
+            return to_add
+
+        request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
+        self.waiting = clear_state_queue(self.waiting, request_ids)
+        self.running = clear_state_queue(self.running, request_ids)
+        self.swapped = clear_state_queue(self.swapped, request_ids)
 
     def abort_all_seq_groups(self) -> None:
         self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.waiting])
-        self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.running])
-        self.abort_seq_group(
-            [seq_group.request_id for seq_group in self.swapped])
+            [
+                seq_group.request_id
+                for seq_group in self.waiting + self.running + self.swapped
+            ]
+        )
 
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.running or self.swapped or self.draft_exit
@@ -136,8 +141,30 @@ class SpSScheduler:
         # Fix the current time.
         now = time.monotonic()
 
+        # Target Execution Point Identifier (TEPI)
+        # Count the number of tokens that should be fed to the target model.
+        num_tokens_to_target = 0
+        for seq_group in self.running:
+            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+            # target model should run the last non-draft token and all the draft tokens
+            num_tokens_to_target += (seqs[0].get_draft_len() + 1)
+
+        num_draft_exit_tokens_to_target = 0
+        for seq_group in self.draft_exit:
+            seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
+            # target model should run the last non-draft token and all the draft tokens
+            num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
+
+        num_tokens_to_target += num_draft_exit_tokens_to_target
+        # print("num_tokens_to_target_draft_exit: ",
+        #       num_tokens_to_target_draft_exit)
+        # print("num_tokens_to_target: ", num_tokens_to_target)
+
+        # Calculate the number of tokens that can be additionally fed to the target model.
+        remaining_tokens = self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) - num_tokens_to_target
+
         # Join waiting sequences if possible.
-        if not self.swapped:
+        if not self.swapped and remaining_tokens > 0:
             ignored_seq_groups: List[SequenceGroup] = []
             scheduled: List[SequenceGroup] = []
             # The total number of sequences on the fly, including the
@@ -149,7 +176,7 @@ class SpSScheduler:
             # Optimization: We do not sort the waiting queue since the preempted
             # sequence groups are added to the front and the new sequence groups
             # are added to the back.
-            while self.waiting:
+            while self.waiting and remaining_tokens > 0:
                 seq_group = self.waiting[0]
 
                 assert seq_group.num_seqs() == 1, (
@@ -204,6 +231,7 @@ class SpSScheduler:
                 self.running.append(seq_group)
                 num_curr_seqs += num_new_seqs
                 scheduled.append(seq_group)
+                remaining_tokens -= 1
 
             if scheduled or ignored_seq_groups:
                 scheduler_outputs = SpSSchedulerOutputs(
@@ -218,36 +246,13 @@ class SpSScheduler:
                 )
                 return scheduler_outputs
 
-        # Target Execution Point Identifier (TEPI)
-        # Count the number of tokens that should be fed to the target model.
-        num_tokens_to_target = 0
-        for seq_group in self.running:
-            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-            # target model should run the last non-draft token and all the draft tokens
-            num_tokens_to_target += (seqs[0].get_draft_len() + 1)
-
-        num_draft_exit_tokens_to_target = 0
-        for seq_group in self.draft_exit:
-            seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
-            # target model should run the last non-draft token and all the draft tokens
-            num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
-
-        num_tokens_to_target += num_draft_exit_tokens_to_target
-        # print("num_tokens_to_target_draft_exit: ",
-        #       num_tokens_to_target_draft_exit)
-        # print("num_tokens_to_target: ", num_tokens_to_target)
-
         # Decision logic for executing the target or draft model:
-        # Compare the calculated number of tokens to the predefined threshold.
-        # If the number of tokens for the target model is below the threshold,
+        # With respect to the threshold, if more tokens can be fed to the target model,
         # continue running the draft model. Otherwise, switch to the target model.
-        run_target_model = (num_tokens_to_target >=
-                            self.sps_config.get_num_tokens_to_target_threshold(len(self.running))) or (len(self.running) == 0)
+        run_target_model = (remaining_tokens <= 0) or (len(self.running) == 0)
 
         if not run_target_model:
             sps_stage = SpSStage.DRAFT_DECODE
-            remaining_tokens = self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) - \
-                num_tokens_to_target
 
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
@@ -260,7 +265,6 @@ class SpSScheduler:
 
             # Reserve new token slots for the running sequence groups.
             running: List[SequenceGroup] = []
-            preempted: List[SequenceGroup] = []
             while self.running:
                 seq_group = self.running.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
@@ -277,12 +281,10 @@ class SpSScheduler:
                             # Preempt the lowest-priority sequence groups.
                             victim_seq_group = self.running.pop(-1)
                             self._preempt(victim_seq_group, blocks_to_swap_out)
-                            preempted.append(victim_seq_group)
                         else:
                             # No other sequence groups can be preempted.
                             # Preempt the current sequence group.
                             self._preempt(seq_group, blocks_to_swap_out)
-                            preempted.append(seq_group)
                             break
                     else:
                         # Append new slots to the sequence group.
@@ -342,7 +344,6 @@ class SpSScheduler:
 
             # Reserve new token slots for the running sequence groups.
             running: List[SequenceGroup] = []
-            preempted: List[SequenceGroup] = []
             while self.running:
                 seq_group = self.running.pop(0)
                 while not self.block_manager.can_append_slot(seq_group):
@@ -350,12 +351,10 @@ class SpSScheduler:
                         # Preempt the lowest-priority sequence groups.
                         victim_seq_group = self.running.pop(-1)
                         self._preempt(victim_seq_group, blocks_to_swap_out)
-                        preempted.append(victim_seq_group)
                     else:
                         # No other sequence groups can be preempted.
                         # Preempt the current sequence group.
                         self._preempt(seq_group, blocks_to_swap_out)
-                        preempted.append(seq_group)
                         break
                 else:
                     # Append new slots to the sequence group.

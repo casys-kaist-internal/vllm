@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Set the dataset path
-dataset="/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json"
+dataset="/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # Set the window size
 window_size=4

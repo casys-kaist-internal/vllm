@@ -10,7 +10,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 from tqdm import tqdm
 
-download_dir = '/home/sjchoi/workspace/models'
+download_dir = '/home/noppanat/workspace/models'
 
 
 def sample_requests(

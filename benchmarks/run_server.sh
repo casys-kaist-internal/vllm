@@ -16,7 +16,7 @@ if ! [[ "$port" =~ ^[0-9]+$ ]] || [ ${#port} -ne 4 ]; then
     exit 1
 fi
 
-download_dir="/home/sjchoi/workspace/models"
+download_dir="/home/noppanat/workspace/models"
 target_model="facebook/opt-6.7b"
 draft_model="facebook/opt-125m"
 OUTFILE='nsight/'$(date '+%Y-%m-%d_%H-%M-%S')

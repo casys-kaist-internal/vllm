@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 
-download_dir = '/home/sjchoi/workspace/models'
+download_dir = '/home/noppanat/workspace/models'
 
 
 def sample_requests(

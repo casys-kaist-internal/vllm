@@ -10,7 +10,7 @@ if ! [[ "$port" =~ ^[0-9]+$ ]] || [ ${#port} -ne 4 ]; then
 fi
 
 # set result csv file 
-output_file="/home/sjchoi/workspace/vllm/benchmarks/results_serving.csv"
+output_file="/home/noppanat/workspace/vllm/benchmarks/results_serving.csv"
 rm $output_file
 
 # request rate list 
