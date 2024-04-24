@@ -481,11 +481,21 @@ class SpSLLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
+            if not self.sps_config.use_lazy_draft_kv_cache:
+                self._run_workers(
+                    "execute_draft_model",
+                    seq_group_metadata_list=seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
+
             return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
+            
 
         elif sps_stage == SpSStage.DRAFT_DECODE:
             output = self._run_workers(
-                "execute_draft_model",
+                "execute_multi_step_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
