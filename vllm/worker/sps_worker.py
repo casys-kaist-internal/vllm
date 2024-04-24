@@ -177,7 +177,93 @@ class SpSWorker:
             self.target_cache_engine.block_size)
         self.draft_model_runner.set_block_size(
             self.draft_cache_engine.block_size)
+    
+    
+    def _process_draft_sequence_group_outputs(self, seq_group: SequenceGroup,
+                                                outputs: SequenceGroupOutput,
+                                                sps_stage: SpSStage) -> None:
 
+        # We assume that SpS engine does not use beam search.
+        assert not seq_group.sampling_params.use_beam_search
+
+        # Process prompt logprobs
+        prompt_logprobs = outputs.prompt_logprobs
+        if prompt_logprobs is not None:
+            seq_group.prompt_logprobs = prompt_logprobs
+
+        # Process samples
+        samples = outputs.samples
+        parent_seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+        parent_child_dict = {
+            parent_seq.seq_id: []
+            for parent_seq in parent_seqs
+        }
+        for sample in samples:
+            parent_child_dict[sample.parent_seq_id].append(sample)
+        # List of (child, parent)
+        child_seqs: List[Tuple[Sequence, Sequence]] = []
+
+        # Process the child samples for each parent sequence
+        for parent in parent_seqs:
+            child_samples: List[SequenceOutput] = parent_child_dict[
+                parent.seq_id]
+            assert len(child_samples) == 1, (
+                "SpS engine does not use beam search, so there should be "
+                "exactly one child sample for each parent sequence.")
+
+            child_sample = child_samples[0]
+            check_cnt = 1
+
+
+            if sps_stage == SpSStage.DRAFT_DECODE:
+                # Append the draft token to the parent sequence.
+                parent.append_draft_token_id(child_sample.output_token,
+                                             child_sample.logprobs,
+                                             child_sample.probs)
+
+            else:
+                raise ValueError(f"Invalid SpS stage: {sps_stage}")
+
+            child_seqs.append((parent, parent, check_cnt))
+
+        # Decode and check stop only on PROMPT stage and TARGET_DECODE stage.
+        if sps_stage == SpSStage.PROMPT or sps_stage == SpSStage.TARGET_DECODE:
+            for seq, _, check_cnt in child_seqs:
+                self._decode_sequence(seq, seq_group.sampling_params)
+                self._check_stop(seq, seq_group.sampling_params, check_cnt)
+
+        # Free the finished and selected parent sequences' memory in block
+        # manager. Keep them in the sequence group as candidate output.
+        # NOTE: we need to fork the new sequences before freeing the
+        # old sequences.
+        for seq, parent, _ in child_seqs:
+            if seq is parent and seq.is_finished():
+                self.scheduler.free_seq(seq)
+        return
+    
+    def _process_draft_model_outputs(
+            self, output: SamplerOutput,
+            scheduler_outputs: SpSSchedulerOutputs,
+            sps_stage: SpSStage) -> List[RequestOutput]:
+        # Update the scheduled sequence groups with the model outputs.
+        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
+        for seq_group, outputs in zip(scheduled_seq_groups, output):
+            self._process_draft_sequence_group_outputs(seq_group, outputs, sps_stage)
+
+
+        # Create the outputs.
+        request_outputs: List[RequestOutput] = []
+        for seq_group in (scheduled_seq_groups +
+                          scheduler_outputs.ignored_seq_groups):
+            request_output = RequestOutput.from_seq_group(seq_group)
+            request_outputs.append(request_output)
+
+        if self.log_stats:
+            # Log the system stats.
+            self._log_system_stats(True if sps_stage == SpSStage.PROMPT else False,
+                                   scheduler_outputs.num_batched_tokens)
+        return request_outputs
+    
     @torch.inference_mode()
     def execute_target_model(
         self,
@@ -245,6 +331,47 @@ class SpSWorker:
         output = self.draft_model_runner.execute_model(seq_group_metadata_list,
                                                        self.draft_gpu_cache, cache_events)
         return output
+    
+    
+    @torch.inference_mode()
+    def execute_multi_step_draft_model(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        blocks_to_swap_in: Dict[int, int],
+        blocks_to_swap_out: Dict[int, int],
+        blocks_to_copy: Dict[int, List[int]],
+    ) -> SamplerOutput:
+        # Issue cache operations.
+        issued_cache_op = False
+        if blocks_to_swap_in:
+            self.draft_cache_engine.swap_in(blocks_to_swap_in)
+            issued_cache_op = True
+        if blocks_to_swap_out:
+            self.draft_cache_engine.swap_out(blocks_to_swap_out)
+            issued_cache_op = True
+        if blocks_to_copy:
+            self.draft_cache_engine.copy(blocks_to_copy)
+            issued_cache_op = True
+
+        cache_events = self.draft_cache_events if issued_cache_op else None
+
+        # If there is no input, we don't need to execute the model.
+        if not seq_group_metadata_list:
+            if cache_events is not None:
+                for event in cache_events:
+                    event.wait()
+            return {}
+
+        assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
+
+        # run this several times 
+        for _  in range(3):
+            output = self.draft_model_runner.execute_model(seq_group_metadata_list,
+                                                        self.draft_gpu_cache, cache_events)
+            self._process_draft_model_outputs(output, scheduler_outputs, SpSStage.DRAFT_DECODE)
+
+        return output
+
 
     def _init_distributed_environment(
         self

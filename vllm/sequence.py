@@ -220,6 +220,9 @@ class Sequence:
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
 
+        # Can change every iteration
+        self.draft_size = 0
+
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
             block_number=len(self.logical_token_blocks),
