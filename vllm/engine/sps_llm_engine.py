@@ -410,6 +410,9 @@ class SpSLLMEngine:
                 if child_sample.accept_cnt != child_sample.total_cnt:
                     parent.data.draft_cache_cnt += 1
 
+                if not self.sps_config.use_lazy_draft_kv_cache:
+                    pass
+
                 parent.append_token_id(
                     child_sample.output_token, child_sample.logprobs)
 
@@ -463,7 +466,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         """ Performs one decoding iteration: 
             - Target prompt + Draft prompt 
-            - Draft decode 
+            - Draft decode * multi-step
             - Target decode 
         """
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
@@ -512,6 +515,11 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+
+            target_output = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+
+            if not self.sps_config.use_lazy_draft_kv_cache:
+
 
             return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
 
