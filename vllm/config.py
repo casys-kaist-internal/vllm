@@ -480,13 +480,15 @@ class SpSConfig:
         self.use_tile_size_constraint = use_tile_size_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
+        self.target_draft_latency_ratio = 0.1
+        self.start_max_draft_size = 8
 
         if self.use_tile_size_constraint:
             self.tile_size_constraint = tile_size
         else:
             self.tile_size_constraint = 10000
 
-    def get_tile_size_constraint(self, current_running_seqs: int) -> int:
+    def get_tile_size_constraint(self) -> int:
         return self.tile_size_constraint
 
         # for threshold in self.num_tokens_to_target_threshold:

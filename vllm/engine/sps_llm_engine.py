@@ -463,7 +463,7 @@ class SpSLLMEngine:
     def step(self) -> List[RequestOutput]:
         """ Performs one decoding iteration: 
             - Target prompt + Draft prompt 
-            - Draft decode 
+            - Draft decode * multi-step
             - Target decode 
         """
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
