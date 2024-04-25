@@ -8,10 +8,12 @@ from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
+from vllm.core.sps_scheduler import SpSSchedulerOutputs
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import SamplerOutput, SequenceGroupMetadata, SpSStage, SequenceData
+from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage, SequenceData, SequenceGroupOutput,
+                           SequenceGroup, SequenceOutput, SequenceStatus)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
 from vllm.utils import get_gpu_memory
@@ -301,6 +303,7 @@ class SpSWorker:
         blocks_to_swap_in: Dict[int, int],
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
+        scheduler_outputs: SpSSchedulerOutputs,
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
@@ -324,7 +327,6 @@ class SpSWorker:
             return {}
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
-
 
         # Initialize draft_iteration
         draft_iteration = 0

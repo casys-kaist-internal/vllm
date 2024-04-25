@@ -28,6 +28,9 @@ class SequenceStatus(enum.Enum):
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
 
+    # SpS related status
+    SPS_ALL_ACCEPT = enum.auto()
+
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
         return status in [
@@ -189,7 +192,8 @@ class Sequence:
         seq_id: int,
         prompt: str,
         prompt_token_ids: List[int],
-        block_size: int
+        block_size: int,
+        draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
@@ -218,8 +222,11 @@ class Sequence:
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
 
-        # Can change every iteration
-        self.draft_size = 0
+        self.bonus_token_id = None
+        self.bonus_logprobs = None
+
+        # Can change every iteration if use_dynamic_draft_size is True
+        self.draft_size = draft_size
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -303,20 +310,25 @@ class Sequence:
         return new_seq
 
     # SpS related methods start
-    def save_lazy_token_id(
+    def save_bonus_token_id(
         self,
         token_id: int,
         logprobs: Dict[int, float],
     ) -> None:
         assert token_id in logprobs
-        self.lazy_token_id = token_id
-        self.lazy_logprobs = logprobs
+        assert self.bonus_token_id is None and self.bonus_logprobs is None
+        
+        self.bonus_token_id = token_id
+        self.bonus_logprobs = logprobs
 
-    def append_lazy_token_id(self) -> None:
-        self.append_token_id(self.lazy_token_id,
-                             self.lazy_logprobs)
-        self.lazy_token_id = None
-        self.lazy_logprobs = None
+    def append_bonus_token_id(self) -> None:
+        assert self.bonus_token_id is not None and self.bonus_logprobs is not None
+
+        self.append_token_id(self.bonus_token_id,
+                             self.bonus_logprobs)
+        
+        self.bonus_token_id = None
+        self.bonus_logprobs = None
 
     def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
         assert len(self.logical_token_blocks) > 0
@@ -343,6 +355,7 @@ class Sequence:
     
     def get_beta(self) -> float:
         # average the last window size betas 
+        # Note: this is just a temporary solution. 
         window_size = 10
         if len(self.beta_list) < window_size:
             return sum(self.beta_list) / len(self.beta_list)
@@ -365,15 +378,17 @@ class Sequence:
                             accept_probs: List[float],
                             beta_list: List[float]) -> int:
         # assert accept_cnt <= self.draft_size
-        draft_size = self.get_draft_len()
-        reject_cnt = draft_size - accept_cnt
-        if reject_cnt > 0:
-            self.reject_pos.append(self.get_len() + reject_cnt)
+        assert self.draft_size == self.get_draft_len()
+        reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
+
+        # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
+        # Need to free the blocks that are not used
+        # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
 
-        if accept_cnt != draft_size:
+        if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
         else:  # all accept bonus token

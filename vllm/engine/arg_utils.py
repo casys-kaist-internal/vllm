@@ -249,7 +249,11 @@ class SpSEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 8
-    use_target_attention: bool = True
+    tile_size: int = 64
+    use_dynamic_draft_size: bool = False
+    use_tile_size_constraint: bool = False
+    use_target_attention: bool = False
+    use_lazy_draft_kv_cache: bool = True
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -474,7 +478,12 @@ class SpSEngineArgs:
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.max_paddings)
-        sps_config = SpSConfig(self.draft_size, self.use_target_attention)
+        sps_config = SpSConfig(self.draft_size, 
+                               self.tile_size,
+                               self.use_dynamic_draft_size,
+                               self.use_tile_size_constraint,
+                               self.use_target_attention,
+                               self.use_lazy_draft_kv_cache)
 
         # If the model is Pythia, the target vocab and draft vocab is actually the same content
         # with different length with 'None' token padded. So, we skip assertion
