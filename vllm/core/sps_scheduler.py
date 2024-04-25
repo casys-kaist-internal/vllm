@@ -83,7 +83,7 @@ class SpSScheduler:
         # Sequence groups in the WAITING state.
         self.waiting: List[SequenceGroup] = []
         # Sequence groups in the RUNNING state.
-        self.running: List[SequenceGroup] = []
+        # self.running: List[SequenceGroup] = [] # We split the running queue into draft and target
         # Sequence groups in the SWAPPED state.
         self.swapped: List[SequenceGroup] = []
 
@@ -130,11 +130,20 @@ class SpSScheduler:
             ]
         )
 
+    # def has_unfinished_seqs(self) -> bool:
+    #     return self.waiting or self.running or self.swapped
+
     def has_unfinished_seqs(self) -> bool:
-        return self.waiting or self.running or self.swapped or self.draft_exit
+        return self.waiting or self.need_to_run_draft or self.need_to_run_target or self.swapped
+    
+    # def get_num_unfinished_seq_groups(self) -> int:
+    #     return len(self.waiting) + len(self.running) + len(self.swapped) + len(self.draft_exit)
 
     def get_num_unfinished_seq_groups(self) -> int:
-        return len(self.waiting) + len(self.running) + len(self.swapped) + len(self.draft_exit)
+        return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
+
+    def swap_draft_target_queues(self) -> None:
+        self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
 
     def _multi_step_schedule(self) -> SpSSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -152,7 +161,7 @@ class SpSScheduler:
             # The total number of sequences on the fly, including the
             # requests in the generation phase.
             num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                                for seq_group in self.running)
+                                for seq_group in self.need_to_run_target + self.need_to_run_draft)
             seq_lens: List[int] = []
 
             # Optimization: We do not sort the waiting queue since the preempted
@@ -213,7 +222,7 @@ class SpSScheduler:
                 
                 # Instead of appending to running queue, we divide the running queue into draft and target
                 # self.running.append(seq_group)
-                self.need_to_run_draft(seq_group)
+                self.need_to_run_draft.append(seq_group)
                 
                 num_curr_seqs += num_new_seqs
                 scheduled.append(seq_group)
@@ -317,7 +326,7 @@ class SpSScheduler:
                 num_batched_tokens += (seqs[0].get_draft_len() + 1)
 
             # print("num_batched_tokens: ", num_batched_tokens)
-            if self.sps_config.get_tile_size_constraint(len(self.running)) < num_batched_tokens:
+            if self.sps_config.get_tile_size_constraint() < num_batched_tokens:
                 raise AssertionError("Tile size constraint is violated.")
 
             scheduler_outputs = SpSSchedulerOutputs(
@@ -332,259 +341,259 @@ class SpSScheduler:
 
             return scheduler_outputs
 
-    def _schedule(self) -> SpSSchedulerOutputs:
-        # Blocks that need to be swaped or copied before model execution.
-        blocks_to_swap_in: Dict[int, int] = {}
-        blocks_to_swap_out: Dict[int, int] = {}
-        blocks_to_copy: Dict[int, List[int]] = {}
+    # def _schedule(self) -> SpSSchedulerOutputs:
+    #     # Blocks that need to be swaped or copied before model execution.
+    #     blocks_to_swap_in: Dict[int, int] = {}
+    #     blocks_to_swap_out: Dict[int, int] = {}
+    #     blocks_to_copy: Dict[int, List[int]] = {}
 
-        # Fix the current time.
-        now = time.monotonic()
+    #     # Fix the current time.
+    #     now = time.monotonic()
 
-        # Target Execution Point Identifier (TEPI)
-        # Count the number of tokens that should be fed to the target model.
-        num_tokens_to_target = 0
-        for seq_group in self.running:
-            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-            # target model should run the last non-draft token and all the draft tokens
-            num_tokens_to_target += (seqs[0].get_draft_len() + 1)
+    #     # Target Execution Point Identifier (TEPI)
+    #     # Count the number of tokens that should be fed to the target model.
+    #     num_tokens_to_target = 0
+    #     for seq_group in self.running:
+    #         seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+    #         # target model should run the last non-draft token and all the draft tokens
+    #         num_tokens_to_target += (seqs[0].get_draft_len() + 1)
 
-        num_draft_exit_tokens_to_target = 0
-        for seq_group in self.draft_exit:
-            seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
-            # target model should run the last non-draft token and all the draft tokens
-            num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
+    #     num_draft_exit_tokens_to_target = 0
+    #     for seq_group in self.draft_exit:
+    #         seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
+    #         # target model should run the last non-draft token and all the draft tokens
+    #         num_draft_exit_tokens_to_target += (seqs[0].get_draft_len() + 1)
 
-        num_tokens_to_target += num_draft_exit_tokens_to_target
-        # print("num_tokens_to_target_draft_exit: ",
-        #       num_tokens_to_target_draft_exit)
-        # print("num_tokens_to_target: ", num_tokens_to_target)
+    #     num_tokens_to_target += num_draft_exit_tokens_to_target
+    #     # print("num_tokens_to_target_draft_exit: ",
+    #     #       num_tokens_to_target_draft_exit)
+    #     # print("num_tokens_to_target: ", num_tokens_to_target)
 
-        # Calculate the number of tokens that can be additionally fed to the target model.
-        remaining_tokens = self.sps_config.get_tile_size_constraint(len(self.running)) - num_tokens_to_target
+    #     # Calculate the number of tokens that can be additionally fed to the target model.
+    #     remaining_tokens = self.sps_config.get_tile_size_constraint(len(self.running)) - num_tokens_to_target
 
-        # PROMPT PHASE START
-        # Join waiting sequences if possible.
-        if not self.swapped and remaining_tokens > 0:
-            ignored_seq_groups: List[SequenceGroup] = []
-            scheduled: List[SequenceGroup] = []
-            # The total number of sequences on the fly, including the
-            # requests in the generation phase.
-            num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                                for seq_group in self.running)
-            seq_lens: List[int] = []
+    #     # PROMPT PHASE START
+    #     # Join waiting sequences if possible.
+    #     if not self.swapped and remaining_tokens > 0:
+    #         ignored_seq_groups: List[SequenceGroup] = []
+    #         scheduled: List[SequenceGroup] = []
+    #         # The total number of sequences on the fly, including the
+    #         # requests in the generation phase.
+    #         num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
+    #                             for seq_group in self.running)
+    #         seq_lens: List[int] = []
 
-            # Optimization: We do not sort the waiting queue since the preempted
-            # sequence groups are added to the front and the new sequence groups
-            # are added to the back.
-            while self.waiting and remaining_tokens > 0:
-                seq_group = self.waiting[0]
+    #         # Optimization: We do not sort the waiting queue since the preempted
+    #         # sequence groups are added to the front and the new sequence groups
+    #         # are added to the back.
+    #         while self.waiting and remaining_tokens > 0:
+    #             seq_group = self.waiting[0]
 
-                assert seq_group.num_seqs() == 1, (
-                    "Waiting sequence group should have only one prompt "
-                    "sequence.")
-                num_prompt_tokens = seq_group.get_seqs()[0].get_len()
-                if num_prompt_tokens > self.prompt_limit:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds limit of {self.prompt_limit}")
-                    for seq in seq_group.get_seqs():
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
+    #             assert seq_group.num_seqs() == 1, (
+    #                 "Waiting sequence group should have only one prompt "
+    #                 "sequence.")
+    #             num_prompt_tokens = seq_group.get_seqs()[0].get_len()
+    #             if num_prompt_tokens > self.prompt_limit:
+    #                 logger.warning(
+    #                     f"Input prompt ({num_prompt_tokens} tokens) is too long"
+    #                     f" and exceeds limit of {self.prompt_limit}")
+    #                 for seq in seq_group.get_seqs():
+    #                     seq.status = SequenceStatus.FINISHED_IGNORED
+    #                 ignored_seq_groups.append(seq_group)
+    #                 self.waiting.pop(0)
+    #                 continue
 
-                # If the sequence group cannot be allocated, stop.
-                can_allocate = self.block_manager.can_allocate(seq_group)
-                if can_allocate == AllocStatus.LATER:
-                    break
-                elif can_allocate == AllocStatus.NEVER:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds the capacity of block_manager")
-                    for seq in seq_group.get_seqs():
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
+    #             # If the sequence group cannot be allocated, stop.
+    #             can_allocate = self.block_manager.can_allocate(seq_group)
+    #             if can_allocate == AllocStatus.LATER:
+    #                 break
+    #             elif can_allocate == AllocStatus.NEVER:
+    #                 logger.warning(
+    #                     f"Input prompt ({num_prompt_tokens} tokens) is too long"
+    #                     f" and exceeds the capacity of block_manager")
+    #                 for seq in seq_group.get_seqs():
+    #                     seq.status = SequenceStatus.FINISHED_IGNORED
+    #                 ignored_seq_groups.append(seq_group)
+    #                 self.waiting.pop(0)
+    #                 continue
 
-                # If the number of batched tokens exceeds the limit, stop.
-                new_seq_lens = seq_lens + [num_prompt_tokens]
-                num_batched_tokens = len(new_seq_lens) * max(new_seq_lens)
-                if (num_batched_tokens >
-                        self.scheduler_config.max_num_batched_tokens):
-                    break
+    #             # If the number of batched tokens exceeds the limit, stop.
+    #             new_seq_lens = seq_lens + [num_prompt_tokens]
+    #             num_batched_tokens = len(new_seq_lens) * max(new_seq_lens)
+    #             if (num_batched_tokens >
+    #                     self.scheduler_config.max_num_batched_tokens):
+    #                 break
 
-                # The total number of sequences in the RUNNING state should not
-                # exceed the maximum number of sequences.
-                num_new_seqs = seq_group.get_max_num_running_seqs()
-                if (num_curr_seqs + num_new_seqs >
-                        self.scheduler_config.max_num_seqs):
-                    break
+    #             # The total number of sequences in the RUNNING state should not
+    #             # exceed the maximum number of sequences.
+    #             num_new_seqs = seq_group.get_max_num_running_seqs()
+    #             if (num_curr_seqs + num_new_seqs >
+    #                     self.scheduler_config.max_num_seqs):
+    #                 break
 
-                num_paddings = num_batched_tokens - sum(new_seq_lens)
-                if num_paddings > self.scheduler_config.max_paddings:
-                    break
-                seq_lens = new_seq_lens
+    #             num_paddings = num_batched_tokens - sum(new_seq_lens)
+    #             if num_paddings > self.scheduler_config.max_paddings:
+    #                 break
+    #             seq_lens = new_seq_lens
 
-                seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
-                self.running.append(seq_group)
-                num_curr_seqs += num_new_seqs
-                scheduled.append(seq_group)
-                remaining_tokens -= 1
+    #             seq_group = self.waiting.pop(0)
+    #             self._allocate(seq_group)
+    #             self.running.append(seq_group)
+    #             num_curr_seqs += num_new_seqs
+    #             scheduled.append(seq_group)
+    #             remaining_tokens -= 1
 
-            if scheduled or ignored_seq_groups:
-                scheduler_outputs = SpSSchedulerOutputs(
-                    scheduled_seq_groups=scheduled,
-                    sps_stage=SpSStage.PROMPT,
-                    num_batched_tokens=len(seq_lens) *
-                    max(seq_lens) if seq_lens else 0,
-                    blocks_to_swap_in=blocks_to_swap_in,
-                    blocks_to_swap_out=blocks_to_swap_out,
-                    blocks_to_copy=blocks_to_copy,
-                    ignored_seq_groups=ignored_seq_groups,
-                )
-                return scheduler_outputs
-        # PROMPT PHASE END
+    #         if scheduled or ignored_seq_groups:
+    #             scheduler_outputs = SpSSchedulerOutputs(
+    #                 scheduled_seq_groups=scheduled,
+    #                 sps_stage=SpSStage.PROMPT,
+    #                 num_batched_tokens=len(seq_lens) *
+    #                 max(seq_lens) if seq_lens else 0,
+    #                 blocks_to_swap_in=blocks_to_swap_in,
+    #                 blocks_to_swap_out=blocks_to_swap_out,
+    #                 blocks_to_copy=blocks_to_copy,
+    #                 ignored_seq_groups=ignored_seq_groups,
+    #             )
+    #             return scheduler_outputs
+    #     # PROMPT PHASE END
 
-        # Decision logic for executing the target or draft model:
-        # With respect to the threshold, if more tokens can be fed to the target model,
-        # continue running the draft model. Otherwise, switch to the target model.
-        run_target_model = (remaining_tokens <= 0) or (len(self.running) == 0)
+    #     # Decision logic for executing the target or draft model:
+    #     # With respect to the threshold, if more tokens can be fed to the target model,
+    #     # continue running the draft model. Otherwise, switch to the target model.
+    #     run_target_model = (remaining_tokens <= 0) or (len(self.running) == 0)
 
-        if not run_target_model:
-            sps_stage = SpSStage.DRAFT_DECODE
+    #     if not run_target_model:
+    #         sps_stage = SpSStage.DRAFT_DECODE
 
-            # NOTE(woosuk): Preemption happens only when there is no available slot
-            # to keep all the sequence groups in the RUNNING state.
-            # In this case, the policy is responsible for deciding which sequence
-            # groups to preempt.
-            self.running = self.policy.sort_by_priority(now, self.running)
+    #         # NOTE(woosuk): Preemption happens only when there is no available slot
+    #         # to keep all the sequence groups in the RUNNING state.
+    #         # In this case, the policy is responsible for deciding which sequence
+    #         # groups to preempt.
+    #         self.running = self.policy.sort_by_priority(now, self.running)
 
-            # FIXME(sangjin): How to handle case of draft preemption? Should we not
-            # allow draft preemption at all?
+    #         # FIXME(sangjin): How to handle case of draft preemption? Should we not
+    #         # allow draft preemption at all?
 
-            # Reserve new token slots for the running sequence groups.
-            running: List[SequenceGroup] = []
-            while self.running:
-                seq_group = self.running.pop(0)
-                seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+    #         # Reserve new token slots for the running sequence groups.
+    #         running: List[SequenceGroup] = []
+    #         while self.running:
+    #             seq_group = self.running.pop(0)
+    #             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
 
-                if seq.get_draft_len() >= self.sps_config.draft_size:
-                    self.draft_exit.append(seq_group)
-                    seq.status = SequenceStatus.DRAFT_EXIT
-                elif seq.get_len() + seq.get_draft_len() >= self.scheduler_config.max_model_len:
-                    self.draft_exit.append(seq_group)
-                    seq.status = SequenceStatus.DRAFT_EXIT
-                elif remaining_tokens > 0:
-                    while not self.block_manager.can_append_slot(seq_group):
-                        if self.running:
-                            # Preempt the lowest-priority sequence groups.
-                            victim_seq_group = self.running.pop(-1)
-                            self._preempt(victim_seq_group, blocks_to_swap_out)
-                        else:
-                            # No other sequence groups can be preempted.
-                            # Preempt the current sequence group.
-                            self._preempt(seq_group, blocks_to_swap_out)
-                            break
-                    else:
-                        # Append new slots to the sequence group.
-                        self._append_slot(seq_group, blocks_to_copy)
-                        running.append(seq_group)
-                        remaining_tokens -= 1
-                else:
-                    self.draft_exit.append(seq_group)
-                    seq.status = SequenceStatus.DRAFT_EXIT
-            self.running = running
+    #             if seq.get_draft_len() >= self.sps_config.draft_size:
+    #                 self.draft_exit.append(seq_group)
+    #                 seq.status = SequenceStatus.DRAFT_EXIT
+    #             elif seq.get_len() + seq.get_draft_len() >= self.scheduler_config.max_model_len:
+    #                 self.draft_exit.append(seq_group)
+    #                 seq.status = SequenceStatus.DRAFT_EXIT
+    #             elif remaining_tokens > 0:
+    #                 while not self.block_manager.can_append_slot(seq_group):
+    #                     if self.running:
+    #                         # Preempt the lowest-priority sequence groups.
+    #                         victim_seq_group = self.running.pop(-1)
+    #                         self._preempt(victim_seq_group, blocks_to_swap_out)
+    #                     else:
+    #                         # No other sequence groups can be preempted.
+    #                         # Preempt the current sequence group.
+    #                         self._preempt(seq_group, blocks_to_swap_out)
+    #                         break
+    #                 else:
+    #                     # Append new slots to the sequence group.
+    #                     self._append_slot(seq_group, blocks_to_copy)
+    #                     running.append(seq_group)
+    #                     remaining_tokens -= 1
+    #             else:
+    #                 self.draft_exit.append(seq_group)
+    #                 seq.status = SequenceStatus.DRAFT_EXIT
+    #         self.running = running
 
-            if self.running:
-                # Each sequence in the generation phase only takes one token slot.
-                # Therefore, the number of batched tokens is equal to the number of
-                # sequences in the RUNNING state.
-                num_batched_tokens = 0
-                for seq_group in self.running:
-                    seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                    num_batched_tokens += seq.data.get_uncached_draft_len()
+    #         if self.running:
+    #             # Each sequence in the generation phase only takes one token slot.
+    #             # Therefore, the number of batched tokens is equal to the number of
+    #             # sequences in the RUNNING state.
+    #             num_batched_tokens = 0
+    #             for seq_group in self.running:
+    #                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+    #                 num_batched_tokens += seq.data.get_uncached_draft_len()
 
-                scheduler_outputs = SpSSchedulerOutputs(
-                    scheduled_seq_groups=self.running,
-                    sps_stage=sps_stage,
-                    num_batched_tokens=num_batched_tokens,
-                    blocks_to_swap_in=blocks_to_swap_in,
-                    blocks_to_swap_out=blocks_to_swap_out,
-                    blocks_to_copy=blocks_to_copy,
-                    ignored_seq_groups=[],
-                )
-                return scheduler_outputs
-            else:
-                run_target_model = True
+    #             scheduler_outputs = SpSSchedulerOutputs(
+    #                 scheduled_seq_groups=self.running,
+    #                 sps_stage=sps_stage,
+    #                 num_batched_tokens=num_batched_tokens,
+    #                 blocks_to_swap_in=blocks_to_swap_in,
+    #                 blocks_to_swap_out=blocks_to_swap_out,
+    #                 blocks_to_copy=blocks_to_copy,
+    #                 ignored_seq_groups=[],
+    #             )
+    #             return scheduler_outputs
+    #         else:
+    #             run_target_model = True
 
-        if run_target_model:
-            sps_stage = SpSStage.TARGET_DECODE
+    #     if run_target_model:
+    #         sps_stage = SpSStage.TARGET_DECODE
 
-            # if self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) < num_tokens_to_target:
-            #     overflow = num_tokens_to_target - \
-            #         self.sps_config.get_num_tokens_to_target_threshold(
-            #             len(self.running))
-            #     print("!!!OVERFLOW ", overflow)
+    #         # if self.sps_config.get_num_tokens_to_target_threshold(len(self.running)) < num_tokens_to_target:
+    #         #     overflow = num_tokens_to_target - \
+    #         #         self.sps_config.get_num_tokens_to_target_threshold(
+    #         #             len(self.running))
+    #         #     print("!!!OVERFLOW ", overflow)
 
-            # Change the status of the sequence groups in the DRAFT_EXIT state to the RUNNING state.
-            while self.draft_exit:
-                seq_group = self.draft_exit.pop(0)
-                seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
-                seqs[0].status = SequenceStatus.RUNNING
-                self.running.append(seq_group)
+    #         # Change the status of the sequence groups in the DRAFT_EXIT state to the RUNNING state.
+    #         while self.draft_exit:
+    #             seq_group = self.draft_exit.pop(0)
+    #             seqs = seq_group.get_seqs(status=SequenceStatus.DRAFT_EXIT)
+    #             seqs[0].status = SequenceStatus.RUNNING
+    #             self.running.append(seq_group)
 
-            # NOTE(woosuk): Preemption happens only when there is no available slot
-            # to keep all the sequence groups in the RUNNING state.
-            # In this case, the policy is responsible for deciding which sequence
-            # groups to preempt.
-            self.running = self.policy.sort_by_priority(now, self.running)
+    #         # NOTE(woosuk): Preemption happens only when there is no available slot
+    #         # to keep all the sequence groups in the RUNNING state.
+    #         # In this case, the policy is responsible for deciding which sequence
+    #         # groups to preempt.
+    #         self.running = self.policy.sort_by_priority(now, self.running)
 
-            # FIXME(sangjin): How to handle case of target preemption?
+    #         # FIXME(sangjin): How to handle case of target preemption?
 
-            # Reserve new token slots for the running sequence groups.
-            running: List[SequenceGroup] = []
-            while self.running:
-                seq_group = self.running.pop(0)
-                while not self.block_manager.can_append_slot(seq_group):
-                    if self.running:
-                        # Preempt the lowest-priority sequence groups.
-                        victim_seq_group = self.running.pop(-1)
-                        self._preempt(victim_seq_group, blocks_to_swap_out)
-                    else:
-                        # No other sequence groups can be preempted.
-                        # Preempt the current sequence group.
-                        self._preempt(seq_group, blocks_to_swap_out)
-                        break
-                else:
-                    # Append new slots to the sequence group.
-                    self._append_slot(seq_group, blocks_to_copy)
-                    running.append(seq_group)
+    #         # Reserve new token slots for the running sequence groups.
+    #         running: List[SequenceGroup] = []
+    #         while self.running:
+    #             seq_group = self.running.pop(0)
+    #             while not self.block_manager.can_append_slot(seq_group):
+    #                 if self.running:
+    #                     # Preempt the lowest-priority sequence groups.
+    #                     victim_seq_group = self.running.pop(-1)
+    #                     self._preempt(victim_seq_group, blocks_to_swap_out)
+    #                 else:
+    #                     # No other sequence groups can be preempted.
+    #                     # Preempt the current sequence group.
+    #                     self._preempt(seq_group, blocks_to_swap_out)
+    #                     break
+    #             else:
+    #                 # Append new slots to the sequence group.
+    #                 self._append_slot(seq_group, blocks_to_copy)
+    #                 running.append(seq_group)
 
-            self.running = running
+    #         self.running = running
 
-            num_batched_tokens = 0
-            for seq_group in self.running:
-                seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-                assert len(seqs) == 1, "SpS does not support beam search"
-                # target model should run the last non-draft token and all the draft tokens
-                num_batched_tokens += (seqs[0].get_draft_len() + 1)
+    #         num_batched_tokens = 0
+    #         for seq_group in self.running:
+    #             seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+    #             assert len(seqs) == 1, "SpS does not support beam search"
+    #             # target model should run the last non-draft token and all the draft tokens
+    #             num_batched_tokens += (seqs[0].get_draft_len() + 1)
 
-            # print("num_batched_tokens: ", num_batched_tokens)
+    #         # print("num_batched_tokens: ", num_batched_tokens)
 
-            scheduler_outputs = SpSSchedulerOutputs(
-                scheduled_seq_groups=self.running,
-                sps_stage=sps_stage,
-                num_batched_tokens=num_batched_tokens,
-                blocks_to_swap_in=blocks_to_swap_in,
-                blocks_to_swap_out=blocks_to_swap_out,
-                blocks_to_copy=blocks_to_copy,
-                ignored_seq_groups=[],
-            )
+    #         scheduler_outputs = SpSSchedulerOutputs(
+    #             scheduled_seq_groups=self.running,
+    #             sps_stage=sps_stage,
+    #             num_batched_tokens=num_batched_tokens,
+    #             blocks_to_swap_in=blocks_to_swap_in,
+    #             blocks_to_swap_out=blocks_to_swap_out,
+    #             blocks_to_copy=blocks_to_copy,
+    #             ignored_seq_groups=[],
+    #         )
 
-            return scheduler_outputs
+    #         return scheduler_outputs
 
     def schedule(self) -> Tuple[List[SequenceGroupMetadata], SpSSchedulerOutputs]:
         # Schedule sequence groups.
@@ -627,8 +636,17 @@ class SpSScheduler:
         self.block_manager.free(seq)
 
     def free_finished_seq_groups(self) -> None:
-        self.running = [
-            seq_group for seq_group in self.running
+        # self.running = [
+        #     seq_group for seq_group in self.running
+        #     if not seq_group.is_finished()
+        # ]
+        self.need_to_run_draft = [
+            seq_group for seq_group in self.need_to_run_draft
+            if not seq_group.is_finished()
+        ]
+
+        self.need_to_run_target = [
+            seq_group for seq_group in self.need_to_run_target
             if not seq_group.is_finished()
         ]
 

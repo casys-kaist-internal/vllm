@@ -8,6 +8,7 @@ from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
+from vllm.core.sps_scheduler import SpSSchedulerOutputs
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
@@ -302,6 +303,7 @@ class SpSWorker:
         blocks_to_swap_in: Dict[int, int],
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
+        scheduler_outputs: SpSSchedulerOutputs,
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
