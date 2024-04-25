@@ -393,9 +393,10 @@ class SpSLLMEngine:
 
             elif sps_stage == SpSStage.DRAFT_DECODE:
                 # Append the draft token to the parent sequence.
-                parent.append_draft_token_id(child_sample.output_token,
-                                             child_sample.logprobs,
-                                             child_sample.probs)
+                # parent.append_draft_token_id(child_sample.output_token,
+                #                              child_sample.logprobs,
+                #                              child_sample.probs)
+                pass
 
             elif sps_stage == SpSStage.TARGET_DECODE:
                 free_block_cnt = parent.accept_draft_tokens(
@@ -430,6 +431,10 @@ class SpSLLMEngine:
             for seq, _, check_cnt in child_seqs:
                 self._decode_sequence(seq, seq_group.sampling_params)
                 self._check_stop(seq, seq_group.sampling_params, check_cnt)
+
+        # We should swap need_to_run_draft queue and need_to_run_target queue
+        if sps_stage != SpSStage.PROMPT:
+            self.scheduler.swap_draft_target_queues()
 
         # Free the finished and selected parent sequences' memory in block
         # manager. Keep them in the sequence group as candidate output.
@@ -505,6 +510,7 @@ class SpSLLMEngine:
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                scheduler_outputs=scheduler_outputs
             )
 
             return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
@@ -560,7 +566,7 @@ class SpSLLMEngine:
                             # Append the bonus token saved in all accept case for target decode 
                             seq.append_bonus_token_id()
 
-            return target_output
+            return target_output, sps_stage
 
         else:
             raise ValueError(f"Invalid SpS stage: {sps_stage}")
