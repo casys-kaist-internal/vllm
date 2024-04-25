@@ -27,8 +27,6 @@ class SequenceStatus(enum.Enum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
-    ALL_ACCEPT = enum.auto()  # SpS related status
-    DRAFT_EXIT = enum.auto()  # SpS related status
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -342,7 +340,15 @@ class Sequence:
 
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
-
+    
+    def get_beta(self) -> float:
+        # average the last window size betas 
+        window_size = 10
+        if len(self.beta_list) < window_size:
+            return sum(self.beta_list) / len(self.beta_list)
+        else:
+            return sum(self.beta_list[-window_size:]) / window_size
+        
     def append_draft_token_id(
         self,
         token_id: int,
