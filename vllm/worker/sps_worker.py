@@ -180,8 +180,7 @@ class SpSWorker:
     
     
     def _process_draft_sequence_group_outputs(self, seq_group: SequenceGroup,
-                                                outputs: SequenceGroupOutput,
-                                                sps_stage: SpSStage) -> None:
+                                                outputs: SequenceGroupOutput) -> None:
 
         # We assume that SpS engine does not use beam search.
         assert not seq_group.sampling_params.use_beam_search
@@ -200,8 +199,6 @@ class SpSWorker:
         }
         for sample in samples:
             parent_child_dict[sample.parent_seq_id].append(sample)
-        # List of (child, parent)
-        child_seqs: List[Tuple[Sequence, Sequence]] = []
 
         # Process the child samples for each parent sequence
         for parent in parent_seqs:
@@ -212,57 +209,21 @@ class SpSWorker:
                 "exactly one child sample for each parent sequence.")
 
             child_sample = child_samples[0]
-            check_cnt = 1
 
+            # Append the draft token to the parent sequence.
+            parent.append_draft_token_id(child_sample.output_token,
+                                        child_sample.logprobs,
+                                        child_sample.probs)
 
-            if sps_stage == SpSStage.DRAFT_DECODE:
-                # Append the draft token to the parent sequence.
-                parent.append_draft_token_id(child_sample.output_token,
-                                             child_sample.logprobs,
-                                             child_sample.probs)
-
-            else:
-                raise ValueError(f"Invalid SpS stage: {sps_stage}")
-
-            child_seqs.append((parent, parent, check_cnt))
-
-        # Decode and check stop only on PROMPT stage and TARGET_DECODE stage.
-        if sps_stage == SpSStage.PROMPT or sps_stage == SpSStage.TARGET_DECODE:
-            for seq, _, check_cnt in child_seqs:
-                self._decode_sequence(seq, seq_group.sampling_params)
-                self._check_stop(seq, seq_group.sampling_params, check_cnt)
-
-        # Free the finished and selected parent sequences' memory in block
-        # manager. Keep them in the sequence group as candidate output.
-        # NOTE: we need to fork the new sequences before freeing the
-        # old sequences.
-        for seq, parent, _ in child_seqs:
-            if seq is parent and seq.is_finished():
-                self.scheduler.free_seq(seq)
-        return
     
     def _process_draft_model_outputs(
             self, output: SamplerOutput,
-            scheduler_outputs: SpSSchedulerOutputs,
-            sps_stage: SpSStage) -> List[RequestOutput]:
+            scheduler_outputs: SpSSchedulerOutputs):
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_draft_sequence_group_outputs(seq_group, outputs, sps_stage)
+            self._process_draft_sequence_group_outputs(seq_group, outputs)
 
-
-        # Create the outputs.
-        request_outputs: List[RequestOutput] = []
-        for seq_group in (scheduled_seq_groups +
-                          scheduler_outputs.ignored_seq_groups):
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
-
-        if self.log_stats:
-            # Log the system stats.
-            self._log_system_stats(True if sps_stage == SpSStage.PROMPT else False,
-                                   scheduler_outputs.num_batched_tokens)
-        return request_outputs
     
     @torch.inference_mode()
     def execute_target_model(
@@ -364,11 +325,27 @@ class SpSWorker:
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
-        # run this several times 
-        for _  in range(3):
-            output = self.draft_model_runner.execute_model(seq_group_metadata_list,
-                                                        self.draft_gpu_cache, cache_events)
-            self._process_draft_model_outputs(output, scheduler_outputs, SpSStage.DRAFT_DECODE)
+
+        # Initialize draft_iteration
+        draft_iteration = 0
+
+        # Run this loop until seq_group_metadata_list is empty
+        while True:
+            # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
+            # Note: It's possible for the initial assigned draft size to be 0.     
+            seq_group_metadata_list = [seq_group_metadata for seq_group_metadata in seq_group_metadata_list 
+                                    if seq_group_metadata.draft_size != draft_iteration]
+
+            # Break the loop if seq_group_metadata_list is empty
+            if not seq_group_metadata_list:
+                break
+
+            # Execute the model and process the outputs
+            output = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
+            self._process_draft_model_outputs(output, scheduler_outputs)
+
+            # Increase draft_iteration
+            draft_iteration += 1
 
         return output
 
