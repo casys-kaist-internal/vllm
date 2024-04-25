@@ -593,6 +593,8 @@ namespace vllm
     constexpr int NUM_WARPS_Y_QK = QUERY_SIZE / QUERIES_PER_WARP_GROUP_QK;
     constexpr int NUM_WARPS_X_QK = NUM_WARPS / NUM_WARPS_Y_QK;
 
+    assert(NUM_WARPS_X_QK * NUM_WARPS_Y_QK == NUM_WARPS);
+
     const int warp_idx_x_qk = warp_idx % NUM_WARPS_X_QK;
     const int warp_idx_y_qk = warp_idx / NUM_WARPS_X_QK;
 
@@ -602,13 +604,14 @@ namespace vllm
     float *logits = reinterpret_cast<float *>(shared_mem);
 
     // // Zero-init logits
-    // for (int i = thread_idx; i < PARTITION_SIZE * QUERY_SIZE; i += NUM_THREADS)
-    // {
-    //   logits[i] = 0.f;
-    // }
+    for (int i = thread_idx; i < PARTITION_SIZE * QUERY_SIZE; i += NUM_THREADS)
+    {
+      logits[i] = 0.f;
+    }
+    __syncthreads();
 
     // Workspace for reduction.
-    __shared__ float red_smem[QUERY_SIZE][2 * NUM_WARPS_X_QK];
+    __shared__ float red_smem[QUERY_SIZE][2 * NUM_WARPS];
 
     // x == THREAD_GROUP_SIZE * VEC_SIZE
     // Each thread group fetches x elements from the key at a time.
@@ -652,8 +655,11 @@ namespace vllm
 
       constexpr int V_TILE_SIZE = 8; // total 16 vectors for HEAD_SIZE=128
 
-      float logits_reg[QUERIES_PER_WARP_GROUP_QK] = {0.f};
+      float logits_reg[QUERIES_PER_WARP_GROUP_QK] = {0.0};
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+
+      if (token_idx >= max_context_len)
+        continue;
 
       for (int v_outer = 0; v_outer < NUM_VECS_PER_THREAD / V_TILE_SIZE; ++v_outer)
       { // Load the query to registers.
@@ -664,6 +670,8 @@ namespace vllm
         for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
         {
           int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+          // if (query_idx >= query_len)
+          //   break;
 #pragma unroll
           for (int j = 0; j < V_TILE_SIZE; ++j)
           {
@@ -684,6 +692,8 @@ namespace vllm
         for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
         {
           int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+          // if (query_idx >= query_len)
+          //   break;
           int n_context_len = context_len + query_idx;
           float qk = 0;
           A_vec res = {0};
@@ -698,8 +708,7 @@ namespace vllm
           qk *= scale;
           qk += (alibi_slope != 0) ? alibi_slope * (token_idx - n_context_len + 1) : 0;
           const bool mask = token_idx >= n_context_len;
-          logits_reg[it] = mask ? 0.f : qk;
-          qk_max_reg[it] = mask ? qk_max_reg[it] : fmaxf(qk_max_reg[it], qk);
+          logits_reg[it] += mask ? 0.f : qk;
         } // query_idx end
       }   // v_outer end
 
@@ -709,8 +718,13 @@ namespace vllm
       for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
       {
         int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+        if (query_idx >= query_len)
+          break;
+        int n_context_len = context_len + query_idx;
+        const bool mask = token_idx >= n_context_len;
+        qk_max_reg[it] = mask ? qk_max_reg[it] : fmaxf(qk_max_reg[it], logits_reg[it]);
 
-        float over_max = query_idx < query_len ? 1.f : 0.f;
+        float over_max = query_idx < query_len ? 1.0 : 0.0;
 
         int logits_index = logits_idx<PAD_MAX_NUM_TOKENS>(query_idx, tok_offset);
         logits[logits_index] = logits_reg[it] * over_max;
@@ -730,15 +744,16 @@ namespace vllm
     for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; it++)
     {
       int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
+      float v = qk_max_reg[it];
       if (query_idx >= query_len)
         break;
       for (int mask = WARP_SIZE / 2; mask >= THREAD_GROUP_SIZE; mask /= 2)
       {
-        qk_max[it][thread_idx] = fmaxf(qk_max[it][thread_idx], __shfl_xor_sync(uint32_t(-1), qk_max[it][thread_idx], mask));
+        v = fmaxf(v, __shfl_xor_sync(uint32_t(-1), v, mask));
       }
       if (lane == 0)
       {
-        red_smem[query_idx][warp_idx_x_qk] = qk_max[it][thread_idx];
+        red_smem[query_idx][warp_idx_x_qk] = v;
       }
     }
     __syncthreads();
@@ -746,26 +761,27 @@ namespace vllm
     // TODO(woosuk): Refactor this part.
     // Get the max qk value for the sequence.
 
-    float exp_sum_arr[QUERIES_PER_WARP_GROUP_QK] = {0.f};
+    float exp_sum_arr[QUERIES_PER_WARP_GROUP_QK] = {0.0};
 
     for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
     {
       int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
       if (query_idx >= query_len)
         break;
-      qk_max[it][thread_idx] = lane < NUM_WARPS_X_QK ? red_smem[query_idx][lane] : -FLT_MAX;
+      float v = lane < NUM_WARPS_X_QK ? red_smem[query_idx][lane] : -FLT_MAX;
       for (int mask = NUM_WARPS_X_QK / 2; mask >= 1; mask /= 2)
       {
-        qk_max[it][thread_idx] = fmaxf(qk_max[it][thread_idx], __shfl_xor_sync(uint32_t(-1), qk_max[it][thread_idx], mask));
+        v = fmaxf(v, __shfl_xor_sync(uint32_t(-1), v, mask));
       }
       // Broadcast the max qk value to all threads.
-      qk_max[it][thread_idx] = __shfl_sync(uint32_t(-1), qk_max[it][thread_idx], 0);
+      v = __shfl_sync(uint32_t(-1), v, 0);
+      qk_max_reg[it] = v;
     }
 
     // 이게 bottleneck
 
     int num_tokens_arr[QUERIES_PER_WARP_GROUP_QK];
-    float inv_sums_arr[QUERIES_PER_WARP_GROUP_QK];
+    float inv_sums_arr[QUERIES_PER_WARP_GROUP_QK] = {0.0};
 
     for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
     {
@@ -789,11 +805,10 @@ namespace vllm
     {
       int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
       // Now, threads sharing same warp_idx_y_qk will compute softmax for the same query_idx
-      float exp_sum = 0.f;
 #pragma unroll
       for (int i = thread_idx - (warp_idx_y_qk * NUM_WARPS_X_QK * WARP_SIZE); i < num_tokens_arr[it]; i += NUM_THREADS / NUM_WARPS_Y_QK)
       {
-        float val = __expf(logits[logits_idx<PAD_MAX_NUM_TOKENS>(query_idx, i)] - qk_max[it][thread_idx]);
+        float val = __expf(logits[logits_idx<PAD_MAX_NUM_TOKENS>(query_idx, i)] - qk_max_reg[it]);
         logits[logits_idx<PAD_MAX_NUM_TOKENS>(query_idx, i)] = val;
         exp_sum_arr[it] += val;
       }
@@ -810,7 +825,7 @@ namespace vllm
     {
       int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
       const float inv_sum = __fdividef(1.f, exp_sum_arr[it] + 1e-6f);
-      inv_sums_arr[it] = query_idx >= query_len ? 0.f : inv_sum;
+      inv_sums_arr[it] = query_idx >= query_len ? 0 : inv_sum;
     }
 
 #pragma unroll
@@ -819,7 +834,6 @@ namespace vllm
       int query_idx = warp_idx_y_qk + it * NUM_WARPS_Y_QK;
       if (query_idx >= query_len)
         break;
-#pragma unroll
       for (int i = thread_idx - (warp_idx_y_qk * NUM_WARPS_X_QK * WARP_SIZE); i < num_tokens_arr[it]; i += NUM_THREADS / NUM_WARPS_Y_QK)
       {
         logits[logits_idx<PAD_MAX_NUM_TOKENS>(query_idx, i)] *= inv_sums_arr[it];
@@ -836,7 +850,7 @@ namespace vllm
         if (query_idx >= query_len)
           continue;
         float *max_logits_ptr = max_logits + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions + partition_idx;
-        *max_logits_ptr = qk_max[it][thread_idx];
+        *max_logits_ptr = qk_max_reg[it];
         float *exp_sums_ptr = exp_sums + (cum_query_len + query_idx) * num_heads * max_num_partitions + head_idx * max_num_partitions + partition_idx;
         *exp_sums_ptr = exp_sum_arr[it];
       }
@@ -858,9 +872,9 @@ namespace vllm
 
     constexpr int NUM_COLS_PER_WARP = HEAD_SIZE / NUM_WARPS_PER_HEAD; // 128 / 1 = 128
 
-    constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;
-    constexpr int NUM_ROWS_PER_ITER = WARP_SIZE / NUM_V_VECS_PER_ROW;
-    constexpr int NUM_ROWS_PER_THREAD = DIVIDE_ROUND_UP(NUM_COLS_PER_WARP, NUM_ROWS_PER_ITER);
+    constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;                                // 32 / 8 = 4
+    constexpr int NUM_ROWS_PER_ITER = WARP_SIZE / NUM_V_VECS_PER_ROW;                          // 32 / 4 = 8
+    constexpr int NUM_ROWS_PER_THREAD = DIVIDE_ROUND_UP(NUM_COLS_PER_WARP, NUM_ROWS_PER_ITER); // 128 / 8 = 16
 
     assert(NUM_WARPS_X * NUM_WARPS_Y * NUM_WARPS_Z == NUM_WARPS);
 
@@ -904,6 +918,8 @@ namespace vllm
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
       const scalar_t *v_ptr = v_cache + physical_block_number * kv_block_stride + kv_head_idx * kv_head_stride;
 
+      if (token_idx >= max_context_len)
+        continue;
 // Populate registers for whole warptiling
 #pragma unroll
       for (int i = 0; i < NUM_ROWS_PER_THREAD; ++i) // equiv to WNTiling.. head_size warptiling
@@ -956,7 +972,6 @@ namespace vllm
       int query_idx = query_len - 1 - warp_idx_z - it * NUM_WARPS_Z;
       if (query_idx < 0)
         break;
-
       // Reduce within the warp.
       // #pragma unroll
       for (int i = 0; i < NUM_ROWS_PER_THREAD; i++)
@@ -1532,50 +1547,51 @@ namespace vllm
     int lda = PAD_MAX_NUM_TOKENS;
     int ldb = BLOCK_SIZE;
     int ldc = HEAD_SIZE / NUM_C_WARPS;
+    constexpr int WMMA_N_PAD = WMMA_N;
 
-    // Loop over the K-dimension
-    for (int i = 0; i < K; i += WMMA_K * NUM_K_WARPS)
+    // Loop over query
+    for (int q = 0; q < QUERY_SIZE; q += WMMA_M)
     {
-      // Get block_idx from K
-      int i_local = i + warp_idx_y_tc * WMMA_K;
+      // Loop over the K-dimension
+      for (int i = 0; i < K; i += WMMA_K * NUM_K_WARPS)
+      {
+        // Get block_idx from K
+        int i_local = i + warp_idx_y_tc * WMMA_K;
 
-      int block_idx = i_local / BLOCK_SIZE;
-      int physical_block_offset = i_local % BLOCK_SIZE;
-      const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
-      // if (token_idx >= context_len)
-      //   continue;
+        int block_idx = i_local / BLOCK_SIZE;
+        int physical_block_offset = i_local % BLOCK_SIZE;
+        const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+        // if (token_idx >= context_len)
+        //   continue;
 
-      // Collaboratievly load v to shared memory
+        // Collaboratievly load v to shared memory
 
-      const int64_t physical_block_number = static_cast<int64_t>(block_table[block_idx]);
-      const scalar_t *v_ptr = v_cache + physical_block_number * kv_block_stride + kv_head_idx * kv_head_stride;
-      const half *logits_scalar_t_half = reinterpret_cast<half *>(logits_scalar_t);
-      half *v_ptr_half = reinterpret_cast<half *>(const_cast<scalar_t *>(v_ptr));
+        const int64_t physical_block_number = static_cast<int64_t>(block_table[block_idx]);
+        const scalar_t *v_ptr = v_cache + physical_block_number * kv_block_stride + kv_head_idx * kv_head_stride;
+        const half *logits_scalar_t_half = reinterpret_cast<half *>(logits_scalar_t);
+        half *v_ptr_half = reinterpret_cast<half *>(const_cast<scalar_t *>(v_ptr));
 
-      const int aRow = 0;
-      const int aCol = i_local;
-      const int bRow = i_local % BLOCK_SIZE;
-      const int bCol = warp_idx_x_tc * WMMA_N;
+        const int aRow = q;
+        const int aCol = i_local;
+        const int bRow = i_local % BLOCK_SIZE;
+        const int bCol = warp_idx_x_tc * WMMA_N;
 
-      //  [num_blocks, num_kv_heads, head_size, block_size]
-      // Bounds checking
-      // if (aRow < M && aCol < K && bRow < K && bCol < N)
-      // {
-      // Load the inputs
-      // wmma::load_matrix_sync(a_frag, logits_scalar_t_half + aRow + aCol * lda, lda);
-      wmma::load_matrix_sync(a_frag, logits_scalar_t_half + aRow * lda + aCol, lda);
-      wmma::load_matrix_sync(b_frag, v_ptr_half + bRow + bCol * ldb, ldb);
+        //  [num_blocks, num_kv_heads, head_size, block_size]
+        // Bounds checking
+        // if (aRow < M && aCol < K && bRow < K && bCol < N)
+        // {
+        // Load the inputs
+        // wmma::load_matrix_sync(a_frag, logits_scalar_t_half + aRow + aCol * lda, lda);
+        wmma::load_matrix_sync(a_frag, logits_scalar_t_half + aRow * lda + aCol, lda);
+        wmma::load_matrix_sync(b_frag, v_ptr_half + bRow + bCol * ldb, ldb);
 
-      // Perform the matrix multiplication
-      wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
-      // }
+        // Perform the matrix multiplication
+        wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+        // }
+      }
+      assert(HEAD_SIZE / NUM_C_WARPS == WMMA_N);
+      wmma::store_matrix_sync(&output_shared[warp_idx_x_tc * QUERY_SIZE * WMMA_N_PAD + q * WMMA_N_PAD], acc_frag, ldc, wmma::mem_row_major);
     }
-
-    assert(HEAD_SIZE / NUM_C_WARPS == WMMA_N);
-
-    constexpr int WMMA_N_PAD = WMMA_N + 8;
-    // wmma::store_matrix_sync(&output_shared[warp_idx_y_tc * NUM_C_WARPS * QUERY_SIZE * WMMA_N_PAD + warp_idx_x_tc * QUERY_SIZE * WMMA_N_PAD], acc_frag, ldc, wmma::mem_row_major);
-    wmma::store_matrix_sync(&output_shared[warp_idx_x_tc * QUERY_SIZE * WMMA_N_PAD], acc_frag, ldc, wmma::mem_row_major);
 
     for (int query_idx = 0; query_idx < QUERY_SIZE; query_idx++)
     {

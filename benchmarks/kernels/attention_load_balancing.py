@@ -20,9 +20,15 @@ class KernelVersion:
     TENSOR_CORE = 2
 
 
-@torch.inference_mode()
-def main(
-    version: str,
+def gen_context_len(max_context_len_per_query: List[int], query_lens: List[int]):
+    res = []
+    for query_len, c_max in zip(query_lens, max_context_len_per_query):
+        for i in range(query_len):
+            res.append(c_max - (query_len - i - 1))
+    return res
+
+
+def main_runner(
     num_seqs: int,
     context_lens: List[int],  # [num_seqs]
     query_lens: List[int],  # [num_seqs]
@@ -33,7 +39,7 @@ def main(
     block_size: int,
     dtype: torch.dtype,
     seed: int,
-) -> None:
+) -> float:
 
     # Set random seeds
     random.seed(seed)
@@ -98,33 +104,35 @@ def main(
     # (hj) Another output to validate our stuff
     validation_output = torch.empty_like(query)
 
-    if version == "v2":
-        num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
+    num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
 
-        # (hj) : num_seqs -> sum_query_lens
-        tmp_output = torch.empty(
-            size=(sum_query_lens, num_query_heads, num_partitions, head_size),
-            dtype=output.dtype,
-            device=output.device,
-        )
+    # (hj) : num_seqs -> sum_query_lens
+    tmp_output = torch.empty(
+        size=(sum_query_lens, num_query_heads, num_partitions, head_size),
+        dtype=output.dtype,
+        device=output.device,
+    )
 
-        # (hj) : num_seqs -> sum_query_lens
-        exp_sums = torch.empty(
-            size=(sum_query_lens, num_query_heads, num_partitions),
-            dtype=torch.float32,
-            device=output.device,
-        )
-        max_logits = torch.empty_like(exp_sums)
+    # (hj) : num_seqs -> sum_query_lens
+    exp_sums = torch.empty(
+        size=(sum_query_lens, num_query_heads, num_partitions),
+        dtype=torch.float32,
+        device=output.device,
+    )
+    max_logits = torch.empty_like(exp_sums)
 
-    def run_benchmark(target: KernelVersion, num_iters: int = 100) -> float:
+    tmp_output_target = torch.empty_like(tmp_output)
+    exp_sums_target = torch.empty_like(exp_sums)
+    max_logits_target = torch.empty_like(max_logits)
 
+    def run_benchmark(target: KernelVersion, num_iters: int) -> float:
         def run():
             if target == KernelVersion.TARGET:
                 ops.paged_attention_v2_target(
                     output,
-                    exp_sums,
-                    max_logits,
-                    tmp_output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
                     query,
                     key_cache,
                     value_cache,
@@ -157,9 +165,9 @@ def main(
             else:
                 ops.paged_attention_v2_target_tensor_core(
                     output,
-                    exp_sums,
-                    max_logits,
-                    tmp_output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
                     query,
                     key_cache,
                     value_cache,
@@ -191,7 +199,11 @@ def main(
         return elasped_time_ms
 
     torch.cuda.synchronize()
-    target_latency = run_benchmark(target=KernelVersion.TARGET)
+    original_latency = run_benchmark(target=KernelVersion.ORIGINAL, num_iters=100)
+    target_latency = run_benchmark(target=KernelVersion.TARGET, num_iters=100)
+    print(f"Target latency: {target_latency:.2f} ms")
+    print(f"Original latency: {original_latency:.2f} ms")
+    return original_latency, target_latency
 
 
 if __name__ == "__main__":
@@ -206,7 +218,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--head-size", type=int, choices=[64, 80, 96, 112, 128, 256], default=128
     )
-    parser.add_argument("--block-size", type=int, choices=[16, 32], default=16)
+    parser.add_argument("--block-size", type=int, choices=[16, 32], default=32)
     parser.add_argument("--use-alibi", action="store_true")
     parser.add_argument(
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
@@ -223,90 +235,111 @@ if __name__ == "__main__":
         "float": torch.float,
     }
 
-    # Variables to alter for each experiment
+    @torch.inference_mode()
+    def run_test():
+        num_seqs = 32
+        import matplotlib.pyplot as plt
 
-    MAX_QUERY_LEN = 16
+        # Set plot size
+        plt.figure(figsize=(10, 10))
 
-    # -> num_seqs : Does saturating the GPU scheduler with tasks reduce the imbalance problem?
-    # -> sum_context_lens : Similar intuition to above
+        colours = ["b", "g", "r", "c", "m", "y", "k", "orange", "purple", "brown"]
 
-    # Phase 1: Test with uniform distribution
-    def gen_uniform_query_lens(num_seqs: int, query_len: int) -> List[int]:
-        query_lens = [query_len] * num_seqs
-        return query_lens
+        for window_size in range(8, 0, -1):
+            print(f"Running with window size: {window_size}")
+            target_results = []
+            orig_results = []
+            for context_len in range(32, 513, 32):
+                print(f"Running with context length: {context_len}")
+                query_lens = [window_size] * num_seqs
 
-    # Phase 2: Test with normal distribution
-    def gen_normal_query_lens(num_seqs: int, query_len: int, std: float) -> List[int]:
-        mean = query_len
-        query_lens = [
-            max(min(math.ceil(random.normalvariate(mean, std)), MAX_QUERY_LEN), 0)
-            for _ in range(num_seqs)
-        ]
-        return query_lens
+                context_lens = gen_context_len([context_len] * num_seqs, query_lens)
 
-    # Phase 3: Test with U-like distribution
-    def gen_U_query_lens(num_seqs: int, query_len: int, std: float) -> List[int]:
-        min_query_len = 1
-        max_query_len = (
-            2 * query_len - min_query_len
-        )  # this makes average query length to be query_len
-        query_lens_min = [min_query_len] * (num_seqs // 2)
-        query_lens_max = [max_query_len] * (num_seqs // 2)
-        query_lens = query_lens_min + query_lens_max
-        return query_lens
+                orig, target = main_runner(
+                    num_seqs=num_seqs,
+                    context_lens=context_lens,
+                    query_lens=query_lens,
+                    num_query_heads=args.num_query_heads,
+                    num_kv_heads=args.num_kv_heads,
+                    head_size=args.head_size,
+                    block_size=args.block_size,
+                    use_alibi=args.use_alibi,
+                    dtype=dtype_to_torch_dtype[args.dtype],
+                    seed=args.seed,
+                )
+                target_results.append((context_len, target))
+                orig_results.append((context_len, orig))
 
-    # simple test :) TODO: tie to function and run before test
+            # Draw line plot,
+            x = [r[0] for r in target_results]
+            y = [r[1] for r in target_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Modified kernel with Window Size : {window_size}",
+                color=colours[window_size],
+            )
 
-    num_seqs = 100
-    avg_query_len = 8
-    std = 2
+            # Draw line plot,
+            x = [r[0] for r in orig_results]
+            y = [r[1] for r in orig_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Naive kernel with Window Size : {window_size}",
+                linestyle="dashed",
+                color=colours[window_size],
+            )
 
-    normal_query_lens = gen_normal_query_lens(num_seqs, avg_query_len, std)
-    U_query_lens = gen_U_query_lens(num_seqs, avg_query_len, std)
+            # Save as image
 
-    # Draw diagram
-    import matplotlib.pyplot as plt
-    import numpy as np
+        # Do reference plot
+        # window_size = 1
+        # results = []
+        # orig_results = []
+        # for context_len in range(32, 512, 32):
+        #     print(f"Running with context length: {context_len}")
+        #     query_lens = [window_size] * num_seqs
 
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        #     context_lens = gen_context_len([context_len] * num_seqs, query_lens)
 
-    ax[0].hist(
-        normal_query_lens,
-        bins=np.arange(0, MAX_QUERY_LEN + 1, 1),
-        color="blue",
-        alpha=0.5,
-        label="Normal",
-    )
-    ax[0].set_title("Normal Distribution")
-    ax[0].set_xlabel("Query Length")
-    ax[0].set_ylabel("Frequency")
-    ax[0].legend()
+        #     orig, target = main_runner(
+        #         num_seqs=num_seqs,
+        #         context_lens=context_lens,
+        #         query_lens=query_lens,
+        #         num_query_heads=args.num_query_heads,
+        #         num_kv_heads=args.num_kv_heads,
+        #         head_size=args.head_size,
+        #         block_size=args.block_size,
+        #         use_alibi=args.use_alibi,
+        #         dtype=dtype_to_torch_dtype[args.dtype],
+        #         seed=args.seed,
+        #     )
+        #     results.append((context_len, target))
+        #     orig_results.append((context_len, orig))
 
-    ax[1].hist(
-        U_query_lens, bins=np.arange(0, MAX_QUERY_LEN + 1, 1), color="red", alpha=0.5, label="U-like"
-    )
-    ax[1].set_title("U-like Distribution")
-    ax[1].set_xlabel("Query Length")
-    ax[1].set_ylabel("Frequency")
-    ax[1].legend()
+        # # Draw line plot,
+        # x = [r[0] for r in results]
+        # y = [r[1] for r in results]
 
-    # Save as test.jpg
-    plt.savefig("distribution.jpg")
-    
-    
-    
-    
+        # # Plot with 2px, dashed line
+        # plt.plot(
+        #     x,
+        #     y,
+        #     label=f"Decoder Original algorithm : {window_size}",
+        #     linestyle="dashed",
+        #     linewidth=2,
+        # )
 
-    # main(
-    #     version=args.version,
-    #     num_seqs=args.batch_size,
-    #     context_lens=context_lens,
-    #     query_lens=query_lens,
-    #     num_query_heads=args.num_query_heads,
-    #     num_kv_heads=args.num_kv_heads,
-    #     head_size=args.head_size,
-    #     block_size=args.block_size,
-    #     use_alibi=args.use_alibi,
-    #     dtype=dtype_to_torch_dtype[args.dtype],
-    #     seed=args.seed,
-    # )
+        ######
+        plt.legend()
+
+        # X-axis label
+        plt.xlabel("Context Length")
+
+        # Y-axis label
+        plt.ylabel("Latency (ms)")
+
+        plt.savefig(f"attention_kernel_analysis.jpg")
+
+    run_test()
