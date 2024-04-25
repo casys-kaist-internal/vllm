@@ -192,7 +192,8 @@ class Sequence:
         seq_id: int,
         prompt: str,
         prompt_token_ids: List[int],
-        block_size: int
+        block_size: int,
+        draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
@@ -224,8 +225,8 @@ class Sequence:
         self.bonus_token_id = None
         self.bonus_logprobs = None
 
-        # Can change every iteration
-        self.draft_size = 0
+        # Can change every iteration if use_dynamic_draft_size is True
+        self.draft_size = draft_size
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -379,11 +380,17 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         draft_size = self.get_draft_len()
         reject_cnt = draft_size - accept_cnt
-        if reject_cnt > 0:
-            self.reject_pos.append(self.get_len() + reject_cnt)
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
+
+        # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
+        # Need to free the blocks that are not used
+        # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
+        # Otherwise, we should also remove the bonus token slot that we overprovisioned
+        if reject_cnt != 0:
+            free_block_cnt = self._remove_tokens_from_blocks(reject_cnt + 1)
+        else:
+            free_block_cnt = 0
 
         if accept_cnt != draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
