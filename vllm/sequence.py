@@ -28,6 +28,9 @@ class SequenceStatus(enum.Enum):
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
 
+    # SpS related status
+    SPS_ALL_ACCEPT = enum.auto()
+
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
         return status in [
@@ -218,6 +221,9 @@ class Sequence:
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
 
+        self.bonus_token_id = None
+        self.bonus_logprobs = None
+
         # Can change every iteration
         self.draft_size = 0
 
@@ -303,20 +309,25 @@ class Sequence:
         return new_seq
 
     # SpS related methods start
-    def save_lazy_token_id(
+    def save_bonus_token_id(
         self,
         token_id: int,
         logprobs: Dict[int, float],
     ) -> None:
         assert token_id in logprobs
-        self.lazy_token_id = token_id
-        self.lazy_logprobs = logprobs
+        assert self.bonus_token_id is None and self.bonus_logprobs is None
+        
+        self.bonus_token_id = token_id
+        self.bonus_logprobs = logprobs
 
-    def append_lazy_token_id(self) -> None:
-        self.append_token_id(self.lazy_token_id,
-                             self.lazy_logprobs)
-        self.lazy_token_id = None
-        self.lazy_logprobs = None
+    def append_bonus_token_id(self) -> None:
+        assert self.bonus_token_id is not None and self.bonus_logprobs is not None
+
+        self.append_token_id(self.bonus_token_id,
+                             self.bonus_logprobs)
+        
+        self.bonus_token_id = None
+        self.bonus_logprobs = None
 
     def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
         assert len(self.logical_token_blocks) > 0
@@ -343,6 +354,7 @@ class Sequence:
     
     def get_beta(self) -> float:
         # average the last window size betas 
+        # Note: this is just a temporary solution. 
         window_size = 10
         if len(self.beta_list) < window_size:
             return sum(self.beta_list) / len(self.beta_list)
