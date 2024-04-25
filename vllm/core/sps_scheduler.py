@@ -599,10 +599,12 @@ class SpSScheduler:
         for seq_group in scheduler_outputs.scheduled_seq_groups:
             seq_data: Dict[int, SequenceData] = {}
             block_tables: Dict[int, List[int]] = {}
+            draft_size = 0
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
                 block_tables[seq_id] = self.block_manager.get_block_table(seq)
+                draft_size = seq.draft_size
 
             seq_group_metadata = SequenceGroupMetadata(
                 request_id=seq_group.request_id,
@@ -611,6 +613,7 @@ class SpSScheduler:
                 sampling_params=seq_group.sampling_params,
                 block_tables=block_tables,
                 sps_stage=scheduler_outputs.sps_stage,
+                draft_size=draft_size,
             )
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs
