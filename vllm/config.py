@@ -486,7 +486,7 @@ class SpSConfig:
         if self.use_tile_size_constraint:
             self.tile_size_constraint = tile_size
         else:
-            self.tile_size_constraint = 10000
+            self.tile_size_constraint = 1000000 # dummy value for disabling tile size constraint
 
     def get_tile_size_constraint(self) -> int:
         return self.tile_size_constraint

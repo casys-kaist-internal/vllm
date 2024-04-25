@@ -237,8 +237,9 @@ class SpSScheduler:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
             
+            # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
             if self.sps_config.use_dynamic_draft_size:
-                find_optimal_draft_size(self.need_to_run_draft, self.sps_config)                 
+                find_optimal_draft_size(self.need_to_run_draft, self.sps_config)
 
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
@@ -259,7 +260,7 @@ class SpSScheduler:
                 if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
                     raise AssertionError("Draft preemption is not supported.")
                 else:
-                    # Append new slots to the sequence group.
+                    # Append new slots to the sequence group. 
                     self._append_slots(seq_group, seq.draft_size, blocks_to_copy)
                     need_to_run_draft.append(seq_group)
             self.need_to_run_draft = need_to_run_draft
@@ -303,6 +304,7 @@ class SpSScheduler:
                     raise AssertionError("Target preemption is not supported.")
                 else:
                     # Append new slots to the sequence group.
+                    # We append potential bonus token.
                     self._append_slots(seq_group, 1, blocks_to_copy)
                     need_to_run_target.append(seq_group)
             self.need_to_run_target = need_to_run_target
