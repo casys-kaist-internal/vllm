@@ -378,21 +378,17 @@ class Sequence:
                             accept_probs: List[float],
                             beta_list: List[float]) -> int:
         # assert accept_cnt <= self.draft_size
-        draft_size = self.get_draft_len()
-        reject_cnt = draft_size - accept_cnt
+        assert self.draft_size == self.get_draft_len()
+        reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
 
         # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
         # Need to free the blocks that are not used
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
-        # Otherwise, we should also remove the bonus token slot that we overprovisioned
-        if reject_cnt != 0:
-            free_block_cnt = self._remove_tokens_from_blocks(reject_cnt + 1)
-        else:
-            free_block_cnt = 0
+        free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
 
-        if accept_cnt != draft_size:
+        if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
         else:  # all accept bonus token
