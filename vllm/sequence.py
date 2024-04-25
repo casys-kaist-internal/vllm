@@ -536,6 +536,7 @@ class SequenceGroupMetadata:
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
         sps_stage: Optional[SpSStage] = None,
+        draft_size: Optional[int] = 0,
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
@@ -543,6 +544,7 @@ class SequenceGroupMetadata:
         self.sampling_params = sampling_params
         self.block_tables = block_tables
         self.sps_stage = sps_stage
+        self.draft_size = draft_size
 
 
 class SequenceOutput:
