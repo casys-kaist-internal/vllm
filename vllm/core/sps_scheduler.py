@@ -291,55 +291,55 @@ class SpSScheduler:
                 )
                 return scheduler_outputs
             # DRAFT_DECODING PHASE END
-        else: 
-            # TARGET_DECODING PHASE START
-            sps_stage = SpSStage.TARGET_DECODE
 
-            # NOTE(woosuk): Preemption happens only when there is no available slot
-            # to keep all the sequence groups in the RUNNING state.
-            # In this case, the policy is responsible for deciding which sequence
-            # groups to preempt.
-            # self.running = self.policy.sort_by_priority(now, self.running)
+        # TARGET_DECODING PHASE START
+        sps_stage = SpSStage.TARGET_DECODE
 
-            # FIXME(sangjin): How to handle case of target preemption?
+        # NOTE(woosuk): Preemption happens only when there is no available slot
+        # to keep all the sequence groups in the RUNNING state.
+        # In this case, the policy is responsible for deciding which sequence
+        # groups to preempt.
+        # self.running = self.policy.sort_by_priority(now, self.running)
+
+        # FIXME(sangjin): How to handle case of target preemption?
+        # Simplify preemption logic
+        need_to_run_target: List[SequenceGroup] = []
+        while self.need_to_run_target:
+            seq_group = self.need_to_run_target.pop(0)
+            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+
             # Simplify preemption logic
-            need_to_run_target: List[SequenceGroup] = []
-            while self.need_to_run_target:
-                seq_group = self.need_to_run_target.pop(0)
-                seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+            if not self.block_manager.can_append_slots(seq_group, 1):
+                raise AssertionError("Target preemption is not supported.")
+            else:
+                # Append new slots to the sequence group.
+                # We append potential bonus token.
+                self._append_slots(seq_group, 1, blocks_to_copy)
+                need_to_run_target.append(seq_group)
+        self.need_to_run_target = need_to_run_target
 
-                # Simplify preemption logic
-                if not self.block_manager.can_append_slots(seq_group, 1):
-                    raise AssertionError("Target preemption is not supported.")
-                else:
-                    # Append new slots to the sequence group.
-                    # We append potential bonus token.
-                    self._append_slots(seq_group, 1, blocks_to_copy)
-                    need_to_run_target.append(seq_group)
-            self.need_to_run_target = need_to_run_target
+        num_batched_tokens = 0
+        for seq_group in self.need_to_run_target:
+            seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+            assert len(seqs) == 1, "SpS does not support beam search"
+            # target model should run the last non-draft token and all the draft tokens
+            num_batched_tokens += (seqs[0].get_draft_len() + 1)
 
-            num_batched_tokens = 0
-            for seq_group in self.need_to_run_target:
-                seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-                assert len(seqs) == 1, "SpS does not support beam search"
-                # target model should run the last non-draft token and all the draft tokens
-                num_batched_tokens += (seqs[0].get_draft_len() + 1)
+        # print("num_batched_tokens: ", num_batched_tokens)
+        if self.sps_config.get_tile_size_constraint() < num_batched_tokens:
+            raise AssertionError("Tile size constraint is violated.")
 
-            # print("num_batched_tokens: ", num_batched_tokens)
-            if self.sps_config.get_tile_size_constraint() < num_batched_tokens:
-                raise AssertionError("Tile size constraint is violated.")
+        scheduler_outputs = SpSSchedulerOutputs(
+            scheduled_seq_groups=self.need_to_run_target,
+            sps_stage=sps_stage,
+            num_batched_tokens=num_batched_tokens,
+            blocks_to_swap_in=blocks_to_swap_in,
+            blocks_to_swap_out=blocks_to_swap_out,
+            blocks_to_copy=blocks_to_copy,
+            ignored_seq_groups=[],
+        )
 
-            scheduler_outputs = SpSSchedulerOutputs(
-                scheduled_seq_groups=self.need_to_run_target,
-                sps_stage=sps_stage,
-                num_batched_tokens=num_batched_tokens,
-                blocks_to_swap_in=blocks_to_swap_in,
-                blocks_to_swap_out=blocks_to_swap_out,
-                blocks_to_copy=blocks_to_copy,
-                ignored_seq_groups=[],
-            )
-
-            return scheduler_outputs
+        return scheduler_outputs
 
     # def _schedule(self) -> SpSSchedulerOutputs:
     #     # Blocks that need to be swaped or copied before model execution.
@@ -625,6 +625,7 @@ class SpSScheduler:
                 block_tables=block_tables,
                 sps_stage=scheduler_outputs.sps_stage,
                 draft_size=draft_size,
+                seq_group=seq_group if scheduler_outputs.sps_stage == SpSStage.DRAFT_DECODE else None,
             )
             seq_group_metadata_list.append(seq_group_metadata)
         return seq_group_metadata_list, scheduler_outputs

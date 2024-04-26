@@ -125,10 +125,9 @@ class SequenceData:
 
         return uncached_draft_token_ids
 
-    # TODO(noppanat): can be optimized.
     def get_uncached_draft_len(self) -> int:
-        all_tokens_including_draft = self.get_token_ids() + self.get_draft_token_ids()
-        uncached_draft_len = len(all_tokens_including_draft) - self.draft_cache_cnt
+        all_tokens_including_draft_cnt = len(self.get_token_ids()) + len(self.get_draft_token_ids())
+        uncached_draft_len = all_tokens_including_draft_cnt - self.draft_cache_cnt
 
         return uncached_draft_len
 
@@ -552,6 +551,7 @@ class SequenceGroupMetadata:
         block_tables: Dict[int, List[int]],
         sps_stage: Optional[SpSStage] = None,
         draft_size: Optional[int] = 0,
+        seq_group: Optional[SequenceGroup] = None,
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
@@ -560,6 +560,7 @@ class SequenceGroupMetadata:
         self.block_tables = block_tables
         self.sps_stage = sps_stage
         self.draft_size = draft_size
+        self.seq_group = seq_group
 
 
 class SequenceOutput:
