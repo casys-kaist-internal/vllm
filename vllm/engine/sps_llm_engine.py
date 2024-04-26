@@ -447,11 +447,12 @@ class SpSLLMEngine:
             sps_stage: SpSStage) -> List[RequestOutput]:
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
-        for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
+        if sps_stage != SpSStage.DRAFT_DECODE:
+            for seq_group, outputs in zip(scheduled_seq_groups, output):
+                self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
 
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
+            # Free the finished sequence groups.
+            self.scheduler.free_finished_seq_groups()
 
         # Swap the draft target queues.
         if sps_stage != SpSStage.PROMPT:

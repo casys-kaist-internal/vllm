@@ -180,33 +180,6 @@ class SpSWorker:
         self.draft_model_runner.set_block_size(
             self.draft_cache_engine.block_size)
     
-    
-    def _process_draft_sequence_group_outputs(
-        self, seq_group: SequenceGroup, output: SequenceGroupOutput
-    ):
-        # We assume that SpS engine does not use beam search.
-        assert not seq_group.sampling_params.use_beam_search
-        # There should be only on sequence in each sequence group.
-        assert len(output.samples) == 1
-
-        # Process prompt logprobs
-        prompt_logprobs = output.prompt_logprobs
-        if prompt_logprobs is not None:
-            seq_group.prompt_logprobs = prompt_logprobs
-
-        # Process samples
-        child_sample = output.samples[0]
-        parent_seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-        assert child_sample.parent_seq_id == parent_seq.seq_id
-
-        # Append the draft token to the parent sequence.
-        parent_seq.append_draft_token_id(
-            child_sample.output_token,
-            child_sample.logprobs,
-            child_sample.probs,
-        )
-
-    
     def _process_draft_model_outputs(
         self,
         outputs: SamplerOutput,
@@ -216,8 +189,27 @@ class SpSWorker:
         for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
             seq_group = seq_group_metadata.seq_group
             assert seq_group is not None    # seq_group must be set.
-            self._process_draft_sequence_group_outputs(seq_group, output)
+            # We assume that SpS engine does not use beam search.
+            assert not seq_group.sampling_params.use_beam_search
+            # There should be only on sequence in each sequence group.
+            assert len(output.samples) == 1
 
+            # Process prompt logprobs
+            prompt_logprobs = output.prompt_logprobs
+            if prompt_logprobs is not None:
+                seq_group.prompt_logprobs = prompt_logprobs
+
+            # Process samples
+            child_sample = output.samples[0]
+            parent_seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+            assert child_sample.parent_seq_id == parent_seq.seq_id
+
+            # Append the draft token to the parent sequence.
+            parent_seq.append_draft_token_id(
+                child_sample.output_token,
+                child_sample.logprobs,
+                child_sample.probs,
+            )
     
     @torch.inference_mode()
     def execute_target_model(

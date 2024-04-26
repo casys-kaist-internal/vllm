@@ -31,13 +31,16 @@ def find_optimal_draft_size(seq_group_list: List[SequenceGroup],
                             sps_config: SpSConfig):
     """ Explore optimal solutions by adjusting max_gamma up and down from the start point. """
     C = sps_config.target_draft_latency_ratio
-    tile_constraint = sps_config.get_tile_size_constraint()
+    # tile_constraint = sps_config.get_tile_size_constraint()
+    tile_constraint = 54
     start_max_draft_size = sps_config.start_max_draft_size
     betas = []
 
     for seq_group in seq_group_list:
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
         betas.append(seq.get_beta())
+
+    # print("Betas", betas)
 
     precomputed_values = [[compute_value(beta, k) for k in range(1, start_max_draft_size + 1)] for beta in betas]
     max_dp = float('-inf')

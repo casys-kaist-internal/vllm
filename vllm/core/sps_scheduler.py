@@ -252,6 +252,14 @@ class SpSScheduler:
             if self.sps_config.use_dynamic_draft_size:
                 find_optimal_draft_size(self.need_to_run_draft, self.sps_config)
 
+            # Print the draft size of each sequence group
+            # draft_sizes = []
+            # for seq_group in self.need_to_run_draft:
+            #     seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+            #     draft_sizes.append(seq.draft_size)
+            
+            # print(draft_sizes)
+
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
             # In this case, the policy is responsible for deciding which sequence
