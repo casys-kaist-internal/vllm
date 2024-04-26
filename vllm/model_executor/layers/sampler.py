@@ -535,7 +535,7 @@ def _sample(
         num_tokens = len(sample_indices)
         if num_tokens == 0:
             continue
-
+        
         if sampling_type == SamplingType.GREEDY:
             category_logprobs = logprobs[sample_indices]
             sample_results = _greedy_sample(seq_groups, category_logprobs)
@@ -557,10 +557,6 @@ def _sample(
         for i in range(len(sampling_metadata.seq_groups))
     ]
     return sample_results
-
-
-counter = 0
-
 
 def _sps_sample(
     probs: torch.Tensor,
@@ -593,7 +589,7 @@ def _sps_sample(
     # print("target", target_prob_for_sampled_draft_token)
     # print("draft", draft_prob_for_sampled_draft_token)
 
-    # beta_list = _calculate_beta(
+    # beta = _calculate_beta(
     #     target_probs, draft_probs, adjusted_target_lens)
     
     beta = _calculate_beta_vectorized(
@@ -893,10 +889,12 @@ def _calculate_beta_vectorized(
     
     # Use broadcasting to create masks for the dimensions [seq_idx, max_len, vocab_size]
     mask = mask.unsqueeze(-1).expand(-1, -1, target_probs.shape[2])
+
+    inf_tensor = torch.tensor(float('-inf')).to(target_probs.device)
     
     # Apply mask to probabilities (set non-considered positions to a very large negative value before taking min)
-    masked_target_probs = torch.where(mask, target_probs[:, :max_len, :], torch.tensor(float('-inf')).to(target_probs.device))
-    masked_draft_probs = torch.where(mask, draft_probs[:, :max_len, :], torch.tensor(float('-inf')).to(draft_probs.device))
+    masked_target_probs = torch.where(mask, target_probs[:, :max_len, :], inf_tensor)
+    masked_draft_probs = torch.where(mask, draft_probs[:, :max_len, :], inf_tensor)
     
     # Compute the minimum along the last dimension (vocab_size) after applying mask
     min_probs = torch.min(masked_target_probs, masked_draft_probs)
@@ -906,6 +904,8 @@ def _calculate_beta_vectorized(
 
     # Only keep the sums that are valid up to the lengths specified by adjusted_target_lens
     valid_beta = [beta[i, :l].tolist() for i, l in enumerate(adjusted_target_lens)]
-    
+
+    del adjusted_target_lens, max_len, mask, masked_target_probs, masked_draft_probs, min_probs, beta, inf_tensor
+
     return valid_beta
 

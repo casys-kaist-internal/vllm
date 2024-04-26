@@ -331,18 +331,19 @@ def main(args: argparse.Namespace):
 
     directory = f'{target_model}_{draft_model}_{args.dataset}_{args.temperature}'
 
-    prompt_len_csv = f'result_4_18/{directory}/prompt_len.csv'
-    prompt_output_csv = f'result_4_18/{directory}/prompt_output.csv'
-    accept_probs_csv = f'result_4_18/{directory}/accept_probs.csv'
-    beta_list_csv = f'result_4_18/{directory}/beta_list.csv'
-    accept_cnt_list_csv = f'result_4_18/{directory}/accept_cnt_list.csv'
-    reject_pos_csv = f'result_4_18/{directory}/reject_pos.csv'
+    directory_name = 'result_4_25'
+    prompt_len_csv = f'{directory_name}/{directory}/prompt_len.csv'
+    prompt_output_csv = f'{directory_name}/{directory}/prompt_output.csv'
+    accept_probs_csv = f'{directory_name}/{directory}/accept_probs.csv'
+    beta_list_csv = f'{directory_name}/{directory}/beta_list.csv'
+    accept_cnt_list_csv = f'{directory_name}/{directory}/accept_cnt_list.csv'
+    reject_pos_csv = f'{directory_name}/{directory}/reject_pos.csv'
 
     # Make new directory remove if already exists
     import os
-    if os.path.exists(f'result_4_18/{directory}'):
-        os.system(f'rm -rf result_4_18/{directory}')
-    os.makedirs(f'result_4_18/{directory}')
+    if os.path.exists(f'{directory_name}/{directory}'):
+        os.system(f'rm -rf {directory_name}/{directory}')
+    os.makedirs(f'{directory_name}/{directory}')
 
     batch_size = 0
     prompt_lens = []
@@ -357,7 +358,7 @@ def main(args: argparse.Namespace):
             top_p=1.0,
             use_beam_search=False,
             ignore_eos=True,
-            max_tokens=2048,
+            max_tokens=512,
         )
         llm._add_request(
             prompt=prompt,
@@ -430,7 +431,7 @@ if __name__ == '__main__':
                         choices=['awq', 'squeezellm', None],
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,

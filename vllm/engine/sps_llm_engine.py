@@ -432,10 +432,6 @@ class SpSLLMEngine:
                 self._decode_sequence(seq, seq_group.sampling_params)
                 self._check_stop(seq, seq_group.sampling_params, check_cnt)
 
-        # We should swap need_to_run_draft queue and need_to_run_target queue
-        if sps_stage != SpSStage.PROMPT:
-            self.scheduler.swap_draft_target_queues()
-
         # Free the finished and selected parent sequences' memory in block
         # manager. Keep them in the sequence group as candidate output.
         # NOTE: we need to fork the new sequences before freeing the
@@ -456,6 +452,10 @@ class SpSLLMEngine:
 
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
+
+        # Swap the draft target queues.
+        if sps_stage != SpSStage.PROMPT:
+            self.scheduler.swap_draft_target_queues()
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
