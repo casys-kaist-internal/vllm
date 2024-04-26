@@ -480,8 +480,12 @@ class SpSConfig:
         self.use_tile_size_constraint = use_tile_size_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
-        self.target_draft_latency_ratio = 0.1
+        self.target_draft_latency_ratio = 0.05
         self.start_max_draft_size = 8
+
+        # If use_dynamic_draft_size is False, use_tile_size_constraint should also be False
+        if not self.use_dynamic_draft_size and self.use_tile_size_constraint:
+            raise AssertionError("use_tile_size_constraint should be False if use_dynamic_draft_size is False") 
 
         if self.use_tile_size_constraint:
             self.tile_size_constraint = tile_size

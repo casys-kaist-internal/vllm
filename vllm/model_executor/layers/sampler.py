@@ -665,9 +665,15 @@ def _sps_sample(
     assert len(sample_results) == accept_prob.size(0)
     assert len(sample_results) == len(beta)
     
+    total_tokens = 0
+    accepted_tokens = 0
     for i in range(len(sample_results)):
+        total_tokens += adjusted_target_lens[i]
+        accepted_tokens += accept_cnt[i].item()
         sps_results.append(
             (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist(), beta[i]))
+    
+    print("Score: ", accepted_tokens / total_tokens, "draft_len: ", adjusted_target_lens)
 
     return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
 

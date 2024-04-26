@@ -355,6 +355,9 @@ class Sequence:
     def get_beta(self) -> float:
         # average the last window size betas 
         # Note: this is just a temporary solution. 
+        if len(self.beta_list) == 0:
+            return 0.1 # Initial beta value
+
         window_size = 10
         if len(self.beta_list) < window_size:
             return sum(self.beta_list) / len(self.beta_list)
@@ -390,9 +393,9 @@ class Sequence:
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-        else:  # all accept bonus token
-            accept_probs.append(None)
-            beta_list.append(None)
+        # else:  # all accept bonus token
+        #     accept_probs.append(None)
+        #     beta_list.append(None)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
