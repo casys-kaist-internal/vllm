@@ -187,7 +187,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
-        num_batched_tokens = scheduler_outputs.num_batched_tokens
 
         if sps_stage == SpSStage.PROMPT:
             output = await self._run_workers_async(
@@ -198,11 +197,21 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            if not self.sps_config.use_lazy_draft_kv_cache:
+                # Don't need output for draft model. Execution required for draft KV cache.
+                await self._run_workers_async(
+                    "execute_draft_model",
+                    seq_group_metadata_list=seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
 
+            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            
         elif sps_stage == SpSStage.DRAFT_DECODE:
             output = await self._run_workers_async(
-                "execute_draft_model",
+                "execute_multi_step_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
@@ -220,8 +229,49 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-            return self._process_model_outputs(
-                output, scheduler_outputs, sps_stage)
+            target_output = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+
+            if not self.sps_config.use_lazy_draft_kv_cache:
+                # For seqs that are all accepted, need to run draft model to cache kv for the 
+                # additional bonus token sampled by target model
+                seq_group_metadata_list: List[SequenceGroupMetadata] = []
+                for seq_group in scheduler_outputs.scheduled_seq_groups:
+                    seq_data: Dict[int, SequenceData] = {}
+                    block_tables: Dict[int, List[int]] = {}
+                    for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+                        seq_id = seq.seq_id
+                        seq_data[seq_id] = seq.data
+                        block_tables[seq_id] = self.scheduler.block_manager.get_block_table(
+                            seq)
+                        
+                    if seq_data:
+                        seq_group_metadata = SequenceGroupMetadata(
+                            request_id=seq_group.request_id,
+                            is_prompt=False,
+                            seq_data=seq_data,
+                            sampling_params=seq_group.sampling_params,
+                            block_tables=block_tables,
+                            sps_stage=SpSStage.DRAFT_DECODE,
+                        )
+                        seq_group_metadata_list.append(seq_group_metadata)
+                    
+                if seq_group_metadata_list:
+                    await self._run_workers_async(
+                        "execute_draft_model",
+                        seq_group_metadata_list=seq_group_metadata_list,
+                        blocks_to_swap_in=None,
+                        blocks_to_swap_out=None,
+                        blocks_to_copy=None,
+                    )
+
+                    for seq_group in scheduler_outputs.scheduled_seq_groups:
+                        for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+                            # change back to original RUNNING status
+                            seq.status = SequenceStatus.RUNNING
+                            # Append the bonus token saved in all accept case for target decode 
+                            seq.append_bonus_token_id()
+
+            return target_output
 
         else:
             raise ValueError(f"Invalid SpS stage: {sps_stage}")
