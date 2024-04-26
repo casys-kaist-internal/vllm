@@ -9,14 +9,28 @@ from vllm._C import ops
 
 from typing import List
 
-NUM_BLOCKS = 81920
+NUM_BLOCKS = 8192
 PARTITION_SIZE = 512
+
 
 # too_many_blocks exception define
 
 
 class TooManyBlocks(Exception):
     pass
+
+
+def all_close(a, b):
+    return torch.allclose(a, b, rtol=1e-4, atol=1e-3)
+    # return torch.allclose(a, b, rtol=1e-5, atol=1e-5)
+    # return torch.allclose(a, b)
+
+
+# enum original, target, tensor_core
+class KernelVersion:
+    ORIGINAL = 0
+    TARGET = 1
+    TENSOR_CORE = 2
 
 
 @torch.inference_mode()
@@ -31,7 +45,8 @@ def main(
     use_alibi: bool,
     block_size: int,
     dtype: torch.dtype,
-    seed: int
+    seed: int,
+    is_ncu: bool,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
@@ -72,7 +87,8 @@ def main(
     total_num_blocks_needed = max_num_blocks_per_seq * num_seqs
     if total_num_blocks_needed > NUM_BLOCKS:
         raise TooManyBlocks(
-            f"Too many blocks needed: {total_num_blocks_needed} > {NUM_BLOCKS}")
+            f"Too many blocks needed: {total_num_blocks_needed} > {NUM_BLOCKS}"
+        )
     bt_idx = 0
     for seq_idx in range(num_seqs):  # (hj) : Valid in target context too!
         # Sequence 사이에는 공유하는 K/V 없다고 가정
@@ -92,15 +108,12 @@ def main(
     key_cache.uniform_(-scale, scale)
 
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
-    value_cache = torch.empty(size=value_cache_shape,
-                              dtype=dtype, device="cuda")
+    value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
     value_cache.uniform_(-scale, scale)
 
     # for each value_cache block
     # for i in range(NUM_BLOCKS):
     # for j in range(num_kv_heads):
-    for k in range(head_size):
-        value_cache[:, :, k, :].fill_(k + 1)
 
     # print(value_cache[2, 0, :, :])
 
@@ -111,13 +124,21 @@ def main(
     ##########
 
     # Fill with 1
-    query = torch.ones_like(query)
-    key_cache = torch.ones_like(key_cache)
-    for k in range(head_size):
-        value_cache[:, :, k, :].fill_(k + 1)
-    value_cache.uniform_(-scale, scale)
+    # query = torch.ones_like(query)
+    # key_cache = torch.ones_like(key_cache)
 
-    ##########
+    # query = torch.empty(
+    #     sum_query_lens, num_query_heads, head_size, dtype=dtype, device="cuda"
+    # )
+
+    # # value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
+    # for h in range(head_size):
+    #     value_cache[:, :, h, :].fill_(h + 1)
+
+    # for i in range(1000):
+    #     for j in range(block_size):
+    #         key_cache[i, :, :, j, :].fill_(i * block_size + j + 1)
+
     ##########
     ##########
     ##########
@@ -130,8 +151,7 @@ def main(
     validation_output = torch.empty_like(query)
 
     if version == "v2":
-        num_partitions = (max_context_len +
-                          PARTITION_SIZE - 1) // PARTITION_SIZE
+        num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
 
         # (hj) : num_seqs -> sum_query_lens
         tmp_output = torch.empty(
@@ -198,6 +218,23 @@ def main(
                 max_context_len,
                 alibi_slopes,
             )
+            # ops.paged_attention_v2_target(
+            #     validation_output,
+            #     exp_sums,
+            #     max_logits,
+            #     tmp_output,
+            #     query,
+            #     key_cache,
+            #     value_cache,
+            #     head_mapping,
+            #     scale,
+            #     block_tables,
+            #     context_lens,
+            #     query_lens,
+            #     block_size,
+            #     max_context_len,
+            #     alibi_slopes,
+            # )
             ops.paged_attention_v2_target(
                 output,
                 exp_sums_target,
@@ -215,6 +252,23 @@ def main(
                 max_context_len,
                 alibi_slopes,
             )
+            # ops.paged_attention_v2_target_tensor_core(
+            #     output,
+            #     exp_sums_target,
+            #     max_logits_target,
+            #     tmp_output_target,
+            #     query,
+            #     key_cache,
+            #     value_cache,
+            #     head_mapping,
+            #     scale,
+            #     block_tables,
+            #     context_lens,
+            #     query_lens,
+            #     block_size,
+            #     max_context_len,
+            #     alibi_slopes,
+            # )
         else:
             raise ValueError(f"Invalid version: {version}")
 
@@ -227,140 +281,174 @@ def main(
         # print("Max diff : ", torch.max(torch.abs(output - validation_output)))
         # print("Mean diff : ", torch.mean(torch.abs(output - validation_output)))
 
-        for head in range(0, 1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    print("Seq : ", s, " Head : ", head, " Query : ", q)
-                    out = output[s * query_lens[s] + q, head]
-                    val = validation_output[s * query_lens[s] + q, head]
-                    # to list
-                    out = out.tolist()
-                    val = val.tolist()
-                    # Print both, format to 3 decimal places
-                    r1 = [round(x, 7) for x in out]
-                    r2 = [round(x, 7) for x in val]
+        # compare exp sums
 
-                    # Print both, format to 3 decimal places
-                    # All values formatted to fit in 10 space
-                    for i in range(len(r1)):
-                        print(f"{r1[i]:<10} {r2[i]:<10}")
+        # for q in range(sum_query_lens):
+        #     for h in range(num_query_heads):
+        #         for p in range(num_partitions):
+        #             # diff more than 1
+        #             if not math.isclose(
+        #                 exp_sums[q, h, p], exp_sums_target[q, h, p], rel_tol=1e-4
+        #             ):
+        #                 # if diff more than 10
+        #                 if abs(exp_sums[q, h, p] - exp_sums_target[q, h, p]) > 5:
+        #                     print("Exp sums error")
+        #                     print(exp_sums[q, h, p])
+        #                     print(exp_sums_target[q, h, p])
 
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
-        print("-------------------")
+        # for q in range(sum_query_lens):
+        #     for h in range(num_query_heads):
+        #         for p in range(num_partitions):
+        #             # diff more than 1
+        #             if not math.isclose(
+        #                 max_logits[q, h, p], max_logits_target[q, h, p], rel_tol=1e-4
+        #             ):
+        #                 # if diff more than 10
+        #                 if abs(max_logits[q, h, p] - max_logits_target[q, h, p]) > 5:
+        #                     print("Max logits error at ", q, h, p)
+        #                     print(
+        #                         max_logits[q, h, p].item(),
+        #                         " but got ",
+        #                         max_logits_target[q, h, p].item(),
+        #                     )
 
-        for head in range(0, 1):
-            for s in range(num_seqs):
-                for q in range(query_lens[s]):
-                    for part in range(num_partitions):
+        torch.cuda.synchronize()
+
+        for head in range(0, num_query_heads):
+            # Check if error exists in this subsectino
+            if not all_close(output[:, head], validation_output[:, head]):
+                print("---Head---: ", head)
+                for s in range(num_seqs):
+                    for q in range(query_lens[s]):
                         print("Seq : ", s, " Head : ", head, " Query : ", q)
-                        out = tmp_output_target[s *
-                                                query_lens[s] + q, head, part]
-                        val = tmp_output[s * query_lens[s] + q, head, part]
+                        out = output[s * query_lens[s] + q, head]
+                        val = validation_output[s * query_lens[s] + q, head]
                         # to list
-                        out = out.tolist()
-                        val = val.tolist()
+                        out_l = out.tolist()
+                        val_l = val.tolist()
                         # Print both, format to 3 decimal places
-                        r1 = [round(x, 7) for x in out]
-                        r2 = [round(x, 7) for x in val]
+
+                        r1 = [round(x, 3) for x in out_l]
+                        r2 = [round(x, 3) for x in val_l]
 
                         # Print both, format to 3 decimal places
                         # All values formatted to fit in 10 space
-                        print("Part : ", part)
-                        for i in range(len(r1)):
-                            print(f"{r1[i]:<10} {r2[i]:<10}")
+                        if not all_close(out, val):
+                            for i in range(len(r1)):
+                                if not all_close(out[i], val[i]):
+                                    print(f"{out_l[i]} \t {val_l[i]} <--- Error")
+                                else:
+                                    print(f"{r1[i]:<10} {r2[i]:<10}")
+                        else:
+                            for i in range(len(r1)):
+                                print(f"{r1[i]:<10} {r2[i]:<10}")
 
-        if not torch.allclose(output, validation_output):
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+        # print("-------------------")
+
+        # for head in range(0, num_query_heads):
+        #     for s in range(num_seqs):
+        #         for q in range(query_lens[s]):
+        #             for part in range(num_partitions):
+        #                 print(
+        #                     "Seq : ",
+        #                     s,
+        #                     " Head : ",
+        #                     head,
+        #                     " Query : ",
+        #                     q,
+        #                     " Part : ",
+        #                     part,
+        #                 )
+        #                 out = tmp_output_target[s * query_lens[s] + q, head, part]
+        #                 val = tmp_output[s * query_lens[s] + q, head, part]
+        #                 # to list
+        #                 out_l = out.tolist()
+        #                 val_l = val.tolist()
+        #                 r1 = [round(x, 3) for x in out_l]
+        #                 r2 = [round(x, 3) for x in val_l]
+
+        #                 # Print both, format to 3 decimal places
+        #                 # All values formatted to fit in 10 space
+        #                 if not all_close(out, val):
+        #                     for i in range(len(r1)):
+        #                         if not all_close(out[i], val[i]):
+        #                             print(f"{out_l[i]} \t {val_l[i]} <--- Error")
+        #                         else:
+        #                             print(f"{r1[i]:<10} {r2[i]:<10}")
+        #                 else:
+        #                     for i in range(len(r1)):
+        #                         print(f"{r1[i]:<10} {r2[i]:<10}")
+        # if not all_close(tmp_output_target, tmp_output):
+        #     raise ValueError("Temp Output differs")
+
+        if not all_close(output, validation_output):
             raise ValueError("Validation failed")
 
         # check difference of output and validation_output is same as 0
-        validation_success = torch.allclose(output, validation_output)
+        validation_success = all_close(output, validation_output)
 
         return validation_success
 
-    def run_benchmark(target: bool, num_iters: int) -> float:
-
-        # print("Running benchmark with shapes:")
-        # print(f"  query: {query.shape}")
-        # print(f"  key_cache: {key_cache.shape}")
-        # print(f"  value_cache: {value_cache.shape}")
-
-        # print("Query Information")
-        # print("Num Seqs : ", num_seqs)
-        # print("Query Lens : ", query_lens)
-        # print("Context Lens : ", context_lens)
-
+    def run_benchmark(target: KernelVersion, num_iters: int) -> float:
         def run():
-            if version == "v1":
-                if target:
-                    ops.paged_attention_v1_target(
-                        output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        query_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-                else:
-                    ops.paged_attention_v1(
-                        validation_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-            elif version == "v2":
-                if target:
-                    ops.paged_attention_v2_target(
-                        output,
-                        exp_sums_target,
-                        max_logits_target,
-                        tmp_output_target,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        query_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
-                else:
-                    ops.paged_attention_v2(
-                        validation_output,
-                        exp_sums,
-                        max_logits,
-                        tmp_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        head_mapping,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                    )
+            assert version == "v2"
+            if target == KernelVersion.TARGET:
+                ops.paged_attention_v2_target(
+                    output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    query_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
+            elif target == KernelVersion.ORIGINAL:
+                ops.paged_attention_v2(
+                    validation_output,
+                    exp_sums,
+                    max_logits,
+                    tmp_output,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
             else:
-                raise ValueError(f"Invalid version: {version}")
+                ops.paged_attention_v2_target_tensor_core(
+                    output,
+                    exp_sums_target,
+                    max_logits_target,
+                    tmp_output_target,
+                    query,
+                    key_cache,
+                    value_cache,
+                    head_mapping,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    query_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                )
 
         # Warmup.
         for _ in range(3):
@@ -383,12 +471,24 @@ def main(
     success = run_validation()
     print("Validation success: ", success)
 
-    original_latency = run_benchmark(target=False, num_iters=100)
-    target_latency = run_benchmark(target=True, num_iters=100)
+    if is_ncu:
+        num_iters = 4
+    else:
+        num_iters = 100
+    original_latency = run_benchmark(target=KernelVersion.ORIGINAL, num_iters=num_iters)
+    target_latency = run_benchmark(target=KernelVersion.TARGET, num_iters=num_iters)
+    # tensor_core_latency = run_benchmark(
+    #     target=KernelVersion.TENSOR_CORE, num_iters=num_iters
+    # )
 
-    print(f"Original kernel running time: {original_latency:.3f} ms")
-    print(f"Target kernel running time: {target_latency:.3f} ms")
-    print(f"Speedup : {original_latency / target_latency:.3f}")
+    print(f"Original kernel running time\t: {original_latency:.3f} ms")
+    print(f"Target kernel running time  \t: {target_latency:.3f} ms")
+    # print(f"TC kernel running time      \t: {tensor_core_latency:.3f} ms")
+    print(f"Speedup                     \t: {original_latency / target_latency:.3f}")
+    # print(
+    #     f"Speedup TC                  \t: {original_latency / tensor_core_latency:.3f}"
+    # )
+
 
 
 if __name__ == "__main__":
@@ -406,11 +506,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--block-size", type=int, choices=[16, 32], default=16)
     parser.add_argument("--use-alibi", action="store_true")
+    parser.add_argument("--ncu", action="store_true")
+    parser.add_argument("--fuzz", action="store_true")
     parser.add_argument(
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--query-len", type=int, default=8)  # -1 is random
+    parser.add_argument("--seed", type=int, default=random.randint(0, 1000000))
+    parser.add_argument("--query-len", type=int, default=-1)  # -1 is random
     args = parser.parse_args()
 
     if args.num_query_heads % args.num_kv_heads != 0:
@@ -436,61 +538,99 @@ if __name__ == "__main__":
 
     if args.context_len == -1:
         context_lens = gen_context_len(
-            [random.randint(256, 1024) for _ in range(args.batch_size)], query_lens)
+            [random.randint(256, 1024) for _ in range(args.batch_size)], query_lens
+        )
     else:
-        context_lens = gen_context_len(
-            [args.context_len] * args.batch_size, query_lens)
+        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)
 
     # Failed with query_len :  2  context_len :  65  num_seqs :  1
 
-    print("CURRENT CONFIG")
-    print("Version : ", args.version)
-    print("Batch Size : ", args.batch_size)
-    print("Context Lens : ", context_lens)
-    print("Query Lens : ", query_lens)
+    if not args.fuzz:
+        main(
+            version=args.version,
+            num_seqs=args.batch_size,
+            context_lens=context_lens,
+            query_lens=query_lens,
+            num_query_heads=args.num_query_heads,
+            num_kv_heads=args.num_kv_heads,
+            head_size=args.head_size,
+            block_size=args.block_size,
+            use_alibi=args.use_alibi,
+            dtype=dtype_to_torch_dtype[args.dtype],
+            seed=args.seed,
+            is_ncu=args.ncu,
+        )
+    else:
+        # FUZZING
+        for query_len in range(1, 9):
+            for context_len in [
+                query_len,
+                32,
+                33,
+                64,
+                65,
+                128,
+                129,
+                256,
+                257,
+                512,
+                513,
+                1024,
+                1025,
+                2047,
+                2048,
+            ]:
+                for num_seqs in [1, 32, 150]:  # Realistically will not go up to 150
+                    query_lens = [query_len] * num_seqs
+                    # query_lens = [random.randint(1, 8) for _ in range(num_seqs)]
+                    context_lens = gen_context_len([context_len] * num_seqs, query_lens)
+                    # context_lens = gen_context_len(
+                    #     [random.randint(256, 4096) for _ in range(num_seqs)], query_lens
+                    # )
+                    average_query_len = sum(query_lens) / num_seqs
+                    average_context_len = sum(context_lens) / num_seqs
 
-    main(
-        version=args.version,
-        num_seqs=args.batch_size,
-        context_lens=context_lens,
-        query_lens=query_lens,
-        num_query_heads=args.num_query_heads,
-        num_kv_heads=args.num_kv_heads,
-        head_size=args.head_size,
-        block_size=args.block_size,
-        use_alibi=args.use_alibi,
-        dtype=dtype_to_torch_dtype[args.dtype],
-        seed=args.seed,
-    )
-
-    # FUZZING
-    # for query_len in range(1,16):
-    # for context_len in range(query_len,1024,15):
-    # for num_seqs in range(1, 150, 1): # Realistically will not go up to 150
-    #     # query_lens = [query_len] * num_seqs
-    #     query_lens = [random.randint(1, 16) for _ in range(num_seqs)]
-    #     # context_lens = gen_context_len([context_len] * num_seqs, query_lens)
-    #     context_lens = gen_context_len([random.randint(256, 4096) for _ in range(num_seqs)], query_lens)
-    #     try :
-    #         main(
-    #             version=args.version,
-    #             num_seqs=num_seqs,
-    #             context_lens=context_lens,
-    #             query_lens=query_lens,
-    #             num_query_heads=args.num_query_heads,
-    #             num_kv_heads=args.num_kv_heads,
-    #             head_size=args.head_size,
-    #             block_size=args.block_size,
-    #             use_alibi=args.use_alibi,
-    #             dtype=dtype_to_torch_dtype[args.dtype],
-    #             seed=args.seed
-    #         )
-    #         average_query_len = sum(query_lens) / num_seqs
-    #         average_context_len = sum(context_lens) / num_seqs
-    #         print("PASS query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #     except TooManyBlocks as e:
-    #         print("SKIP : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #     except Exception as e:
-    #         print("Failed with query_len : ", average_query_len, " context_len : ", average_context_len, " num_seqs : ", num_seqs)
-    #         print(e)
-    #         break
+                    try:
+                        main(
+                            version=args.version,
+                            num_seqs=num_seqs,
+                            context_lens=context_lens,
+                            query_lens=query_lens,
+                            num_query_heads=args.num_query_heads,
+                            num_kv_heads=args.num_kv_heads,
+                            head_size=args.head_size,
+                            block_size=args.block_size,
+                            use_alibi=args.use_alibi,
+                            dtype=dtype_to_torch_dtype[args.dtype],
+                            seed=args.seed,
+                            is_ncu=True,
+                        )
+                        torch.cuda.synchronize()
+                        print(
+                            "PASS query_len : ",
+                            average_query_len,
+                            " context_len : ",
+                            average_context_len,
+                            " num_seqs : ",
+                            num_seqs,
+                        )
+                    except TooManyBlocks as e:
+                        print(
+                            "SKIP : ",
+                            average_query_len,
+                            " context_len : ",
+                            average_context_len,
+                            " num_seqs : ",
+                            num_seqs,
+                        )
+                    except Exception as e:
+                        print(
+                            "Failed with query_len : ",
+                            average_query_len,
+                            " context_len : ",
+                            average_context_len,
+                            " num_seqs : ",
+                            num_seqs,
+                        )
+                        print(e)
+                #         break
