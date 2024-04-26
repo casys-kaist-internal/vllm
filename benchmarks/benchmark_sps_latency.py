@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 
-download_dir = '/home/noppanat/workspace/models'
+download_dir = '/home/sjchoi/workspace/models'
 
 
 def sample_requests(
@@ -79,6 +79,10 @@ def main(args: argparse.Namespace):
             target_model=args.target_model,
             draft_model=args.draft_model,
             draft_size=args.draft_size,
+            tile_size=args.tile_size,
+            use_dynamic_draft_size=args.dynamic_draft,
+            use_tile_size_constraint=args.use_tile_size_constraint,
+            use_lazy_draft_kv_cache=True,
             use_target_attention=args.use_target_attention,
             tokenizer=args.tokenizer,
             quantization=args.quantization,
@@ -150,6 +154,10 @@ if __name__ == '__main__':
     # default='Felladrin/Llama-68M-Chat-v1')
     # default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
+    parser.add_argument('--tile-size', type=int, default=64)
+    parser.add_argument('--dynamic-draft', action='store_true')
+    parser.add_argument('--use-tile-size-constraint', action='store_true')
+    parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--use-target-attention',
                         action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
