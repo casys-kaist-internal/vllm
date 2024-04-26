@@ -143,6 +143,8 @@ class SpSScheduler:
         return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
 
     def swap_draft_target_queues(self) -> None:
+        # One queue should be empty.
+        assert not self.need_to_run_draft or not self.need_to_run_target
         self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
 
     def _multi_step_schedule(self) -> SpSSchedulerOutputs:

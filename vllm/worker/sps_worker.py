@@ -220,9 +220,8 @@ class SpSWorker:
     
     def _process_draft_model_outputs(
             self, output: SamplerOutput,
-            scheduler_outputs: SpSSchedulerOutputs):
+            scheduled_seq_groups: List[SequenceGroup]) -> None:
         # Update the scheduled sequence groups with the model outputs.
-        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
             self._process_draft_sequence_group_outputs(seq_group, outputs)
 
@@ -330,27 +329,35 @@ class SpSWorker:
 
         # Initialize draft_iteration
         draft_iteration = 0
+        scheduled_seq_groups: List[SequenceGroup] = scheduler_outputs.scheduled_seq_groups
 
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
             # Note: It's possible for the initial assigned draft size to be 0.     
-            seq_group_metadata_list = [seq_group_metadata for seq_group_metadata in seq_group_metadata_list 
-                                    if seq_group_metadata.draft_size != draft_iteration]
 
-            # Break the loop if seq_group_metadata_list is empty
-            if not seq_group_metadata_list:
+            # Pair up seq_group_metadata and scheduled_seq_group
+            paired_groups = zip(seq_group_metadata_list, scheduled_seq_groups)
+
+            # Filter out pairs where seq_group_metadata.draft_size equals draft_iteration
+            filtered_pairs = [(seq_group_metadata, scheduled_seq_group) 
+                              for seq_group_metadata, scheduled_seq_group in paired_groups 
+                              if seq_group_metadata.draft_size != draft_iteration]
+
+            if not filtered_pairs:
                 break
 
+            # Unzip the pairs back into two separate lists
+            seq_group_metadata_list, scheduled_seq_groups = zip(*filtered_pairs)
+            
             # Execute the model and process the outputs
             output = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
-            self._process_draft_model_outputs(output, scheduler_outputs)
+            self._process_draft_model_outputs(output, scheduled_seq_groups)
 
             # Increase draft_iteration
             draft_iteration += 1
 
         return output
-
 
     def _init_distributed_environment(
         self
