@@ -8,12 +8,11 @@ from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
-from vllm.core.sps_scheduler import SpSSchedulerOutputs
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage, SequenceData, SequenceGroupOutput,
-                           SequenceGroup, SequenceOutput, SequenceStatus)
+                           SequenceGroup, SequenceStatus)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
 from vllm.utils import get_gpu_memory
@@ -319,15 +318,19 @@ class SpSWorker:
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
-        # Initialize draft_iteration
-        draft_iteration = 0
-
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
-            # Note: It's possible for the initial assigned draft size to be 0.     
-            seq_group_metadata_list = [seq_group_metadata for seq_group_metadata in seq_group_metadata_list 
-                                    if seq_group_metadata.draft_size > draft_iteration]
+            # Note: It's possible for the initial assigned draft size to be 0.
+            seq_group_metadata_list = [
+                seq_group_metadata
+                for seq_group_metadata in seq_group_metadata_list 
+                if seq_group_metadata.draft_size > (
+                    seq_group_metadata.seq_group.get_seqs(
+                        status=SequenceStatus.RUNNING
+                    )[0].get_draft_len()
+                )
+            ]
 
             # Break the loop if seq_group_metadata_list is empty
             if not seq_group_metadata_list:
@@ -337,9 +340,6 @@ class SpSWorker:
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
             cache_events = None
-
-            # Increase draft_iteration
-            draft_iteration += 1
 
         return outputs
 

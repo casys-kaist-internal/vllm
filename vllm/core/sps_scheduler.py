@@ -56,7 +56,6 @@ class SpSSchedulerOutputs:
 
 
 class SpSScheduler:
-
     def __init__(
         self,
         scheduler_config: SchedulerConfig,
@@ -91,6 +90,9 @@ class SpSScheduler:
         self.need_to_run_draft: List[SequenceGroup] = []
         self.need_to_run_target: List[SequenceGroup] = []
 
+    @property
+    def running(self) -> List[SequenceGroup]:
+        return self.need_to_run_draft + self.need_to_run_target
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
@@ -119,7 +121,8 @@ class SpSScheduler:
 
         request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
         self.waiting = clear_state_queue(self.waiting, request_ids)
-        self.running = clear_state_queue(self.running, request_ids)
+        self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
+        self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
         self.swapped = clear_state_queue(self.swapped, request_ids)
 
     def abort_all_seq_groups(self) -> None:
@@ -142,10 +145,13 @@ class SpSScheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
 
-    def swap_draft_target_queues(self) -> None:
-        # One queue should be empty.
-        assert not self.need_to_run_draft or not self.need_to_run_target
-        self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
+    def update_draft_target_queues(self, stage: SpSStage) -> None:
+        if stage == SpSStage.DRAFT_DECODE:
+            self.need_to_run_target += self.need_to_run_draft
+            self.need_to_run_draft = []
+        elif stage == SpSStage.TARGET_DECODE:
+            self.need_to_run_draft += self.need_to_run_target
+            self.need_to_run_target = []
 
     def _multi_step_schedule(self) -> SpSSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.

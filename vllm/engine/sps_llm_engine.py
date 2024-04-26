@@ -445,17 +445,18 @@ class SpSLLMEngine:
             self, output: SamplerOutput,
             scheduler_outputs: SpSSchedulerOutputs,
             sps_stage: SpSStage) -> List[RequestOutput]:
-        # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
-        for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
 
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
+        # Update the scheduled sequence groups with the model outputs.
+        if sps_stage != SpSStage.DRAFT_DECODE:
+            for seq_group, outputs in zip(scheduled_seq_groups, output):
+                self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
 
-        # Swap the draft target queues.
-        if sps_stage != SpSStage.PROMPT:
-            self.scheduler.swap_draft_target_queues()
+            # Free the finished sequence groups.
+            self.scheduler.free_finished_seq_groups()
+
+        # Update the draft target queues.
+        self.scheduler.update_draft_target_queues(sps_stage)
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
@@ -559,7 +560,7 @@ class SpSLLMEngine:
                     )
 
                     for seq_group in scheduler_outputs.scheduled_seq_groups:
-                        for seq in seq_group.get_seq(status=SequenceStatus.SPS_ALL_ACCEPT):
+                        for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
                             # change back to original RUNNING status
                             seq.status = SequenceStatus.RUNNING
                             # Append the bonus token saved in all accept case for target decode 

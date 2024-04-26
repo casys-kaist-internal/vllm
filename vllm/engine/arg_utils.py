@@ -304,10 +304,26 @@ class SpSEngineArgs:
                             type=int,
                             default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
+        parser.add_argument('--tile-size',
+                            type=int,
+                            default=SpSEngineArgs.tile_size,
+                            help='tile size threshold')
+        parser.add_argument('--use-dynamic-draft-size',
+                            type=bool,
+                            default=SpSEngineArgs.use_dynamic_draft_size,
+                            help='whether to use dynamic draft size')
+        parser.add_argument('--use-tile-size-constraint',
+                            type=bool,
+                            default=SpSEngineArgs.use_tile_size_constraint,
+                            help='whether to use tile size constraint')
         parser.add_argument('--use-target-attention',
                             type=bool,
                             default=SpSEngineArgs.use_target_attention,
-                            help='use target attention kernel')
+                            help='whether to use target attention kernel')
+        parser.add_argument('--use-lazy-draft-kv-cache',
+                            type=bool,
+                            default=SpSEngineArgs.use_lazy_draft_kv_cache,
+                            help='whether to use lazy draft KV cache')
         parser.add_argument(
             '--tokenizer',
             type=str,
