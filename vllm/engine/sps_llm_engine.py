@@ -510,7 +510,6 @@ class SpSLLMEngine:
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                scheduler_outputs=scheduler_outputs
             )
 
             return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
