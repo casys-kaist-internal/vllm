@@ -205,32 +205,6 @@ class SpSWorker:
             child_sample.logprobs,
             child_sample.probs,
         )
-        
-        # samples = outputs.samples
-        # parent_seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-
-        
-        # parent_child_dict = {
-        #     parent_seq.seq_id: []
-        #     for parent_seq in parent_seqs
-        # }
-        # for sample in samples:
-        #     parent_child_dict[sample.parent_seq_id].append(sample)
-
-        # # Process the child samples for each parent sequence
-        # for parent in parent_seqs:
-        #     child_samples: List[SequenceOutput] = parent_child_dict[
-        #         parent.seq_id]
-        #     assert len(child_samples) == 1, (
-        #         "SpS engine does not use beam search, so there should be "
-        #         "exactly one child sample for each parent sequence.")
-
-        #     child_sample = child_samples[0]
-
-        #     # Append the draft token to the parent sequence.
-        #     parent.append_draft_token_id(child_sample.output_token,
-        #                                 child_sample.logprobs,
-        #                                 child_sample.probs)
 
     
     def _process_draft_model_outputs(
@@ -348,7 +322,6 @@ class SpSWorker:
         # Initialize draft_iteration
         draft_iteration = 0
 
-        print("[debug] (noppanat) draft_size:", [seq_group_metadata.draft_size for seq_group_metadata in seq_group_metadata_list], flush=True)
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
@@ -361,7 +334,6 @@ class SpSWorker:
                 break
 
             # Execute the model and process the outputs
-            print("[debug] (noppanat) draft_iteration:", draft_iteration, flush=True)
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
             cache_events = None
