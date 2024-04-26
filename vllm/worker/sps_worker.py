@@ -181,50 +181,68 @@ class SpSWorker:
             self.draft_cache_engine.block_size)
     
     
-    def _process_draft_sequence_group_outputs(self, seq_group: SequenceGroup,
-                                                outputs: SequenceGroupOutput) -> None:
-
+    def _process_draft_sequence_group_outputs(
+        self, seq_group: SequenceGroup, output: SequenceGroupOutput
+    ):
         # We assume that SpS engine does not use beam search.
         assert not seq_group.sampling_params.use_beam_search
+        # There should be only on sequence in each sequence group.
+        assert len(output.samples) == 1
 
         # Process prompt logprobs
-        prompt_logprobs = outputs.prompt_logprobs
+        prompt_logprobs = output.prompt_logprobs
         if prompt_logprobs is not None:
             seq_group.prompt_logprobs = prompt_logprobs
 
         # Process samples
-        samples = outputs.samples
-        parent_seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-        parent_child_dict = {
-            parent_seq.seq_id: []
-            for parent_seq in parent_seqs
-        }
-        for sample in samples:
-            parent_child_dict[sample.parent_seq_id].append(sample)
+        child_sample = output.samples[0]
+        parent_seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+        assert child_sample.parent_seq_id == parent_seq.seq_id
 
-        # Process the child samples for each parent sequence
-        for parent in parent_seqs:
-            child_samples: List[SequenceOutput] = parent_child_dict[
-                parent.seq_id]
-            assert len(child_samples) == 1, (
-                "SpS engine does not use beam search, so there should be "
-                "exactly one child sample for each parent sequence.")
+        # Append the draft token to the parent sequence.
+        parent_seq.append_draft_token_id(
+            child_sample.output_token,
+            child_sample.logprobs,
+            child_sample.probs,
+        )
+        
+        # samples = outputs.samples
+        # parent_seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
 
-            child_sample = child_samples[0]
+        
+        # parent_child_dict = {
+        #     parent_seq.seq_id: []
+        #     for parent_seq in parent_seqs
+        # }
+        # for sample in samples:
+        #     parent_child_dict[sample.parent_seq_id].append(sample)
 
-            # Append the draft token to the parent sequence.
-            parent.append_draft_token_id(child_sample.output_token,
-                                        child_sample.logprobs,
-                                        child_sample.probs)
+        # # Process the child samples for each parent sequence
+        # for parent in parent_seqs:
+        #     child_samples: List[SequenceOutput] = parent_child_dict[
+        #         parent.seq_id]
+        #     assert len(child_samples) == 1, (
+        #         "SpS engine does not use beam search, so there should be "
+        #         "exactly one child sample for each parent sequence.")
+
+        #     child_sample = child_samples[0]
+
+        #     # Append the draft token to the parent sequence.
+        #     parent.append_draft_token_id(child_sample.output_token,
+        #                                 child_sample.logprobs,
+        #                                 child_sample.probs)
 
     
     def _process_draft_model_outputs(
-            self, output: SamplerOutput,
-            scheduler_outputs: SpSSchedulerOutputs):
-        # Update the scheduled sequence groups with the model outputs.
-        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
-        for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_draft_sequence_group_outputs(seq_group, outputs)
+        self,
+        outputs: SamplerOutput,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ):
+        # Update the sequence groups with the model outputs.
+        for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
+            seq_group = seq_group_metadata.seq_group
+            assert seq_group is not None    # seq_group must be set.
+            self._process_draft_sequence_group_outputs(seq_group, output)
 
     
     @torch.inference_mode()
@@ -303,7 +321,6 @@ class SpSWorker:
         blocks_to_swap_in: Dict[int, int],
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
-        scheduler_outputs: SpSSchedulerOutputs,
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
@@ -331,25 +348,28 @@ class SpSWorker:
         # Initialize draft_iteration
         draft_iteration = 0
 
+        print("[debug] (noppanat) draft_size:", [seq_group_metadata.draft_size for seq_group_metadata in seq_group_metadata_list], flush=True)
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
             # Note: It's possible for the initial assigned draft size to be 0.     
             seq_group_metadata_list = [seq_group_metadata for seq_group_metadata in seq_group_metadata_list 
-                                    if seq_group_metadata.draft_size != draft_iteration]
+                                    if seq_group_metadata.draft_size > draft_iteration]
 
             # Break the loop if seq_group_metadata_list is empty
             if not seq_group_metadata_list:
                 break
 
             # Execute the model and process the outputs
-            output = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
-            self._process_draft_model_outputs(output, scheduler_outputs)
+            print("[debug] (noppanat) draft_iteration:", draft_iteration, flush=True)
+            outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
+            self._process_draft_model_outputs(outputs, seq_group_metadata_list)
+            cache_events = None
 
             # Increase draft_iteration
             draft_iteration += 1
 
-        return output
+        return outputs
 
 
     def _init_distributed_environment(

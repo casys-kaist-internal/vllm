@@ -5,9 +5,9 @@ import numpy as np
 
 # Directory paths
 directories = [
-    "/home/sjchoi/workspace/vllm/benchmarks/output_latency_3090",
-    "/home/sjchoi/workspace/vllm/benchmarks/output_latency_A100",
-    "/home/sjchoi/workspace/vllm/benchmarks/output_latency_A6000"
+    "/home/noppanat/workspace/vllm/benchmarks/output_latency_3090",
+    "/home/noppanat/workspace/vllm/benchmarks/output_latency_A100",
+    "/home/noppanat/workspace/vllm/benchmarks/output_latency_A6000"
 ]
 
 
