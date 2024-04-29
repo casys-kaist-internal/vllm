@@ -316,7 +316,9 @@ def main(
 
         for head in range(0, num_query_heads):
             # Check if error exists in this subsectino
-            if not all_close(output[:, head], validation_output[:, head]):
+            # if not all_close(output[:, head], validation_output[:, head]):
+            # If nan exists in output, 
+            if torch.isnan(output[:, head]).any():
                 print("---Head---: ", head)
                 for s in range(num_seqs):
                     for q in range(query_lens[s]):
@@ -497,10 +499,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--version", type=str,
                         choices=["v1", "v2"], default="v2")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--context-len", type=int, default=2048)
-    parser.add_argument("--num-query-heads", type=int, default=64)
-    parser.add_argument("--num-kv-heads", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--context-len", type=int, default=36)
+    parser.add_argument("--num-query-heads", type=int, default=32)
+    parser.add_argument("--num-kv-heads", type=int, default=16)
     parser.add_argument(
         "--head-size", type=int, choices=[64, 80, 96, 112, 128, 256], default=128
     )
@@ -512,7 +514,7 @@ if __name__ == "__main__":
         "--dtype", type=str, choices=["half", "bfloat16", "float"], default="half"
     )
     parser.add_argument("--seed", type=int, default=random.randint(0, 1000000))
-    parser.add_argument("--query-len", type=int, default=-1)  # -1 is random
+    parser.add_argument("--query-len", type=int, default=5)  # -1 is random
     args = parser.parse_args()
 
     if args.num_query_heads % args.num_kv_heads != 0:

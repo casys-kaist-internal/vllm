@@ -181,18 +181,49 @@ def find_optimal_max_gamma(betas, W_tile, C, start_max_gamma):
 
 #     return best_value, best_gamma
 
-# def objective(gammas, betas, C):
-#     max_gamma = max(gammas)
-#     assert max_gamma > 0
+def objective(gammas, betas, C):
+    max_gamma = max(gammas)
+    assert max_gamma > 0
 
-#     sum_terms = 0
-#     for gamma, beta in zip(gammas, betas):
-#         assert beta != 1
-#         term = (1 - beta**(gamma + 1)) / (1 - beta)
-#         sum_terms += term
+    sum_terms = 0
+    for gamma, beta in zip(gammas, betas):
+        assert beta != 1
+        term = (1 - beta**(gamma + 1)) / (1 - beta)
+        sum_terms += term
 
-#     objective_value = sum_terms / (C * max_gamma + 1)
-#     return objective_value
+    objective_value = sum_terms / (C * max_gamma + 1)
+    return objective_value
+
+def find_optimal_max_gamma_without_tile_constraint(betas, C, start_max_gamma):
+    """ Explore optimal solutions by adjusting max_gamma up and down from the start point. """
+    max_value = float('-inf')
+    max_gammas = None
+
+    # Decrease max_gamma to find the optimal point
+    for max_gamma in range(start_max_gamma, 0, -1):
+        current_value = objective([max_gamma] * len(betas), betas, C)
+        if current_value > max_value:
+            max_value = current_value
+            max_gammas = [max_gamma] * len(betas)
+        else:
+            # If second highest max_gamma did not improve the solution, we should search by increasing the max_gamma
+            if max_gamma != start_max_gamma - 1:
+                return max_value, max_gammas   # No improvement found, return the current best solution
+            break
+
+    # If decreasing didn't improve, try increasing
+    increasing_gamma = start_max_gamma + 1
+    while True:
+        current_value= objective([increasing_gamma] * len(betas), betas, C)
+        if current_value > max_value:
+            max_value = current_value
+            max_gammas = [increasing_gamma] * len(betas)
+            increasing_gamma += 1  # Continue to check higher max gamma
+        else:
+            break  # No improvement found, break the loop
+
+    return max_value, max_gammas
+
 
 
 def main():
@@ -200,8 +231,8 @@ def main():
     # betas = []
     n = 32
     betas = [random.uniform(0.5, 0.9) for _ in range(n)]
-    W_tile = 128  # Total weight constraint
-    C = 0.03  # Constant C, could be adjusted based on the problem specifics
+    W_tile = 64  # Total weight constraint
+    C = 0.1  # Constant C, could be adjusted based on the problem specifics
 
     print("Number of requests:", n)
     print("Betas:", betas)
@@ -222,6 +253,12 @@ def main():
     # # Find max value from dp_results 
     # # Get the index of the max value 
     # print(f"{result[0]}, {result[1]}")
+
+    start_time = time.time()
+    result = find_optimal_max_gamma_without_tile_constraint(betas, C, start_max_gamma=8)
+    end_time = time.time()
+    print("Find Optimal Max Gamma without Tile Constraint: Time taken:", end_time - start_time)
+    print(f"{result[0]}, {result[1]}")
 
     start_time = time.time()
     result = find_optimal_max_gamma(betas, W_tile, C, start_max_gamma=8)

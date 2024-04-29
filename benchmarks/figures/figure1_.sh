@@ -19,10 +19,10 @@ declare -a models=(
     # "EleutherAI/pythia-6.9b,EleutherAI/pythia-14m"
 )
 
-device=0
+device=1
 export CUDA_VISIBLE_DEVICES=$device
 
-dir_name="result_4_26"
+dir_name="result_4_26_"
 # Create result directory
 rm -rf $dir_name
 mkdir -p $dir_name

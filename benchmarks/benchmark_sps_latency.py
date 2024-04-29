@@ -4,6 +4,7 @@ import json
 import time
 import random
 from typing import List, Optional, Tuple
+from datasets import load_dataset
 
 import numpy as np
 import torch
@@ -13,6 +14,37 @@ from vllm import LLM, SpSLLM, SamplingParams
 
 download_dir = '/home/sjchoi/workspace/models'
 
+
+def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
+    dataset = load_dataset('gsm8k', 'main')['train']
+
+    # Tokenize the prompts and completions.
+    prompts = [data['question'] for data in dataset]
+    prompt_token_ids = tokenizer(prompts).input_ids
+    completions = [data['answer'] for data in dataset]
+    completion_token_ids = tokenizer(completions).input_ids
+
+    tokenized_dataset = []
+    for i in range(len(dataset)):
+        output_len = len(completion_token_ids[i])
+        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+    # Filter out too long sequences.
+    filtered_dataset = []
+    for prompt, prompt_token_ids, output_len in tokenized_dataset:
+        prompt_len = len(prompt_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    # random sort dataset
+    random.shuffle(filtered_dataset)
+
+    return filtered_dataset
 
 def sample_requests(
     dataset_path: str,
@@ -60,7 +92,10 @@ def sample_requests(
 def main(args: argparse.Namespace):
     global download_dir
     print(args)
-
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer, trust_remote_code=args.trust_remote_code)
+    
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
     if args.engine == "base":
@@ -81,7 +116,7 @@ def main(args: argparse.Namespace):
             draft_size=args.draft_size,
             tile_size=args.tile_size,
             use_dynamic_draft_size=args.dynamic_draft,
-            use_tile_size_constraint=args.use_tile_size_constraint,
+            use_tile_size_constraint=False,
             use_lazy_draft_kv_cache=True,
             use_target_attention=args.use_target_attention,
             tokenizer=args.tokenizer,
@@ -104,15 +139,36 @@ def main(args: argparse.Namespace):
         max_tokens=args.output_len,
     )
     print(sampling_params)
-    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
+
+    if args.dataset =="gsm8k":
+        requests = load_gsm8k(tokenizer)
+    else:
+        dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
 
     def run_to_completion():
-        start_time = time.perf_counter()
         output = llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                               sampling_params=sampling_params,
                               use_tqdm=False)
-        end_time = time.perf_counter()
-        latency = end_time - start_time
+        # for prompt, _, output_len in requests[:args.batch_size]:
+        #     print(prompt)
+        #     print(output_len)
+        #     sampling_params = SamplingParams(
+        #         n=1,
+        #         temperature=args.temperature,
+        #         top_p=1.0,
+        #         use_beam_search=args.use_beam_search,
+        #         ignore_eos=True,
+        #         max_tokens=512,
+        #     )
+        #     llm._add_request(
+        #         prompt=prompt,
+        #         prompt_token_ids=None,
+        #         sampling_params=sampling_params,
+        #     )
+        # start_time = time.perf_counter()
+        # llm._run_engine(use_tqdm=False)
+        # end_time = time.perf_counter()
+        # latency = end_time - start_time
         return latency
 
     # print("Warming up...")
