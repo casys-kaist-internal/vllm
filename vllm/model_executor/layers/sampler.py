@@ -673,7 +673,7 @@ def _sps_sample(
         sps_results.append(
             (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist(), beta[i]))
     
-    print("Score: ", accepted_tokens / total_tokens, "draft_len: ", adjusted_target_lens)
+    # print("Score: ", accepted_tokens / total_tokens, "draft_len: ", adjusted_target_lens)
 
     return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
 

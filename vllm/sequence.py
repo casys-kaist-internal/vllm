@@ -357,7 +357,7 @@ class Sequence:
         # Note: this is just a temporary solution. 
         if len(self.beta_list) == 0:
             return 0.1 # Initial beta value
-
+        
         window_size = 10
         if len(self.beta_list) < window_size:
             return sum(self.beta_list) / len(self.beta_list)

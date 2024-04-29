@@ -580,6 +580,8 @@ namespace vllm
 #pragma unroll
     for (int query_idx = 0; query_idx < QUERY_SIZE; query_idx++)
     {
+      if (query_idx >= query_len)
+        continue;
       const scalar_t *q_ptr = q + (cum_query_len + query_idx) * q_stride + head_idx * HEAD_SIZE;
 #pragma unroll
       for (int i = thread_group_idx; i < NUM_VECS_PER_THREAD; i += NUM_THREAD_GROUPS)
@@ -655,7 +657,7 @@ namespace vllm
 
       constexpr int V_TILE_SIZE = 8; // total 16 vectors for HEAD_SIZE=128
 
-      float logits_reg[QUERIES_PER_WARP_GROUP_QK] = {0.0};
+      float logits_reg[QUERIES_PER_WARP_GROUP_QK] = {0.f};
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
 
       if (token_idx >= max_context_len)
@@ -767,7 +769,7 @@ namespace vllm
     // TODO(woosuk): Refactor this part.
     // Get the max qk value for the sequence.
 
-    float exp_sum_arr[QUERIES_PER_WARP_GROUP_QK] = {0.0};
+    float exp_sum_arr[QUERIES_PER_WARP_GROUP_QK] = {0.f};
 
     for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
     {
@@ -787,7 +789,7 @@ namespace vllm
     // 이게 bottleneck
 
     int num_tokens_arr[QUERIES_PER_WARP_GROUP_QK];
-    float inv_sums_arr[QUERIES_PER_WARP_GROUP_QK] = {0.0};
+    float inv_sums_arr[QUERIES_PER_WARP_GROUP_QK] = {0.f};
 
     for (int it = 0; it < QUERIES_PER_WARP_GROUP_QK; ++it)
     {
@@ -1208,6 +1210,8 @@ namespace vllm
 #pragma unroll
     for (int query_idx = 0; query_idx < QUERY_SIZE; query_idx++)
     {
+      if (query_idx >= query_len)
+        continue;
       const scalar_t *q_ptr = q + (cum_query_len + query_idx) * q_stride + head_idx * HEAD_SIZE;
 #pragma unroll
       for (int i = thread_group_idx; i < NUM_VECS_PER_THREAD; i += NUM_THREAD_GROUPS)
@@ -2770,6 +2774,9 @@ void paged_attention_v2_target_launcher_tensor_core(
 #define CALL_V2_LAUNCHER_BLOCK_SIZE(T)                          \
   switch (block_size)                                           \
   {                                                             \
+  case 16:                                                      \
+    CALL_V2_LAUNCHER(T, 16);                                    \
+    break;                                                      \
   case 32:                                                      \
     CALL_V2_LAUNCHER(T, 32);                                    \
     break;                                                      \
@@ -2783,6 +2790,9 @@ void paged_attention_v2_target_launcher_tensor_core(
 #define CALL_V2_TARGET_LAUNCHER_BLOCK_SIZE(T)                   \
   switch (block_size)                                           \
   {                                                             \
+  case 16:                                                      \
+    CALL_V2_TARGET_LAUNCHER(T, 16);                             \
+    break;                                                      \
   case 32:                                                      \
     CALL_V2_TARGET_LAUNCHER(T, 32);                             \
     break;                                                      \

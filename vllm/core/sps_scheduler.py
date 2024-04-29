@@ -6,7 +6,7 @@ from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.sps_block_manager import SpSAllocStatus, SpSBlockSpaceManager
 from vllm.core.block_manager import AllocStatus, BlockSpaceManager
 from vllm.core.policy import PolicyFactory
-from vllm.core.sps_util import find_optimal_draft_size
+from vllm.core.sps_util import find_optimal_draft_size_with_tile_constraint, find_optimal_draft_size_without_tile_constraint
 from vllm.logger import init_logger
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceStatus, SpSStage)
@@ -119,14 +119,16 @@ class SpSScheduler:
 
         request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
         self.waiting = clear_state_queue(self.waiting, request_ids)
-        self.running = clear_state_queue(self.running, request_ids)
+        # self.running = clear_state_queue(self.running, request_ids)
+        self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
+        self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
         self.swapped = clear_state_queue(self.swapped, request_ids)
 
     def abort_all_seq_groups(self) -> None:
         self.abort_seq_group(
             [
                 seq_group.request_id
-                for seq_group in self.waiting + self.running + self.swapped
+                for seq_group in self.waiting + self.need_to_run_draft + self.need_to_run_target + self.swapped
             ]
         )
 
@@ -247,10 +249,12 @@ class SpSScheduler:
         if self.need_to_run_draft:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
-            
             # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
             if self.sps_config.use_dynamic_draft_size:
-                find_optimal_draft_size(self.need_to_run_draft, self.sps_config)
+                if self.sps_config.use_tile_size_constraint:
+                    find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
+                else:
+                    find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
 
             # Print the draft size of each sequence group
             # draft_sizes = []
