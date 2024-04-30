@@ -187,6 +187,37 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
     return filtered_dataset
 
+def load_apps(tokenizer: PreTrainedTokenizerBase):
+    dataset = load_dataset('codeparrot/apps')['train']
+
+    # Tokenize the prompts and completions.
+    prompts = [data['question'] for data in dataset]
+    prompt_token_ids = tokenizer(prompts).input_ids
+    completions = [data['solutions'] for data in dataset]
+    completion_token_ids = tokenizer(completions).input_ids
+
+    tokenized_dataset = []
+    for i in range(len(dataset)):
+        output_len = len(completion_token_ids[i])
+        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+    # Filter out too long sequences.
+    filtered_dataset = []
+    for prompt, prompt_token_ids, output_len in tokenized_dataset:
+        prompt_len = len(prompt_token_ids)
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    # random sort dataset
+    random.shuffle(filtered_dataset)
+
+    return filtered_dataset
+
 
 def warmup(llm):
     dummy_prompt_token_ids = [[0] * 32] * 32
@@ -254,25 +285,26 @@ def main(args: argparse.Namespace):
         requests = load_mt_bench(tokenizer)
     elif args.dataset == "sharegpt":
         requests = load_sharegpt(tokenizer)
+    elif args.dataset == "apps":
+        requests = load_apps(tokenizer)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     # Warmup
-    # warmup(llm)
+    warmup(llm)
 
-    latencies = []
-    throughputs = []
-    output_lens = []
+    # latencies = []
+    # throughputs = []
+    # output_lens = []
 
     for _ in range(args.num_iters):
         # sampled_requests = random.sample(requests, args.batch_size)
-        
-        sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
-        # sampled_requests = requests[args.index * _:args.index * (_ + 1)]
+        # sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
+        sampled_requests = requests[args.index * _:args.index * (_ + 1)]
 
         for prompt, _, output_len in sampled_requests:
             # print(prompt)
-            # print(output_len)
+            print(output_len)
             sampling_params = SamplingParams(
                 n=1,
                 temperature=args.temperature,
@@ -287,31 +319,38 @@ def main(args: argparse.Namespace):
                 prompt_token_ids=None,
                 sampling_params=sampling_params,
             )
-        generation_latency, output_len = llm._run_engine_benchmark()
+        
+        torch.cuda.synchronize()
+        start_time = time.monotonic()
+        outputs = llm._run_engine(use_tqdm=True)
+        torch.cuda.synchronize()
+        end_time = time.monotonic()
+
+        print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")
 
         # per request per output token latency
-        latency = generation_latency / np.mean(output_len)
-        throughput = np.sum(output_len) / generation_latency
-        latencies.append(latency)
-        throughputs.append(throughput)
-        output_lens.append(np.mean(output_len))
+    #     latency = generation_latency / np.mean(output_len)
+    #     throughput = np.sum(output_len) / generation_latency
+    #     latencies.append(latency)
+    #     throughputs.append(throughput)
+    #     output_lens.append(np.mean(output_len))
 
-    print(
-        f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
+    # print(
+    #     f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
-    parser.add_argument("--index", type=int, default=0)
+    parser.add_argument("--index", type=int, default=1)
     parser.add_argument("--engine", type=str, choices=["base", "sps"],
                         default="base")
     parser.add_argument("--dataset", type=str, default="gsm8k",
                         choices=["gsm8k", "humaneval",
-                                 "alpaca", "mt-bench", "sharegpt"],
+                                 "alpaca", "mt-bench", "sharegpt", "apps"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-6.7b')
@@ -333,7 +372,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=0.5,
+                        default=0.7,
                         help='Sampling temperature.')
     parser.add_argument('--n',
                         type=int,
