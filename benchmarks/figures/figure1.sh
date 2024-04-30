@@ -22,7 +22,7 @@ declare -a models=(
 device=0
 export CUDA_VISIBLE_DEVICES=$device
 
-dir_name="result_4_26"
+dir_name="result_4_30"
 # Create result directory
 rm -rf $dir_name
 mkdir -p $dir_name
