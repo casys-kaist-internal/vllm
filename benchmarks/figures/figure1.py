@@ -151,7 +151,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -183,7 +183,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    # random.shuffle(filtered_dataset)
+    random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -229,7 +229,7 @@ def main(args: argparse.Namespace):
             draft_model=args.draft_model,
             draft_size=args.draft_size,
             tile_size=args.tile_size,
-            use_dynamic_draft_size=False,
+            use_dynamic_draft_size=args.dynamic_draft,
             use_tile_size_constraint=args.use_tile_size_constraint,
             use_lazy_draft_kv_cache=True,
             use_target_attention=args.use_target_attention,
@@ -258,7 +258,7 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     # Warmup
-    warmup(llm)
+    # warmup(llm)
 
     latencies = []
     throughputs = []
@@ -266,16 +266,20 @@ def main(args: argparse.Namespace):
 
     for _ in range(args.num_iters):
         # sampled_requests = random.sample(requests, args.batch_size)
-        sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
+        
+        # sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
+        sampled_requests = requests[args.index * _:args.index * (_ + 1)]
 
         for prompt, _, output_len in sampled_requests:
+            print(prompt)
+            print(output_len)
             sampling_params = SamplingParams(
                 n=1,
                 temperature=args.temperature,
                 top_p=1.0,
                 use_beam_search=False,
                 ignore_eos=True,
-                max_tokens=500,
+                max_tokens=1024,
             )
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(
@@ -302,6 +306,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
+    parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--engine", type=str, choices=["base", "sps"],
                         default="base")
     parser.add_argument("--dataset", type=str, default="gsm8k",
