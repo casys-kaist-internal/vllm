@@ -107,7 +107,7 @@ def find_optimal_draft_size_without_tile_constraint(seq_group_list: List[Sequenc
     # Decrease max_gamma to find the optimal point
     for max_draft_size in range(start_max_draft_size, 0, -1):
         current_value = objective([max_draft_size] * len(betas), betas, C)
-        if current_value > max_value and max_draft_size != 5:
+        if current_value > max_value:
             max_value = current_value
             result = [max_draft_size] * len(betas)
         else:

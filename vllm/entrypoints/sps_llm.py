@@ -229,6 +229,7 @@ class SpSLLM:
                         end = time.monotonic()
                         self.llm_engine.abort_all_requests()
                         done = True
+                        print(output.outputs[0].text)
 
         output_len = []
         for output in step_outputs:

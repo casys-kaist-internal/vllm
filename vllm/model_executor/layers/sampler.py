@@ -591,7 +591,8 @@ def _sps_sample(
 
     # beta = _calculate_beta(
     #     target_probs, draft_probs, adjusted_target_lens)
-    
+
+    # print(draft_prob_for_sampled_draft_token)
     beta = _calculate_beta_vectorized(
         target_probs, draft_probs, adjusted_target_lens)
 
