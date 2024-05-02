@@ -474,13 +474,17 @@ class SpSConfig:
                  use_tile_size_constraint: bool, 
                  use_target_attention: bool,
                  use_lazy_draft_kv_cache: bool,
+                 target_draft_latency_ratio: float,
                 ) -> None:
         self.draft_size = draft_size
         self.use_dynamic_draft_size = use_dynamic_draft_size
         self.use_tile_size_constraint = use_tile_size_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
-        self.target_draft_latency_ratio = 0.2
+        # self.target_draft_latency_ratio = 0.25
+        # self.target_draft_latency_ratio = 0.4
+        # self.target_draft_latency_ratio = 0.1
+        self.target_draft_latency_ratio = target_draft_latency_ratio
         self.start_max_draft_size = 7
 
         # If use_dynamic_draft_size is False, use_tile_size_constraint should also be False

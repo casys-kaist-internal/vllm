@@ -100,6 +100,9 @@ class GPTNeoXAttention(nn.Module):
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         q, k = self.rotary_emb(position_ids, q, k)
+        # If q or k is nan, raise exception
+        if torch.isnan(q).any() or torch.isnan(k).any():
+            raise ValueError("q or k is nan")
         k_cache, v_cache = kv_cache
         attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata,
                                 cache_event)

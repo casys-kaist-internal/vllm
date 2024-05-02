@@ -697,17 +697,18 @@ namespace vllm
           // if (query_idx >= query_len)
           //   break;
           int n_context_len = context_len + query_idx;
-          float qk = 0;
-          A_vec res = {0};
-#pragma unroll
-          for (int j = 0; j < V_TILE_SIZE; ++j)
-          {
-            A_vec q_vec = *reinterpret_cast<A_vec *>(&q_vec_regs[it][j]);
-            A_vec k_vec = *reinterpret_cast<A_vec *>(&k_vecs[j]);
-            res = fma(q_vec, k_vec, res);
-          }
-          qk = sum(res);
-          qk *= scale;
+          //           float qk = 0;
+          //           A_vec res = {0};
+          // #pragma unroll
+          //           for (int j = 0; j < V_TILE_SIZE; ++j)
+          //           {
+          //             A_vec q_vec = *reinterpret_cast<A_vec *>(&q_vec_regs[it][j]);
+          //             A_vec k_vec = *reinterpret_cast<A_vec *>(&k_vecs[j]);
+          //             res = fma(q_vec, k_vec, res);
+          //           }
+          // qk = sum(res);
+          // qk *= scale;
+          float qk = scale * Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot_nosync(q_vec_regs[it], k_vecs);
           qk += (alibi_slope != 0) ? alibi_slope * (token_idx - n_context_len + 1) : 0;
           const bool mask = token_idx >= n_context_len;
           logits_reg[it] += mask ? 0.f : qk;
