@@ -209,6 +209,68 @@ class SpSLLM:
         # its previous requests.
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         return outputs
+    
+    def _run_profile(self) -> None:
+        batch_size_list = range(1, 10)
+        # Initialize tqdm.
+        num_requests = len(batch_size_list)
+        pbar = tqdm(total=num_requests, desc="Profiling latencies")
+
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=0.0,
+            top_p=1.0,
+            use_beam_search=False,
+            ignore_eos=True,
+            max_tokens=128,
+        )
+
+        dummy_prompt_token_ids = [0] * 32
+
+        for batch_size in range(1, self.llm_engine.scheduler_config.max_num_seqs + 1):
+            for _ in range(batch_size):
+                self._add_request(None, sampling_params, dummy_prompt_token_ids)
+
+            sps_stage = None
+            # Warmup
+            while sps_stage is not SpSStage.TARGET_DECODE:
+                _, sps_stage = self.llm_engine.step()
+        
+            draft_latencies = []
+            target_latencies = []
+
+            iteration = 10
+            for _ in range(iteration):
+                torch.cuda.synchronize()
+                draft_start = time.monotonic()
+                _, sps_stage = self.llm_engine.step()
+                torch.cuda.synchronize()
+                draft_end = time.monotonic()
+                draft_latencies.append(draft_end - draft_start)
+                assert sps_stage is SpSStage.DRAFT_DECODE
+
+                torch.cuda.synchronize()
+                target_start = time.monotonic()
+                _, sps_stage = self.llm_engine.step()
+                torch.cuda.synchronize()
+                target_end = time.monotonic()
+                target_latencies.append(target_end - target_start)
+                assert sps_stage is SpSStage.TARGET_DECODE
+
+            self.llm_engine.abort_all_requests()
+
+            self.llm_engine.draft_latencies[batch_size] = (sum(draft_latencies) / len(draft_latencies)) / self.llm_engine.sps_config.draft_size
+            self.llm_engine.target_latencies[batch_size] = sum(target_latencies) / len(target_latencies)
+            pbar.update(1)
+
+            print("-"*80)
+            print(f"Batch size: {batch_size}")
+            print(f"Draft latency: {self.llm_engine.draft_latencies[batch_size]}")
+            print(f"Target latency: {self.llm_engine.target_latencies[batch_size]}")
+
+        print(self.llm_engine.draft_latencies)
+        print(self.llm_engine.target_latencies)
+
 
     def _run_engine_benchmark(self) -> List[RequestOutput]:
         start = None
