@@ -263,6 +263,13 @@ def _paged_attention(
     #     print("input_metadata.context_lens: ", input_metadata.context_lens)
     #     print("input_metadata.query_lens: ", input_metadata.query_lens)
     #     print("head_mapping: ", head_mapping)
+    #     print("alibi_slopes: ", alibi_slopes)
+    #     # Print min and max value in query
+    #     print("min query: ", torch.min(query))
+    #     print("max query: ", torch.max(query))
+        # print("scale: ", scale)
+        # if torch.isnan(query).any():
+        #     raise RuntimeError("NaN detected in PagedAttention query.")
 
 
     # print("input_metadata.max_context_len: ", input_metadata.max_context_len)
@@ -300,17 +307,17 @@ def _paged_attention(
             )
     else:
         assert _PARTITION_SIZE % block_size == 0
-        tmp_output = torch.empty(
+        tmp_output = torch.zeros(
             size=(num_seqs, num_heads, max_num_partitions, head_size),
             dtype=output.dtype,
             device=output.device,
         )
-        exp_sums = torch.empty(
+        exp_sums = torch.zeros(
             size=(num_seqs, num_heads, max_num_partitions),
             dtype=torch.float32,
             device=output.device,
         )
-        max_logits = torch.empty_like(exp_sums)
+        max_logits = torch.zeros_like(exp_sums)
         if input_metadata.use_target_attention:
             # Run PagedAttention V2.
             ops.paged_attention_v2_target(
@@ -347,5 +354,10 @@ def _paged_attention(
                 input_metadata.max_context_len,
                 alibi_slopes,
             )
+    if torch.isnan(tmp_output).any():
+        raise RuntimeError("NaN detected in PagedAttention tmp_output.")
+    
+    if torch.isnan(output).any():
+        raise RuntimeError("NaN detected in PagedAttention output.")
 
     return output

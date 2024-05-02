@@ -482,7 +482,6 @@ class SpSLLMEngine:
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
-
         if sps_stage == SpSStage.PROMPT:
             output = self._run_workers(
                 "execute_target_model",

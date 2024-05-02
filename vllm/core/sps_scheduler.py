@@ -255,15 +255,9 @@ class SpSScheduler:
                     find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
                 else:
                     find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
-
-            # Print the draft size of each sequence group
-            # draft_sizes = []
-            # for seq_group in self.need_to_run_draft:
-            #     seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            #     draft_sizes.append(seq.draft_size)
             
-            # print(draft_sizes)
-
+            # Sort by draft size 
+            self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
             # In this case, the policy is responsible for deciding which sequence
@@ -271,8 +265,7 @@ class SpSScheduler:
             # self.running = self.policy.sort_by_priority(now, self.running)
 
             # FIXME(sangjin): How to handle case of draft preemption? Should we not
-            # allow draft preemption at all?
-
+            # allow draft preemption at all?              
             # Reserve new token slots for the running sequence groups.
             need_to_run_draft: List[SequenceGroup] = []
             while self.need_to_run_draft:
@@ -308,7 +301,6 @@ class SpSScheduler:
 
         # TARGET_DECODING PHASE START
         sps_stage = SpSStage.TARGET_DECODE
-
         # NOTE(woosuk): Preemption happens only when there is no available slot
         # to keep all the sequence groups in the RUNNING state.
         # In this case, the policy is responsible for deciding which sequence

@@ -72,6 +72,7 @@ class SpSLLM:
         use_tile_size_constraint: bool = False,
         use_lazy_draft_kv_cache: bool = True,
         use_target_attention: bool = False,
+        target_draft_latency_ratio: float = 0.2,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,
@@ -97,6 +98,7 @@ class SpSLLM:
             use_tile_size_constraint=use_tile_size_constraint,
             use_target_attention=use_target_attention,
             use_lazy_draft_kv_cache=use_lazy_draft_kv_cache,
+            target_draft_latency_ratio=target_draft_latency_ratio,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
             trust_remote_code=trust_remote_code,
@@ -195,6 +197,9 @@ class SpSLLM:
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
+                    # Return at first output
+                    self.llm_engine.abort_all_requests()
+                    return step_outputs
                     if use_tqdm:
                         pbar.update(1)
         if use_tqdm:
