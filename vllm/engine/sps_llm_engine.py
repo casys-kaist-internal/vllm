@@ -126,6 +126,10 @@ class SpSLLMEngine:
         # Create the scheduler.
         self.scheduler = SpSScheduler(
             scheduler_config, cache_config, sps_config)
+        
+        # Profiling draft and target latencies 
+        self.draft_latencies: Dict[int, float] = {}
+        self.target_latencies: Dict[int, float] = {}
 
         # Logging.
         self.last_logging_time = 0.0
@@ -470,7 +474,7 @@ class SpSLLMEngine:
             self._log_system_stats(True if sps_stage == SpSStage.PROMPT else False,
                                    scheduler_outputs.num_batched_tokens)
         return request_outputs
-
+    
     def step(self) -> List[RequestOutput]:
         """ Performs one decoding iteration: 
             - Target prompt + Draft prompt 

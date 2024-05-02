@@ -294,6 +294,10 @@ def main(args: argparse.Namespace):
     # Warmup
     warmup(llm)
 
+    # Profile 
+    llm._run_profile()
+    sys.exit()
+
     # latencies = []
     # throughputs = []
     # output_lens = []
@@ -367,16 +371,16 @@ if __name__ == '__main__':
                                  "alpaca", "mt-bench", "sharegpt", "apps"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str, 
-                        default='EleutherAI/pythia-12b')
-                        # default='facebook/opt-6.7b')
+                        # default='EleutherAI/pythia-12b')
+                        default='facebook/opt-6.7b')
                         # default='bigscience/bloom-7b1')
                         # default='daryl149/llama-2-7b-chat-hf')
                         # default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, 
-                        default='EleutherAI/pythia-410m')
+                        # default='EleutherAI/pythia-410m')
                         # default='bigscience/bloomz-560m')
                         # default='Felladrin/Llama-68M-Chat-v1')
-                        # default='facebook/opt-125m')
+                        default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
     parser.add_argument('--tile-size', type=int, default=64)
     parser.add_argument('--dynamic-draft', action='store_true')

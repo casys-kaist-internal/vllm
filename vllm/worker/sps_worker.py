@@ -169,29 +169,26 @@ class SpSWorker:
     def profile_target_draft_latency_ratio(self) -> float:
         # Execute a forward pass with dummy inputs to profile the latency
         # of the target model and the draft model.
-        vocab_size = self.target_model_config.get_vocab_size()
-        sampling_params = SamplingParams(top_p=0.99, top_k=vocab_size - 1)
-        max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
-        max_num_seqs = self.scheduler_config.max_num_seqs
+        target_latency = []
+        draft_latency = []
 
-        seqs: List[SequenceGroupMetadata] = []
-        for group_id in range(max_num_seqs):
-            seq_len = (max_num_batched_tokens // max_num_seqs +
-                       (group_id < max_num_batched_tokens % max_num_seqs))
-            seq_data = SequenceData([0] * seq_len)
-            seq = SequenceGroupMetadata(
-                request_id=str(group_id),
-                is_prompt=True,
-                seq_data={group_id: seq_data},
-                sampling_params=sampling_params,
-                block_tables=None,
-                sps_stage=SpSStage.PROMPT,
-            )
-            seqs.append(seq)
+        for batch_size in range(1, 256):
+            seqs: List[SequenceGroupMetadata] = []
+            for group_id in range(batch_size):
+                seq_len = 1
+                seq_data = SequenceData([0] * seq_len)
+                seq = SequenceGroupMetadata(
+                    request_id=str(group_id),
+                    is_prompt=False,
+                    seq_data={group_id: seq_data},
+                    sampling_params=SamplingParams(),
+                    block_tables=None,
+                    sps_stage=SpSStage.TARGET_DECODE,
+                )
+                seqs.append(seq)
+            self.target_model_runner.profile_run(seqs)
 
-        self.target_model_runner.profile_run(seqs)
-        self.draft_model_runner.profile_run(seqs)
-
+            
 
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
         self.cache_config = cache_config
