@@ -20,8 +20,6 @@ class TooManyBlocks(Exception):
 
 def all_close(a, b):
     return torch.allclose(a, b, rtol=1e-4, atol=1e-3)
-    # return torch.allclose(a, b, rtol=1e-5, atol=1e-5)
-    # return torch.allclose(a, b)
 
 
 # enum original, target, tensor_core
@@ -491,8 +489,8 @@ if __name__ == "__main__":
     parser.add_argument("--version", type=str, choices=["v1", "v2"], default="v1")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--context-len", type=int, default=1024)
-    parser.add_argument("--num-query-heads", type=int, default=64)
-    parser.add_argument("--num-kv-heads", type=int, default=8)
+    parser.add_argument("--num-query-heads", type=int, default=32)
+    parser.add_argument("--num-kv-heads", type=int, default=32)
     parser.add_argument(
         "--head-size", type=int, choices=[64, 80, 96, 112, 128, 256], default=128
     )

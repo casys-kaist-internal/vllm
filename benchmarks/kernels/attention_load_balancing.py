@@ -6,8 +6,10 @@ import torch
 from vllm._C import ops
 from typing import List
 
-NUM_BLOCKS = 8192
+NUM_BLOCKS = 50000
 PARTITION_SIZE = 512
+
+import numpy as np
 
 
 class TooManyBlocks(Exception):
@@ -249,7 +251,7 @@ if __name__ == "__main__":
             print(f"Running with window size: {window_size}")
             target_results = []
             orig_results = []
-            for context_len in range(32, 513, 32):
+            for context_len in range(window_size, 1024, 4):
                 print(f"Running with context length: {context_len}")
                 query_lens = [window_size] * num_seqs
 
@@ -281,55 +283,16 @@ if __name__ == "__main__":
             )
 
             # Draw line plot,
-            x = [r[0] for r in orig_results]
-            y = [r[1] for r in orig_results]
-            plt.plot(
-                x,
-                y,
-                label=f"Naive kernel with Window Size : {window_size}",
-                linestyle="dashed",
-                color=colours[window_size],
-            )
-
-            # Save as image
-
-        # Do reference plot
-        # window_size = 1
-        # results = []
-        # orig_results = []
-        # for context_len in range(32, 512, 32):
-        #     print(f"Running with context length: {context_len}")
-        #     query_lens = [window_size] * num_seqs
-
-        #     context_lens = gen_context_len([context_len] * num_seqs, query_lens)
-
-        #     orig, target = main_runner(
-        #         num_seqs=num_seqs,
-        #         context_lens=context_lens,
-        #         query_lens=query_lens,
-        #         num_query_heads=args.num_query_heads,
-        #         num_kv_heads=args.num_kv_heads,
-        #         head_size=args.head_size,
-        #         block_size=args.block_size,
-        #         use_alibi=args.use_alibi,
-        #         dtype=dtype_to_torch_dtype[args.dtype],
-        #         seed=args.seed,
-        #     )
-        #     results.append((context_len, target))
-        #     orig_results.append((context_len, orig))
-
-        # # Draw line plot,
-        # x = [r[0] for r in results]
-        # y = [r[1] for r in results]
-
-        # # Plot with 2px, dashed line
-        # plt.plot(
-        #     x,
-        #     y,
-        #     label=f"Decoder Original algorithm : {window_size}",
-        #     linestyle="dashed",
-        #     linewidth=2,
-        # )
+            if window_size == 1:
+                x = [r[0] for r in orig_results]
+                y = [r[1] for r in orig_results]
+                plt.plot(
+                    x,
+                    y,
+                    label=f"Naive kernel with Window Size : {window_size}",
+                    linestyle="dashed",
+                    color=colours[window_size],
+                )
 
         ######
         plt.legend()
@@ -340,6 +303,373 @@ if __name__ == "__main__":
         # Y-axis label
         plt.ylabel("Latency (ms)")
 
+        # x : show 0 ~ 2048
+        # y : show 0 ~ 0.4
+        plt.xlim(0, 1024)
+        plt.ylim(0, 1)
+
         plt.savefig(f"attention_kernel_analysis.jpg")
 
-    run_test()
+    @torch.inference_mode()
+    def run_batch_size_analysis():
+
+        import matplotlib.pyplot as plt
+
+        # Set plot size
+        plt.figure(figsize=(10, 10))
+
+        colours = ["b", "g", "r", "c", "m", "y", "k", "orange", "purple", "brown"]
+
+        context_len = 512
+
+        for window_size in range(8, 0, -1):
+            print(f"Running with window size: {window_size}")
+            target_results = []
+            orig_results = []
+            # for context_len in range(query_len, 1024, 4):
+            for num_seqs in range(1, 32, 1):
+                print(f"Running with bs length: {num_seqs}")
+                query_lens = [window_size] * num_seqs
+
+                context_lens = gen_context_len([context_len] * num_seqs, query_lens)
+
+                orig, target = main_runner(
+                    num_seqs=num_seqs,
+                    context_lens=context_lens,
+                    query_lens=query_lens,
+                    num_query_heads=args.num_query_heads,
+                    num_kv_heads=args.num_kv_heads,
+                    head_size=args.head_size,
+                    block_size=args.block_size,
+                    use_alibi=args.use_alibi,
+                    dtype=dtype_to_torch_dtype[args.dtype],
+                    seed=args.seed,
+                )
+                target_results.append((num_seqs, target))
+                orig_results.append((num_seqs, orig))
+
+            # Draw line plot,
+            x = [r[0] for r in target_results]
+            y = [r[1] for r in target_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Modified kernel with Window Size : {window_size}",
+                color=colours[window_size],
+            )
+
+            # Draw line plot,
+            x = [r[0] for r in orig_results]
+            y = [r[1] for r in orig_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Naive kernel with Window Size : {window_size}",
+                linestyle="dashed",
+                color=colours[window_size],
+            )
+
+            ###### Draw plot per window_size
+            plt.legend()
+
+            # X-axis label
+            plt.xlabel("Batch Size")
+
+            # Y-axis label
+            plt.ylabel("Latency (ms)")
+
+            plt.savefig(f"batch_size_analysis_window_{window_size}.jpg")
+            # reset plot
+            plt.clf()
+            print()
+
+    @torch.inference_mode()
+    def run_cl_var_analysis():
+        import matplotlib.pyplot as plt
+
+        # Set plot size
+        plt.figure(figsize=(10, 10))
+
+        colours = ["b", "g", "r", "c", "m", "y", "k", "orange", "purple", "brown"]
+
+        num_seqs = (
+            128  # NOTE: We use large value to get a clear picture of the distribution
+        )
+
+        avg_context_len = 1024
+
+        variances = [i for i in range(4, 1024, 32)]
+        for variance in variances:
+            context_lens = []
+            for _ in range(num_seqs):
+                cl = int(random.gauss(avg_context_len, variance))
+                cl = max(8, cl)
+                cl = min(2048, cl)
+                context_lens.append(cl)
+
+            # Plot and save context-lens
+            plt.hist(context_lens, bins=100)
+            plt.xlabel("Context Length")
+            plt.ylabel("Frequency")
+            plt.xlim(0, 2200)
+            plt.title(f"Context Length Distribution with Variance: {variance}")
+            plt.savefig(f"context_len_dist_variance_{variance}.jpg")
+            plt.clf()
+
+        for window_size in range(8, 0, -1):
+            print(f"Running with window size: {window_size}")
+            target_results = []
+            orig_results = []
+            # for context_len in range(query_len, 1024, 4):
+            for variance in variances:
+                context_lens = []
+                for _ in range(num_seqs):
+                    cl = int(random.gauss(avg_context_len, variance))
+                    cl = max(8, cl)
+                    cl = min(2048, cl)
+                    context_lens.append(cl)
+
+                context_lens = gen_context_len(context_lens, [window_size] * num_seqs)
+
+                print(f"Running var: {variance}")
+                query_lens = [window_size] * num_seqs
+
+                orig, target = main_runner(
+                    num_seqs=num_seqs,
+                    context_lens=context_lens,
+                    query_lens=query_lens,
+                    num_query_heads=args.num_query_heads,
+                    num_kv_heads=args.num_kv_heads,
+                    head_size=args.head_size,
+                    block_size=args.block_size,
+                    use_alibi=args.use_alibi,
+                    dtype=dtype_to_torch_dtype[args.dtype],
+                    seed=args.seed,
+                )
+                target_results.append((variance, target))
+                orig_results.append((variance, orig))
+
+            # Draw line plot,
+            x = [r[0] for r in target_results]
+            y = [r[1] for r in target_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Modified kernel with Window Size : {window_size}",
+                color=colours[window_size],
+            )
+
+            # Draw line plot,
+            x = [r[0] for r in orig_results]
+            y = [r[1] for r in orig_results]
+            plt.plot(
+                x,
+                y,
+                label=f"Naive kernel with Window Size : {window_size}",
+                linestyle="dashed",
+                color=colours[window_size],
+            )
+
+        ###### Draw plot per window_size
+        plt.legend()
+
+        # X-axis label
+        plt.xlabel("Variance")
+
+        # Y-axis label
+        plt.ylabel("Latency (ms)")
+
+        plt.savefig(f"variance_analysis.jpg")
+        # reset plot
+        plt.clf()
+        print()
+
+    @torch.inference_mode()
+    def run_det_exp_bi1_bi2():
+
+        def make_bimodal_dist(
+            mean_1, mean_2, std_1, std_2, ratio, n, min_val=8, max_val=9999999
+        ):
+            c1 = int(n * ratio)
+            c2 = max(int(n * (1 - ratio)), 2)
+            # Make n * ratio normal distribution
+            context_lens = []
+            for _ in range(c1):
+                cl = int(random.gauss(mean_1, std_1))
+                cl = max(min_val, cl)
+                cl = min(max_val, cl)
+                context_lens.append(cl)
+
+            for _ in range(c2):
+                cl = int(random.gauss(mean_2, std_2))
+                cl = max(min_val, cl)
+                cl = min(max_val, cl)
+                context_lens.append(cl)
+            return context_lens
+
+        num_seqs = 256
+        import matplotlib.pyplot as plt
+
+        # Make 4 plots
+        # 1. Deterministic context length
+        # 2. Exponential context length
+        # 3. Bi-modal 1 context length
+        # 4. Bi-modal 2 context length
+
+        # Miniplot for each distribution
+        avg_context_len = 512
+        plt.figure(figsize=(10, 10))
+
+        # Exponential distribution
+        exp_context_lens = []
+        for _ in range(num_seqs):
+            cl = int(np.random.default_rng().exponential(avg_context_len))
+            cl = max(8, cl)
+            cl = min(99999, cl)
+            exp_context_lens.append(cl)
+
+        # Bi-modal 1
+        bi1_context_lens = make_bimodal_dist(
+            mean_1=avg_context_len // 2,
+            mean_2=avg_context_len * 5.5,
+            std_1=avg_context_len // 4,
+            std_2=avg_context_len // 4,
+            ratio=0.9,
+            n=num_seqs,
+        )
+
+        def save_fig(context_lens, title):
+            plt.hist(context_lens, bins=num_seqs)
+            plt.xlabel("Context Length")
+            plt.ylabel("Frequency")
+            plt.xlim(0, 4096)
+            plt.title(title)
+            plt.savefig(f"{title}.jpg")
+            plt.clf()
+
+        save_fig(exp_context_lens, "Exponential Context Length Distribution")
+        save_fig(bi1_context_lens, "Bi-modal 1 Context Length Distribution")
+
+        ##########
+
+        plt.figure(figsize=(10, 10))
+        # 4 subplots
+        fig, axs = plt.subplots(3, 1)
+
+        axes_map = {
+            "deterministic": axs[0],
+            "exponential": axs[1],
+            "bi1": axs[2],
+        }
+
+        colours = ["b", "g", "r", "c", "m", "y", "k", "orange", "purple", "brown"]
+
+        for window_size in [8, 4, 1]:
+            print(f"Running with window size: {window_size}")
+            target_results = {"deterministic": [], "exponential": [], "bi1": []}
+            orig_results = {"deterministic": [], "exponential": [], "bi1": []}
+
+            for avg_context_len in range(8, 1024, 64):
+                query_lens = [window_size] * num_seqs
+
+                # Deterministic
+                deterministic_context_lens = gen_context_len(
+                    [avg_context_len] * num_seqs, query_lens
+                )
+                # Exponential distribution
+                exp_context_lens = []
+                for _ in range(num_seqs):
+                    cl = int(np.random.default_rng().exponential(avg_context_len))
+                    cl = max(8, cl)
+                    cl = min(2048, cl)
+                    exp_context_lens.append(cl)
+
+                exp_context_lens = gen_context_len(exp_context_lens, query_lens)
+
+                # Bi-modal 1
+                bi1_context_lens = make_bimodal_dist(
+                    mean_1=avg_context_len // 2,
+                    mean_2=avg_context_len * 5.5,
+                    std_1=avg_context_len // 4,
+                    std_2=avg_context_len // 4,
+                    ratio=0.9,
+                    n=num_seqs,
+                )
+                bi1_context_lens = gen_context_len(bi1_context_lens, query_lens)
+
+                contexts = {
+                    "deterministic": deterministic_context_lens,
+                    "exponential": exp_context_lens,
+                    "bi1": bi1_context_lens,
+                }
+
+                for dist_name, context_lens in contexts.items():
+                    print(f"Running with context distribution: {dist_name}")
+
+                    orig, target = main_runner(
+                        num_seqs=num_seqs,
+                        context_lens=context_lens,
+                        query_lens=query_lens,
+                        num_query_heads=args.num_query_heads,
+                        num_kv_heads=args.num_kv_heads,
+                        head_size=args.head_size,
+                        block_size=args.block_size,
+                        use_alibi=args.use_alibi,
+                        dtype=dtype_to_torch_dtype[args.dtype],
+                        seed=args.seed,
+                    )
+                    target_results[dist_name].append((avg_context_len, target))
+                    orig_results[dist_name].append((avg_context_len, orig))
+
+            x = [r[0] for r in target_results]
+            y = [r[1] for r in target_results]
+
+            for dist_name, ax in axes_map.items():
+                ax.plot(
+                    x,
+                    y,
+                    label=f"Modified kernel with Window Size : {window_size}",
+                    color=colours[window_size],
+                )
+
+                # Draw line plot,
+                if window_size == 1:
+                    x = [r[0] for r in orig_results]
+                    y = [r[1] for r in orig_results]
+                    plt.plot(
+                        x,
+                        y,
+                        label=f"Naive kernel with Window Size : {window_size}",
+                        linestyle="dashed",
+                        color=colours[window_size],
+                    )
+
+        ######
+        plt.legend()
+
+        # X-axis label
+        plt.xlabel("Context Length")
+
+        # Y-axis label
+        plt.ylabel("Latency (ms)")
+
+        # x : show 0 ~ 2048
+        # y : show 0 ~ 0.4
+
+        # Name subplots
+        for dist_name, ax in axes_map.items():
+            ax.set_title(f"{dist_name.capitalize()} Context Length Distribution")
+            ax.set_xlabel("Context Length")
+            ax.set_ylabel("Latency (ms)")
+            ax.legend()
+
+        plt.savefig(f"context_with_diff_distributions.jpg")
+
+    # run_test()
+    # run_batch_size_analysis()
+
+    # run_test()
+
+    # run_cl_var_analysis()
+
+    run_det_exp_bi1_bi2()
