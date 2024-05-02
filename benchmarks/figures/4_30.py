@@ -183,7 +183,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -214,7 +214,7 @@ def load_apps(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -227,7 +227,7 @@ def warmup(llm):
         top_p=1.0,
         use_beam_search=False,
         ignore_eos=True,
-        max_tokens=128,
+        max_tokens=48,
     )
     llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                  sampling_params=dummy_sampling_params,
@@ -261,9 +261,10 @@ def main(args: argparse.Namespace):
             draft_size=args.draft_size,
             tile_size=args.tile_size,
             use_dynamic_draft_size=args.dynamic_draft,
-            use_tile_size_constraint=args.use_tile_size_constraint,
+            use_tile_size_constraint=args.use_tile_size,
             use_lazy_draft_kv_cache=True,
             use_target_attention=args.use_target_attention,
+            target_draft_latency_ratio=args.target_draft_latency_ratio,
             tokenizer=args.tokenizer,
             quantization=args.quantization,
             tensor_parallel_size=args.tensor_parallel_size,
@@ -297,21 +298,23 @@ def main(args: argparse.Namespace):
     # throughputs = []
     # output_lens = []
 
-    for _ in range(args.num_iters):
+    for i in range(args.num_iters):
         # sampled_requests = random.sample(requests, args.batch_size)
-        # sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
-        sampled_requests = requests[args.index * _:args.index * (_ + 1)]
+        sampled_requests = requests[args.batch_size *args.index:args.batch_size * (args.index + 1)]
+        # sampled_requests = requests[args.index:args.index + 1]
+
+        # print(sampled_requests)
 
         for prompt, _, output_len in sampled_requests:
             # print(prompt)
-            print(output_len)
             sampling_params = SamplingParams(
                 n=1,
                 temperature=args.temperature,
+                frequency_penalty=args.frequency_penalty,
                 top_p=1.0,
                 use_beam_search=False,
                 ignore_eos=True,
-                max_tokens=output_len,
+                max_tokens=1024,
             )
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(
@@ -326,7 +329,18 @@ def main(args: argparse.Namespace):
         torch.cuda.synchronize()
         end_time = time.monotonic()
 
-        print(f"latency: {end_time - start_time:.3f}")
+        # print(outputs)
+        total_tokens = 0
+        output_tokens = 0
+        for idx, output in enumerate(outputs):
+            output_tokens += len(output.outputs[0].token_ids)
+            total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
+            # print("-" * 80)
+            # print(f"{idx} Prompt: {sampled_requests[idx][0]}")
+            # print(f"{idx} Output: {output.outputs[0].text}")
+
+        print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
+        # print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")
 
@@ -352,16 +366,28 @@ if __name__ == '__main__':
                         choices=["gsm8k", "humaneval",
                                  "alpaca", "mt-bench", "sharegpt", "apps"],
                         help="Dataset to use.")
-    parser.add_argument('--target-model', type=str,
-                        default='facebook/opt-6.7b')
-    parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
+    parser.add_argument('--target-model', type=str, 
+                        default='EleutherAI/pythia-12b')
+                        # default='facebook/opt-6.7b')
+                        # default='bigscience/bloom-7b1')
+                        # default='daryl149/llama-2-7b-chat-hf')
+                        # default='facebook/opt-6.7b')
+    parser.add_argument('--draft-model', type=str, 
+                        default='EleutherAI/pythia-410m')
+                        # default='bigscience/bloomz-560m')
+                        # default='Felladrin/Llama-68M-Chat-v1')
+                        # default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
     parser.add_argument('--tile-size', type=int, default=64)
     parser.add_argument('--dynamic-draft', action='store_true')
-    parser.add_argument('--use-tile-size-constraint', action='store_true')
+    parser.add_argument('--use-tile-size', action='store_true')
     parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--use-target-attention',
                         action='store_true')
+    parser.add_argument('--target-draft-latency-ratio', 
+                        '-c',
+                        type=float, default=0.2)
+    parser.add_argument('--frequency-penalty', type=float, default=0.0)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',
@@ -372,7 +398,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=0.7,
+                        default=0.5,
                         help='Sampling temperature.')
     parser.add_argument('--n',
                         type=int,

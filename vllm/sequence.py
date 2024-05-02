@@ -368,11 +368,11 @@ class Sequence:
     # Calculates the Exponential Moving Average (EMA) of beta values
     def get_beta_ema(self) -> float:
         # Ensure there is at least one beta to calculate EMA
-        if len(self.beta_list) == 0:
-            return 0.5  # Return a default initial beta value if list is empty
+        if len(self.beta_list) < 3:
+            return 0.1  # Return a default initial beta value if list is empty
 
         # Define the span for EMA calculation
-        span = 10
+        span = 50
         alpha = 2 / (span + 1)  # Calculate the smoothing factor
 
         # Initialize EMA; if no previous EMAs, start with the first beta value
@@ -386,10 +386,13 @@ class Sequence:
         # Update the last calculated index
         self.last_calculated_index = len(self.beta_list) - 1
 
-        # return self.last_ema
+        return self.last_ema
+        # if self.last_ema == 1:
+        #     # Avoid division by Zero 
+        #     self.last_ema = 0.9999999999999999
     
         # This is for E(# of expected tokens)
-        return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
+        # return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
         
     def append_draft_token_id(
         self,
@@ -422,7 +425,7 @@ class Sequence:
         reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        print(accept_cnt, self.draft_size)
+        # print(accept_cnt, self.draft_size)
         # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
         # Need to free the blocks that are not used
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
@@ -436,10 +439,11 @@ class Sequence:
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-
+            if beta_list[-1] < 0.5:
+                beta_list.append(0)
         # else:  # all accept bonus token
-        #     accept_probs.append(None)
-        #     beta_list.append(None)
+        #     accept_probs.append(1)
+        #     beta_list.append(1)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
