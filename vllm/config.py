@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, Dict
 import os
 
 import torch
@@ -486,6 +486,11 @@ class SpSConfig:
         # self.target_draft_latency_ratio = 0.1
         self.target_draft_latency_ratio = target_draft_latency_ratio
         self.start_max_draft_size = 7
+
+        # Profiling draft and target latencies 
+        self.draft_latencies: Dict[int, float] = {}
+        self.target_latencies: Dict[int, float] = {}
+        self.profile_finish = False
 
         # If use_dynamic_draft_size is False, use_tile_size_constraint should also be False
         if not self.use_dynamic_draft_size and self.use_tile_size_constraint:

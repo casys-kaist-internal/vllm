@@ -1,8 +1,10 @@
+import os
 from typing import List, Optional, Union
 
 import torch
 from torch.cuda import nvtx
 import time
+import random
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -211,10 +213,43 @@ class SpSLLM:
         return outputs
     
     def _run_profile(self) -> None:
-        batch_size_list = range(1, 10)
+        # Get current GPU device name 
+        device_name = torch.cuda.get_device_name()
+
+        target_model = self.llm_engine.target_model_config.model.split("/")[-1]
+        draft_model = self.llm_engine.draft_model_config.model.split("/")[-1]
+        use_target_attention = self.llm_engine.sps_config.use_target_attention
+
+        if use_target_attention:
+            file_name = f"profile/{device_name}_{target_model}_{draft_model}_target_attention.csv"
+        else:
+            file_name = f"profile/{device_name}_{target_model}_{draft_model}.csv"
+
+        # If profile directory does not exist then create it
+        if not os.path.exists("profile"):
+            os.mkdir("profile")
+
+        # If file exists then read the csv file and save it to dictionary 
+        try:
+            with open(file_name, 'r') as f:
+                lines = f.readlines()
+                for line in lines[1:]:
+                    batch_size, draft_size, draft_latency, target_latency = line.split(",")
+                    key = str(batch_size) + "_" + str(draft_size)
+                    self.llm_engine.sps_config.draft_latencies[str(batch_size)] = float(draft_latency)
+                    self.llm_engine.sps_config.target_latencies[key] = float(target_latency)
+                
+                self.llm_engine.sps_config.profile_finish = True
+                print("Profile file exists. Skipping profiling")
+                return
+        except: 
+            pass
+
+        draft_size_save = self.llm_engine.sps_config.draft_size
+
         # Initialize tqdm.
-        num_requests = len(batch_size_list)
-        pbar = tqdm(total=num_requests, desc="Profiling latencies")
+        profile_max_batch_size = 64
+        pbar = tqdm(total=profile_max_batch_size, desc="Profiling latencies")
 
         sampling_params = SamplingParams(
             n=1,
@@ -225,52 +260,67 @@ class SpSLLM:
             max_tokens=128,
         )
 
-        dummy_prompt_token_ids = [0] * 32
 
-        for batch_size in range(1, self.llm_engine.scheduler_config.max_num_seqs + 1):
-            for _ in range(batch_size):
-                self._add_request(None, sampling_params, dummy_prompt_token_ids)
-
-            sps_stage = None
-            # Warmup
-            while sps_stage is not SpSStage.TARGET_DECODE:
-                _, sps_stage = self.llm_engine.step()
-        
-            draft_latencies = []
-            target_latencies = []
-
-            iteration = 10
-            for _ in range(iteration):
-                torch.cuda.synchronize()
-                draft_start = time.monotonic()
-                _, sps_stage = self.llm_engine.step()
-                torch.cuda.synchronize()
-                draft_end = time.monotonic()
-                draft_latencies.append(draft_end - draft_start)
-                assert sps_stage is SpSStage.DRAFT_DECODE
-
-                torch.cuda.synchronize()
-                target_start = time.monotonic()
-                _, sps_stage = self.llm_engine.step()
-                torch.cuda.synchronize()
-                target_end = time.monotonic()
-                target_latencies.append(target_end - target_start)
-                assert sps_stage is SpSStage.TARGET_DECODE
-
-            self.llm_engine.abort_all_requests()
-
-            self.llm_engine.draft_latencies[batch_size] = (sum(draft_latencies) / len(draft_latencies)) / self.llm_engine.sps_config.draft_size
-            self.llm_engine.target_latencies[batch_size] = sum(target_latencies) / len(target_latencies)
+        for batch_size in range(1, profile_max_batch_size + 1):
             pbar.update(1)
 
-            print("-"*80)
-            print(f"Batch size: {batch_size}")
-            print(f"Draft latency: {self.llm_engine.draft_latencies[batch_size]}")
-            print(f"Target latency: {self.llm_engine.target_latencies[batch_size]}")
+            # We also profile draft_size = 0 which is equivalent to the target model auto regressive inferencing
+            for draft_size in range(8):
+                self.llm_engine.sps_config.draft_size = draft_size
 
-        print(self.llm_engine.draft_latencies)
-        print(self.llm_engine.target_latencies)
+                for _ in range(batch_size):
+                    self._add_request(None, sampling_params, [random.randint(1, 1000)] * 32)
 
+                sps_stage = None
+                # Warmup
+                warmup_iteration = 0
+                while warmup_iteration < 3:
+                    _, sps_stage = self.llm_engine.step()
+
+                    if sps_stage is SpSStage.TARGET_DECODE:
+                        warmup_iteration += 1
+            
+                draft_latencies = []
+                target_latencies = []
+
+                iteration = 10
+                for _ in range(iteration):
+                    torch.cuda.synchronize()
+                    start = time.monotonic()
+                    _, sps_stage = self.llm_engine.step()
+                    torch.cuda.synchronize()
+                    end = time.monotonic()
+                    latency = end - start
+
+                    if sps_stage is SpSStage.DRAFT_DECODE:
+                        draft_latencies.append(latency)
+                    elif sps_stage is SpSStage.TARGET_DECODE:
+                        target_latencies.append(latency)
+                    else:
+                        raise AssertionError("Prompt phase should not be included in profiling")
+
+                self.llm_engine.abort_all_requests()
+
+                key = str(batch_size) + "_" + str(draft_size)
+
+                if len(draft_latencies) > 0:
+                    self.llm_engine.sps_config.draft_latencies[str(batch_size)] = (sum(draft_latencies) / len(draft_latencies)) / self.llm_engine.sps_config.draft_size
+                
+                if len(target_latencies) > 0:
+                    self.llm_engine.sps_config.target_latencies[key] = sum(target_latencies) / len(target_latencies)
+
+        self.llm_engine.sps_config.profile_finish = True
+        # Write the latencies to a csv format file 
+        with open(file_name, 'w') as f:
+            f.write("batch_size,draft_size,draft_latency,target_latency\n")
+            for key in self.llm_engine.sps_config.target_latencies:
+                batch_size, draft_size = key.split("_")
+                if draft_size ==  "0":
+                    f.write(f"{batch_size},{draft_size},{0},{self.llm_engine.sps_config.target_latencies[key]:.3f}\n")
+                else:
+                    f.write(f"{batch_size},{draft_size},{self.llm_engine.sps_config.draft_latencies[batch_size]:.3f},{self.llm_engine.sps_config.target_latencies[key]:.3f}\n")
+
+        self.llm_engine.sps_config.draft_size = draft_size_save
 
     def _run_engine_benchmark(self) -> List[RequestOutput]:
         start = None

@@ -126,10 +126,6 @@ class SpSLLMEngine:
         # Create the scheduler.
         self.scheduler = SpSScheduler(
             scheduler_config, cache_config, sps_config)
-        
-        # Profiling draft and target latencies 
-        self.draft_latencies: Dict[int, float] = {}
-        self.target_latencies: Dict[int, float] = {}
 
         # Logging.
         self.last_logging_time = 0.0
@@ -459,8 +455,12 @@ class SpSLLMEngine:
             self.scheduler.free_finished_seq_groups()
 
         # Swap the draft target queues.
-        if sps_stage != SpSStage.PROMPT:
-            self.scheduler.swap_draft_target_queues()
+        if sps_stage == SpSStage.DRAFT_DECODE:
+            self.scheduler.move_to_target_queue()
+        elif sps_stage == SpSStage.TARGET_DECODE:
+            self.scheduler.move_to_draft_queue()
+
+        # self.scheduler.swap_draft_target_queues()
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
