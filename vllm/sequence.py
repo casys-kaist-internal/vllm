@@ -7,6 +7,10 @@ import torch
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
 
+import numpy as np
+import scipy.stats
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
 
@@ -143,6 +147,8 @@ class SequenceData:
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_logprobs[i])
+        
+        # print("!!", accept_cnt, self.draft_token_ids)
 
         self.draft_cache_cnt = self.get_len() - 1
 
@@ -220,9 +226,16 @@ class Sequence:
         self.reject_pos: List[int] = []
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
+        self.last_ema = None  # This will store the last calculated EMA value
+        self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
+
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
+
+        self.correlation_x = []
+        self.correlation_y = []
+        self.correlation_z = []
 
         # Can change every iteration if use_dynamic_draft_size is True
         self.draft_size = draft_size
@@ -352,14 +365,34 @@ class Sequence:
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
     
-    def get_beta(self) -> float:
-        # average the last window size betas 
-        # Note: this is just a temporary solution. 
-        window_size = 10
-        if len(self.beta_list) < window_size:
-            return sum(self.beta_list) / len(self.beta_list)
-        else:
-            return sum(self.beta_list[-window_size:]) / window_size
+    # Calculates the Exponential Moving Average (EMA) of beta values
+    def get_beta_ema(self) -> float:
+        # Ensure there is at least one beta to calculate EMA
+        if len(self.beta_list) < 3:
+            return 1  # Return a default initial beta value if list is empty
+
+        # Define the span for EMA calculation
+        span = 25
+        alpha = 2 / (span + 1)  # Calculate the smoothing factor
+
+        # Initialize EMA; if no previous EMAs, start with the first beta value
+        if self.last_ema is None:
+            self.last_ema = self.beta_list[0]
+
+         # Update EMA only for new beta values added since last calculation
+        for beta in self.beta_list[self.last_calculated_index+1:]:
+            self.last_ema = alpha * beta + (1 - alpha) * self.last_ema
+
+        # Update the last calculated index
+        self.last_calculated_index = len(self.beta_list) - 1
+
+        return self.last_ema
+        # if self.last_ema == 1:
+        #     # Avoid division by Zero 
+        #     self.last_ema = 0.9999999999999999
+    
+        # # This is for E(# of expected tokens)
+        # return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
         
     def append_draft_token_id(
         self,
@@ -372,6 +405,17 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
+    def custom_score(self, y_true, y_pred):
+        # Convert predictions to nearest integers
+        nearest_int_pred = np.round(y_pred)
+        
+        # Calculate the absolute difference
+        abs_errors = np.abs(y_true - nearest_int_pred)
+        
+        # Mean Absolute Error based on integer predictions
+        mae = np.mean(abs_errors)
+        return mae
+
     def accept_draft_tokens(self,
                             accept_cnt: int,
                             accept_probs: List[float],
@@ -381,18 +425,24 @@ class Sequence:
         reject_cnt = self.draft_size - accept_cnt
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-
+        # print(accept_cnt, self.draft_size)
         # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
         # Need to free the blocks that are not used
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
+        # self.correlation_x.append(accept_cnt)
+        # ema = self.get_beta()
+        # print("accept", accept_cnt, ema)
+        # self.correlation_y.append(self.draft_size)
+        # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
 
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-        else:  # all accept bonus token
-            accept_probs.append(None)
-            beta_list.append(None)
+
+        # else:  # all accept bonus token
+        #     accept_probs.append(1)
+        #     beta_list.append(1)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)

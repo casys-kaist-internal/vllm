@@ -448,6 +448,7 @@ class SpSLLMEngine:
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
 
         # Update the scheduled sequence groups with the model outputs.
+        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         if sps_stage != SpSStage.DRAFT_DECODE:
             for seq_group, outputs in zip(scheduled_seq_groups, output):
                 self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
@@ -470,7 +471,7 @@ class SpSLLMEngine:
             self._log_system_stats(True if sps_stage == SpSStage.PROMPT else False,
                                    scheduler_outputs.num_batched_tokens)
         return request_outputs
-
+    
     def step(self) -> List[RequestOutput]:
         """ Performs one decoding iteration: 
             - Target prompt + Draft prompt 
@@ -482,7 +483,6 @@ class SpSLLMEngine:
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
-
         if sps_stage == SpSStage.PROMPT:
             output = self._run_workers(
                 "execute_target_model",
