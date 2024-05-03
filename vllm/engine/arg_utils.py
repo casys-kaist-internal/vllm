@@ -254,6 +254,7 @@ class SpSEngineArgs:
     use_tile_size_constraint: bool = False
     use_target_attention: bool = False
     use_lazy_draft_kv_cache: bool = True
+    target_draft_latency_ratio: float = 0.2
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -499,7 +500,8 @@ class SpSEngineArgs:
                                self.use_dynamic_draft_size,
                                self.use_tile_size_constraint,
                                self.use_target_attention,
-                               self.use_lazy_draft_kv_cache)
+                               self.use_lazy_draft_kv_cache,
+                               self.target_draft_latency_ratio)
 
         # If the model is Pythia, the target vocab and draft vocab is actually the same content
         # with different length with 'None' token padded. So, we skip assertion
@@ -509,6 +511,8 @@ class SpSEngineArgs:
             # Assertions for target model and draft model and print vocab size if fail
             assert target_model_config.get_vocab_size() == draft_model_config.get_vocab_size(
             ), f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}"
+        # else:
+        #     print(f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}")
 
         assert (target_model_config.get_sliding_window()
                 == draft_model_config.get_sliding_window())

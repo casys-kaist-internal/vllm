@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, Dict
 import os
 
 import torch
@@ -474,14 +474,27 @@ class SpSConfig:
                  use_tile_size_constraint: bool, 
                  use_target_attention: bool,
                  use_lazy_draft_kv_cache: bool,
+                 target_draft_latency_ratio: float,
                 ) -> None:
         self.draft_size = draft_size
         self.use_dynamic_draft_size = use_dynamic_draft_size
         self.use_tile_size_constraint = use_tile_size_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
-        self.target_draft_latency_ratio = 0.1
-        self.start_max_draft_size = 8
+        # self.target_draft_latency_ratio = 0.25
+        # self.target_draft_latency_ratio = 0.4
+        # self.target_draft_latency_ratio = 0.1
+        self.target_draft_latency_ratio = target_draft_latency_ratio
+        self.start_max_draft_size = 7
+
+        # Profiling draft and target latencies 
+        self.draft_latencies: Dict[int, float] = {}
+        self.target_latencies: Dict[int, float] = {}
+        self.profile_finish = False
+
+        # If use_dynamic_draft_size is False, use_tile_size_constraint should also be False
+        if not self.use_dynamic_draft_size and self.use_tile_size_constraint:
+            raise AssertionError("use_tile_size_constraint should be False if use_dynamic_draft_size is False") 
 
         if self.use_tile_size_constraint:
             self.tile_size_constraint = tile_size

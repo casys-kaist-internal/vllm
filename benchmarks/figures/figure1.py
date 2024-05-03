@@ -13,7 +13,7 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/home/noppanat/workspace/models'
+download_dir = '/home/sjchoi/workspace/models'
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -43,7 +43,7 @@ def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -75,7 +75,7 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -107,7 +107,7 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
@@ -145,13 +145,13 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # random sort dataset
-    random.shuffle(filtered_dataset)
+    # random.shuffle(filtered_dataset)
 
     return filtered_dataset
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -228,6 +228,10 @@ def main(args: argparse.Namespace):
             target_model=args.target_model,
             draft_model=args.draft_model,
             draft_size=args.draft_size,
+            tile_size=args.tile_size,
+            use_dynamic_draft_size=args.dynamic_draft,
+            use_tile_size_constraint=args.use_tile_size_constraint,
+            use_lazy_draft_kv_cache=True,
             use_target_attention=args.use_target_attention,
             tokenizer=args.tokenizer,
             quantization=args.quantization,
@@ -254,16 +258,21 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     # Warmup
-    warmup(llm)
+    # warmup(llm)
 
     latencies = []
     throughputs = []
     output_lens = []
 
     for _ in range(args.num_iters):
-        sampled_requests = random.sample(requests, args.batch_size)
+        # sampled_requests = random.sample(requests, args.batch_size)
+        
+        sampled_requests = requests[args.batch_size * _:args.batch_size * (_ + 1)]
+        # sampled_requests = requests[args.index * _:args.index * (_ + 1)]
 
         for prompt, _, output_len in sampled_requests:
+            # print(prompt)
+            # print(output_len)
             sampling_params = SamplingParams(
                 n=1,
                 temperature=args.temperature,
@@ -297,6 +306,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
+    parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--engine", type=str, choices=["base", "sps"],
                         default="base")
     parser.add_argument("--dataset", type=str, default="gsm8k",
@@ -306,7 +316,11 @@ if __name__ == '__main__':
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
-    parser.add_argument('--draft-size', type=int, default=4)
+    parser.add_argument('--draft-size', type=int, default=7)
+    parser.add_argument('--tile-size', type=int, default=64)
+    parser.add_argument('--dynamic-draft', action='store_true')
+    parser.add_argument('--use-tile-size-constraint', action='store_true')
+    parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--use-target-attention',
                         action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
@@ -319,7 +333,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=0,
+                        default=0.5,
                         help='Sampling temperature.')
     parser.add_argument('--n',
                         type=int,
