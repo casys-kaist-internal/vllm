@@ -369,10 +369,10 @@ class Sequence:
     def get_beta_ema(self) -> float:
         # Ensure there is at least one beta to calculate EMA
         if len(self.beta_list) < 3:
-            return 0.1  # Return a default initial beta value if list is empty
+            return 1  # Return a default initial beta value if list is empty
 
         # Define the span for EMA calculation
-        span = 50
+        span = 25
         alpha = 2 / (span + 1)  # Calculate the smoothing factor
 
         # Initialize EMA; if no previous EMAs, start with the first beta value
@@ -391,7 +391,7 @@ class Sequence:
         #     # Avoid division by Zero 
         #     self.last_ema = 0.9999999999999999
     
-        # This is for E(# of expected tokens)
+        # # This is for E(# of expected tokens)
         # return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
         
     def append_draft_token_id(
@@ -433,14 +433,13 @@ class Sequence:
         # self.correlation_x.append(accept_cnt)
         # ema = self.get_beta()
         # print("accept", accept_cnt, ema)
-        # self.correlation_y.append(ema)
+        # self.correlation_y.append(self.draft_size)
         # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
 
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-            if beta_list[-1] < 0.5:
-                beta_list.append(0)
+
         # else:  # all accept bonus token
         #     accept_probs.append(1)
         #     beta_list.append(1)

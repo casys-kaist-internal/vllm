@@ -91,7 +91,6 @@ class SpSScheduler:
         self.need_to_run_draft: List[SequenceGroup] = []
         self.need_to_run_target: List[SequenceGroup] = []
 
-
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
@@ -144,10 +143,20 @@ class SpSScheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
 
-    def swap_draft_target_queues(self) -> None:
-        # One queue should be empty.
-        assert not self.need_to_run_draft or not self.need_to_run_target
-        self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
+    # Move the sequence group from the draft queue to the target queue.
+    def move_to_target_queue(self) -> None:
+        self.need_to_run_target.extend(self.need_to_run_draft)
+        self.need_to_run_draft = []
+
+    # Move the sequence group from the target queue to the draft queue.
+    def move_to_draft_queue(self) -> None:
+        self.need_to_run_draft.extend(self.need_to_run_target)
+        self.need_to_run_target = []
+    
+    # def swap_draft_target_queues(self) -> None:
+    #     # One queue should be empty.
+    #     assert not self.need_to_run_draft or not self.need_to_run_target
+    #     self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
 
     def _multi_step_schedule(self) -> SpSSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -250,7 +259,7 @@ class SpSScheduler:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
             # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
-            if self.sps_config.use_dynamic_draft_size:
+            if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
                 if self.sps_config.use_tile_size_constraint:
                     find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
                 else:
@@ -271,14 +280,17 @@ class SpSScheduler:
             while self.need_to_run_draft:
                 seq_group = self.need_to_run_draft.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-
-                # Simplify preemption logic
-                if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
-                    raise AssertionError("Draft preemption is not supported.")
+                if seq.draft_size > 0:
+                    # Simplify preemption logic
+                    if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
+                        raise AssertionError("Draft preemption is not supported.")
+                    else:
+                        # Append new slots to the sequence group. 
+                        self._append_slots(seq_group, seq.draft_size, blocks_to_copy)
+                        need_to_run_draft.append(seq_group)
                 else:
-                    # Append new slots to the sequence group. 
-                    self._append_slots(seq_group, seq.draft_size, blocks_to_copy)
-                    need_to_run_draft.append(seq_group)
+                    # Since the draft size is 0, we queue it to target queue
+                    self.need_to_run_target.append(seq_group)
             self.need_to_run_draft = need_to_run_draft
 
             if self.need_to_run_draft:

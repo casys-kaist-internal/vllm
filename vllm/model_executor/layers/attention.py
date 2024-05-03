@@ -354,10 +354,10 @@ def _paged_attention(
                 input_metadata.max_context_len,
                 alibi_slopes,
             )
-    if torch.isnan(tmp_output).any():
-        raise RuntimeError("NaN detected in PagedAttention tmp_output.")
+    # if torch.isnan(tmp_output).any():
+    #     raise RuntimeError("NaN detected in PagedAttention tmp_output.")
     
-    if torch.isnan(output).any():
-        raise RuntimeError("NaN detected in PagedAttention output.")
+    # if torch.isnan(output).any():
+    #     raise RuntimeError("NaN detected in PagedAttention output.")
 
     return output

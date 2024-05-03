@@ -296,7 +296,6 @@ def main(args: argparse.Namespace):
 
     # Profile 
     llm._run_profile()
-    sys.exit()
 
     # latencies = []
     # throughputs = []
@@ -311,15 +310,27 @@ def main(args: argparse.Namespace):
 
         for prompt, _, output_len in sampled_requests:
             # print(prompt)
-            sampling_params = SamplingParams(
-                n=1,
-                temperature=args.temperature,
-                frequency_penalty=args.frequency_penalty,
-                top_p=1.0,
-                use_beam_search=False,
-                ignore_eos=True,
-                max_tokens=1024,
-            )
+
+            if args.random_temp:
+                sampling_params = SamplingParams(
+                    n=1,
+                    temperature=random.uniform(0.0, 1.0),
+                    frequency_penalty=args.frequency_penalty,
+                    top_p=1.0,
+                    use_beam_search=False,
+                    ignore_eos=True,
+                    max_tokens=1024,
+                )
+            else:
+                sampling_params = SamplingParams(
+                    n=1,
+                    temperature=args.temperature,
+                    frequency_penalty=args.frequency_penalty,
+                    top_p=1.0,
+                    use_beam_search=False,
+                    ignore_eos=True,
+                    max_tokens=1024,
+                )
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(
                 prompt=prompt,
@@ -404,6 +415,7 @@ if __name__ == '__main__':
                         type=float,
                         default=0.5,
                         help='Sampling temperature.')
+    parser.add_argument('--random-temp', action='store_true')
     parser.add_argument('--n',
                         type=int,
                         default=1,

@@ -3,17 +3,18 @@ from vllm.config import SpSConfig
 from vllm.sequence import (SequenceGroup, SequenceStatus)
 import statistics
 
-def objective(gammas, betas, C):
+def objective(gammas, betas, C, delta):
     max_gamma = max(gammas)
-    assert max_gamma > 0
+    assert max_gamma >= 0
 
     sum_terms = 0
     for gamma, beta in zip(gammas, betas):
-        assert beta != 1
+        if beta == 1:
+            beta = 0.9999999999999999
         term = (1 - beta**(gamma + 1)) / (1 - beta)
         sum_terms += term
 
-    objective_value = sum_terms / (C * max_gamma + 1)
+    objective_value = sum_terms / (C * max_gamma + delta)
     return objective_value
 
 def compute_value(beta, k):
@@ -169,11 +170,9 @@ def find_optimal_draft_size_with_tile_constraint(seq_group_list: List[SequenceGr
 def find_optimal_draft_size_without_tile_constraint(seq_group_list: List[SequenceGroup],
                                                     sps_config: SpSConfig):
     """ Find the optimal draft size without tile constraint. """
-    C = sps_config.target_draft_latency_ratio
+    batch_size = len(seq_group_list)
     start_max_draft_size = sps_config.start_max_draft_size
     betas = []
-
-    # print("C", C)
 
     for seq_group in seq_group_list:
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
@@ -183,9 +182,18 @@ def find_optimal_draft_size_without_tile_constraint(seq_group_list: List[Sequenc
     result = None
     search_by_increasing = False
 
+    draft_latency = sps_config.draft_latencies[str(batch_size)]
+    base_target_latency = sps_config.target_latencies[str(batch_size) + '_0']
+    C = draft_latency / base_target_latency
     # Decrease max_gamma to find the optimal point
     for max_draft_size in range(start_max_draft_size, 0, -1):
-        current_value = objective([max_draft_size] * len(betas), betas, C)
+        target_latency = sps_config.target_latencies[str(batch_size) + '_'+ str(max_draft_size)]
+        delta = target_latency / base_target_latency
+
+        # print("C", C)
+        # print("delta", delta)
+ 
+        current_value = objective([max_draft_size] * len(betas), betas, C, delta)
         if current_value > max_value:
             max_value = current_value
             result = [max_draft_size] * len(betas)
@@ -211,7 +219,8 @@ def find_optimal_draft_size_without_tile_constraint(seq_group_list: List[Sequenc
 
     assert result is not None
 
-    # print(result[0])
+    # print(result[0], betas)
+
     # Update draft size for each sequence group
     for i, seq_group in enumerate(seq_group_list):
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
