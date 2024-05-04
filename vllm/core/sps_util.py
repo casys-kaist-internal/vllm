@@ -3,6 +3,16 @@ from vllm.config import SpSConfig
 from vllm.sequence import (SequenceGroup, SequenceStatus)
 import statistics
 
+# 58.97 x - 96.03 x + 49.74 x - 6.746 x + 0.8232 
+def polynomial_fit(beta):
+    a = 58.97
+    b = -96.03
+    c = 49.74
+    d = -6.746
+    e = 0.8232
+    result = a * beta**4 + b * beta**3 + c * beta**2 + d * beta + e
+    return round(result)
+
 def objective(gammas, betas, C, delta):
     max_gamma = max(gammas)
     assert max_gamma >= 0
@@ -11,9 +21,13 @@ def objective(gammas, betas, C, delta):
     for gamma, beta in zip(gammas, betas):
         if beta == 1:
             beta = 0.9999999999999999
-        term = (1 - beta**(gamma + 1)) / (1 - beta)
+        # term = (1 - beta**(gamma + 1)) / (1 - beta)
+        expected_accept_cnt = polynomial_fit(beta)
+        term = min(gamma, expected_accept_cnt)
+        if gamma <= expected_accept_cnt:
+            term += 1
         sum_terms += term
-
+        
     objective_value = sum_terms / (C * max_gamma + delta)
     return objective_value
 
