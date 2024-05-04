@@ -298,16 +298,15 @@ def main(args: argparse.Namespace):
     llm._run_profile()
 
     # latencies = []
-    # throughputs = []
+    throughputs = []
     # output_lens = []
-
-    for i in range(args.num_iters):
+        
+    for i in range(1, 10):
         # sampled_requests = random.sample(requests, args.batch_size)
-        sampled_requests = requests[args.batch_size *args.index:args.batch_size * (args.index + 1)]
+        sampled_requests = requests[args.batch_size *args.num_iters:args.batch_size * (args.num_iters + 1)]
         # sampled_requests = requests[args.index:args.index + 1]
 
         # print(sampled_requests)
-
         for prompt, _, output_len in sampled_requests:
             # print(prompt)
 
@@ -319,7 +318,7 @@ def main(args: argparse.Namespace):
                     top_p=1.0,
                     use_beam_search=False,
                     ignore_eos=True,
-                    max_tokens=1024,
+                    max_tokens=512,
                 )
             else:
                 sampling_params = SamplingParams(
@@ -329,7 +328,7 @@ def main(args: argparse.Namespace):
                     top_p=1.0,
                     use_beam_search=False,
                     ignore_eos=True,
-                    max_tokens=1024,
+                    max_tokens=512,
                 )
             # FIXME(woosuk): Do not use internal method.
             llm._add_request(
@@ -353,7 +352,7 @@ def main(args: argparse.Namespace):
             # print("-" * 80)
             # print(f"{idx} Prompt: {sampled_requests[idx][0]}")
             # print(f"{idx} Output: {output.outputs[0].text}")
-
+        throughputs.append(total_tokens / (end_time - start_time))
         print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
         # print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
@@ -365,6 +364,8 @@ def main(args: argparse.Namespace):
     #     latencies.append(latency)
     #     throughputs.append(throughput)
     #     output_lens.append(np.mean(output_len))
+
+    print("throughput: ", np.mean(throughputs))
 
     # print(
     #     f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
