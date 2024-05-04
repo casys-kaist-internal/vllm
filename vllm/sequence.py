@@ -148,8 +148,6 @@ class SequenceData:
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_logprobs[i])
         
-        # print("!!", accept_cnt, self.draft_token_ids)
-
         self.draft_cache_cnt = self.get_len() - 1
 
         self.draft_token_ids.clear()
@@ -164,6 +162,13 @@ class SequenceData:
 
     def get_draft_probs(self) -> List[torch.Tensor]:
         return self.draft_probs
+
+    def get_draft_prob_for_tokens(self) -> List[float]:
+        result = []
+        for i, draft_token_id in enumerate(self.draft_token_ids):
+            result.append(self.draft_probs[i][draft_token_id].item())
+
+        return result
 
     def get_last_draft_token_id(self) -> int:
         if len(self.draft_token_ids) == 0:
@@ -369,11 +374,10 @@ class Sequence:
     def get_beta_ema(self) -> float:
         # Ensure there is at least one beta to calculate EMA
         if len(self.beta_list) < 3:
-            return 1  # Return a default initial beta value if list is empty
+            return 0.5  # Return a default initial beta value if list is empty
 
         # Define the span for EMA calculation
-        span = 25
-        alpha = 2 / (span + 1)  # Calculate the smoothing factor
+        decay = 0.5
 
         # Initialize EMA; if no previous EMAs, start with the first beta value
         if self.last_ema is None:
@@ -381,7 +385,7 @@ class Sequence:
 
          # Update EMA only for new beta values added since last calculation
         for beta in self.beta_list[self.last_calculated_index+1:]:
-            self.last_ema = alpha * beta + (1 - alpha) * self.last_ema
+            self.last_ema = decay * beta + (1 - decay) * self.last_ema
 
         # Update the last calculated index
         self.last_calculated_index = len(self.beta_list) - 1
@@ -423,6 +427,8 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
+        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         # print(accept_cnt, self.draft_size)
@@ -431,8 +437,7 @@ class Sequence:
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
         # self.correlation_x.append(accept_cnt)
-        # ema = self.get_beta()
-        # print("accept", accept_cnt, ema)
+        # ema = self.get_beta_ema()
         # self.correlation_y.append(self.draft_size)
         # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
 
@@ -443,6 +448,8 @@ class Sequence:
         # else:  # all accept bonus token
         #     accept_probs.append(1)
         #     beta_list.append(1)
+
+        # print("!", self.get_beta_ema(), accept_cnt)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
