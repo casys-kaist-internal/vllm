@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 
 # Read content of file in directory 
-csv_file = "5_2_result_1/fig1_sps_gsm8k.csv"
-# csv_file = "5_2_result_2/fig1_sps_gsm8k.csv"
+# csv_file = "5_2_result_1/fig1_sps_gsm8k.csv"
+csv_file = "5_2_result_2/fig1_sps_gsm8k.csv"
 
 header = ['temp', 'target_model', 'draft_model', 'batch_size', 'draft_size', 'target_attention', 'dummy', 'total_throughput', 'output_throughput']
 df = pd.read_csv(csv_file, names=header)
@@ -17,7 +17,7 @@ for batch_size in temp_0_5['batch_size'].unique():
 
 # Split the datas into each 9 rows
 for i in range(len(temp_0_5_dfs)):
-    temp_0_5_dfs[i] = np.array_split(temp_0_5_dfs[i], len(temp_0_5_dfs[i]) / 9 )
+    temp_0_5_dfs[i] = np.array_split(temp_0_5_dfs[i], len(temp_0_5_dfs[i]) / 9)
 
 for i in range(len(temp_0_5_dfs)):
     for j in range(len(temp_0_5_dfs[i])):
@@ -26,9 +26,9 @@ for i in range(len(temp_0_5_dfs)):
 
         # Calculate the speedup of the output throughput 
         # the baseline is when draft_size is 0
+
         baseline = df.iloc[1]['output_throughput']
         df['speedup'] =  df['output_throughput'] / baseline
-
 
 # Calculate the average speedup of the output throughput
 draft_size_unique = temp_0_5['draft_size'].unique()

@@ -704,7 +704,7 @@ def _sps_sample(
     # # print(f"{accepted_tokens / elapsed_time:.3f} , {(bonus_tokens + accepted_tokens) / elapsed_time:.3f}")
 
     # print(adjusted_target_lens)
-    # # print("Score: ", accepted_tokens)
+    # print(f"{accepted_tokens} {total_tokens} {bonus_tokens}")
 
     # global scores
     # scores.append((bonus_tokens + accepted_tokens) / elapsed_time)
