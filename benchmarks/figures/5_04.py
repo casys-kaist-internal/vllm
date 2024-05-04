@@ -304,7 +304,7 @@ def main(args: argparse.Namespace):
     for i in range(int(np.ceil(len(requests) / args.batch_size))):
         sampled_requests = requests[i: i + args.batch_size]
 
-        print(sampled_requests)
+        # print(sampled_requests)
         for prompt, _, output_len in sampled_requests:
             # print(prompt)
 
