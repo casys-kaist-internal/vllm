@@ -14,6 +14,7 @@ from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
 download_dir = '/home/noppanat/workspace/models'
+MAX_NUM_SEQUENCE = 8000
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -300,9 +301,8 @@ def main(args: argparse.Namespace):
     # latencies = []
     throughputs = []
     # output_lens = []
-        
-    for i in range(int(np.ceil(len(requests) / args.batch_size))):
-        sampled_requests = requests[i: i + args.batch_size]
+    for i in range(0, min(len(requests), MAX_NUM_SEQUENCE), args.batch_size):
+        sampled_requests = requests[i: min(i + args.batch_size, MAX_NUM_SEQUENCE)]
 
         # print(sampled_requests)
         for prompt, _, output_len in sampled_requests:
