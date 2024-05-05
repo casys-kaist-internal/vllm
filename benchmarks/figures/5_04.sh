@@ -55,8 +55,10 @@ for model_pair in "${models[@]}"; do
                 --batch-size "$batch_size" \
                 2>> "$log_file" \
                 | grep "accept" >> "$fname"
-            echo $(cat "$fname" | head -n 1)
+            { python process_beta_list_log.py -f "$fname" && rm "$fname"; } & # Clean up in the background.
         done
     done
     echo "Done $target_model $draft_model"
 done
+
+wait
