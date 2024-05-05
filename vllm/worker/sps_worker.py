@@ -234,6 +234,12 @@ class SpSWorker:
                 child_sample.logprobs,
                 child_sample.probs,
             )
+
+            # check early stopping
+            if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
+                # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
+                parent_seq.draft_size = parent_seq.get_draft_len()
+                seq_group_metadata.draft_size = parent_seq.draft_size
     
     @torch.inference_mode()
     def execute_target_model(
@@ -357,6 +363,8 @@ class SpSWorker:
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
             cache_events = None
+        
+        # print("Multi-step draft model execution complete")
 
         return outputs
 

@@ -148,6 +148,7 @@ class SequenceData:
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_logprobs[i])
         
+        print(self.draft_token_ids)
         self.draft_cache_cnt = self.get_len() - 1
 
         self.draft_token_ids.clear()
@@ -233,7 +234,7 @@ class Sequence:
         self.beta_list: List[float] = []
         self.last_ema = None  # This will store the last calculated EMA value
         self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
-
+        self.cumulative_accept_prob = 1
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
@@ -409,6 +410,32 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
+    def check_early_stop(self) -> bool:
+        # Check if the sequence should be stopped early
+        # Get probability of last draft token
+        last_draft_token_id = self.data.get_last_draft_token_id()
+        draft_prob = self.data.get_draft_probs()[-1][last_draft_token_id].item()
+        beta_ema = self.get_beta_ema()
+        # predicted_accept_prob = 0.48*beta_ema + 1.07*draft_prob + -0.05*beta_ema**2 + -0.46*beta_ema*draft_prob + -1.98*draft_prob**2 + -0.16*beta_ema**3 + 0.35*(beta_ema**2)*draft_prob + -0.10*beta_ema*draft_prob**2 + 1.62*draft_prob**3 + 0.22
+        # predicted_accept_prob = 0.1*beta_ema + 0.9*draft_prob 
+        # predicted_accept_prob = 0.59*beta_ema + 1.00*draft_prob + -0.51*beta_ema**2 + -0.25*beta_ema*draft_prob + -2.04*draft_prob**2 + 0.18*beta_ema**3 + 0.19*(beta_ema**2)*draft_prob + -0.07*beta_ema*draft_prob**2 + 1.65*draft_prob**3 + 0.23
+        # 0.33*beta_ema + 0.73*draft_prob + -0.28*beta_ema^2 + 0.03*beta_ema draft_prob + -1.33*draft_prob^2 + 0.09*beta_ema^3 + 0.05*beta_ema^2 draft_prob + -0.15*beta_ema draft_prob^2 + 1.16*draft_prob^3 + 0.32
+        # predicted_accept_prob = 0.33*beta_ema + 0.73*draft_prob + -0.28*beta_ema**2 + 0.03*beta_ema*draft_prob + -1.33*draft_prob**2 + 0.09*beta_ema**3 + 0.05*(beta_ema**2)*draft_prob + -0.15*beta_ema*(draft_prob**2) + 1.16*draft_prob**3 + 0.32
+        # 0.97*beta_ema_binned + 1.13*draft_prob_binned + -1.22*beta_ema_binned^2 + -0.08*beta_ema_binned draft_prob_binned + -1.03*draft_prob_binned^2 + 0.59*beta_ema_binned^3 + 0.08*beta_ema_binned^2 draft_prob_binned + -0.26*beta_ema_binned draft_prob_binned^2 + 0.82*draft_prob_binned^3 + 0.08
+        predicted_accept_prob = 0.97*beta_ema + 1.13*draft_prob + -1.22*beta_ema**2 + -0.08*beta_ema*draft_prob + -1.03*draft_prob**2 + 0.59*beta_ema**3 + 0.08*(beta_ema**2)*draft_prob + -0.26*beta_ema*(draft_prob**2) + 0.82*draft_prob**3 + 0.08
+        # print(predicted_accept_prob, beta_ema, draft_prob)
+
+        self.cumulative_accept_prob *= predicted_accept_prob
+
+        random_accept_prob = np.random.uniform(0, 1)
+        if self.cumulative_accept_prob < random_accept_prob:
+            self.cumulative_accept_prob = 1
+            return True
+        else:
+            return False
+
+        return (predicted_accept_prob < 0.5)
+
     def custom_score(self, y_true, y_pred):
         # Convert predictions to nearest integers
         nearest_int_pred = np.round(y_pred)
@@ -431,7 +458,7 @@ class Sequence:
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        # print(accept_cnt, self.draft_size)
+        print(accept_cnt, self.draft_size)
         # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
         # Need to free the blocks that are not used
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
@@ -441,9 +468,9 @@ class Sequence:
         # self.correlation_y.append(self.draft_size)
         # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
 
-        if accept_cnt != self.draft_size:
-            accept_probs = accept_probs[:accept_cnt+1]
-            beta_list = beta_list[:accept_cnt+1]
+        # if accept_cnt != self.draft_size:
+        #     accept_probs = accept_probs[:accept_cnt+1]
+        #     beta_list = beta_list[:accept_cnt+1]
 
         # else:  # all accept bonus token
         #     accept_probs.append(1)
