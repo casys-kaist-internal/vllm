@@ -405,11 +405,8 @@ class SpSLLMEngine:
                     parent, free_block_cnt)
                 check_cnt += child_sample.accept_cnt
 
-                print("last token: ", child_sample.output_token)
-
                 # print("accept_cnt / total_cnt ",
                 #       child_sample.accept_cnt, child_sample.total_cnt)
-
 
                 if self.sps_config.use_lazy_draft_kv_cache:
                     if child_sample.accept_cnt != child_sample.total_cnt:
