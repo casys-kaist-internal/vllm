@@ -227,8 +227,7 @@ class SpSLLM:
 
         dummy_prompt_token_ids = [0] * 32
 
-        # for batch_size in range(1, self.llm_engine.scheduler_config.max_num_seqs + 1):
-        for batch_size in range(1, 128):
+        for batch_size in range(1, self.llm_engine.scheduler_config.max_num_seqs + 1):
             for _ in range(batch_size):
                 self._add_request(None, sampling_params, dummy_prompt_token_ids)
 
