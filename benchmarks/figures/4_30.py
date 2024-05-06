@@ -13,7 +13,11 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/home/sjchoi/workspace/models'
+
+download_dir = "/workspace/vllm/.huggingface_cache"
+import os
+
+os.environ["HF_HOME"] = "/workspace/vllm/.huggingface_cache"
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -151,7 +155,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('./ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -184,6 +188,8 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
     # random sort dataset
     # random.shuffle(filtered_dataset)
+    
+    print("Filtered dataset length: ", len(filtered_dataset))
 
     return filtered_dataset
 
@@ -296,18 +302,17 @@ def main(args: argparse.Namespace):
 
     # Profile 
     llm._run_profile()
-    sys.exit()
+    # sys.exit()
 
     # latencies = []
     # throughputs = []
     # output_lens = []
-
+    print("Running benchmark...")
     for i in range(args.num_iters):
         # sampled_requests = random.sample(requests, args.batch_size)
         sampled_requests = requests[args.batch_size *args.index:args.batch_size * (args.index + 1)]
         # sampled_requests = requests[args.index:args.index + 1]
 
-        # print(sampled_requests)
 
         for prompt, _, output_len in sampled_requests:
             # print(prompt)

@@ -99,7 +99,7 @@ def main(args) -> None:
     CONTEXT_LEN = 256
 
     # for batch_size in range(32, 512, 4):
-    for batch_size in [32]:
+    for batch_size in [64]:
 
         max_query_len = 8
         dmodel = 4096  # todo: get from model
@@ -117,41 +117,27 @@ def main(args) -> None:
 
         num_blocks_per_layer = (CONTEXT_LEN + 10) // block_size + 1
 
-        def gen_tok_lens(avg, batch_size):
-            # generate by normal distribution, min 1, max 8
-            target_lens = []
-            for i in range(batch_size):
-                sam = math.ceil(random.normalvariate(avg, 3))
-                sam = max(1, sam)
-                sam = min(8, sam)
-                target_lens.append(sam)
-            return target_lens
-
         # for input_tok_len in range(batch_size, 225):
-        # for input_tok_len in range(batch_size, batch_size * 8 + 1, 1):
-        for avg_input_tok_len in range(batch_size, batch_size * 8 + 1, 1):
-            print(f"Input token length: {avg_input_tok_len}")
+        for input_tok_len in range(batch_size, batch_size * 8 + 1, 1):
+        # for input_tok_len in range(batch_size, batch_size + 1, 1):
+            print(f"Input token length: {input_tok_len}")
 
             input_tokens = []
             input_positions = []
 
-            target_lens = gen_tok_lens(avg_input_tok_len / batch_size, batch_size)
-            input_tok_len = sum(target_lens)
-
             # Add arbitrary draft_size.
-            # avg_draft_len = int(input_tok_len / batch_size)
-            # target_lens = [avg_draft_len for _ in range(batch_size)]
-            # num_toks_to_add = input_tok_len - sum(target_lens)
-            # for i in range(num_toks_to_add):
-            #     target_lens[i] += 1
-
+            avg_draft_len = int(input_tok_len / batch_size)
+            target_lens = [avg_draft_len for _ in range(batch_size)]
+            num_toks_to_add = input_tok_len - sum(target_lens)
+            for i in range(num_toks_to_add):
+                target_lens[i] += 1
 
             context_lens_perbatch = [
-                random.randint(32, CONTEXT_LEN) + target_lens[i]
-                for i in range(batch_size)
+                CONTEXT_LEN + target_lens[i] for i in range(batch_size)
             ]  # TODO: parameterise]
-
+            
             print(context_lens_perbatch)
+
             context_lens = gen_context_len(context_lens_perbatch, target_lens)
             block_tables = []
             bt_idx = 0
@@ -214,6 +200,7 @@ def main(args) -> None:
 
             # sample_input = torch.rand((input_tok_len, ,dmodel ), device="cuda")
 
+
             # Run the layer
             start = time.perf_counter()
             for _ in range(REPEAT):
@@ -264,9 +251,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--target-model",
         type=str,
-        # default='EleutherAI/pythia-12b')
-        # default="facebook/opt-6.7b",
-        default="facebook/opt-2.7b",
+        # default='EleutherAI/pythia-12b'
+        default="facebook/opt-6.7b",
+        # default = 'facebook/opt-2.7b'
     )
     # default = 'facebook/opt-2.7b')
     # default='bigscience/bloom-7b1')

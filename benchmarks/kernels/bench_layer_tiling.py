@@ -252,10 +252,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--target-model",
         type=str,
-        # default='EleutherAI/pythia-12b')
-        # default="facebook/opt-6.7b",
-        default = 'facebook/opt-2.7b'
-
+        # default='EleutherAI/pythia-12b'
+        default="facebook/opt-6.7b",
+        # default = 'facebook/opt-2.7b'
     )
     # default = 'facebook/opt-2.7b')
     # default='bigscience/bloom-7b1')
