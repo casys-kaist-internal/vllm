@@ -10,7 +10,10 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 from tqdm import tqdm
 
-download_dir = '/home/noppanat/workspace/models'
+download_dir = '/workspace/vllm/.huggingface_cache'
+
+import os
+os.environ['HF_HOME'] = '/workspace/vllm/.huggingface_cache'
 
 
 def sample_requests(

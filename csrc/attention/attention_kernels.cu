@@ -2497,15 +2497,15 @@ void paged_attention_v2_launcher(
   case 64:
     LAUNCH_PAGED_ATTENTION_V2(64);
     break;
-  // case 80:
-  //   LAUNCH_PAGED_ATTENTION_V2(80);
-  //   break;
-  // case 96:
-  //   LAUNCH_PAGED_ATTENTION_V2(96);
-  //   break;
-  // case 112:
-  //   LAUNCH_PAGED_ATTENTION_V2(112);
-  //   break;
+  case 80:
+    LAUNCH_PAGED_ATTENTION_V2(80);
+    break;
+  case 96:
+    LAUNCH_PAGED_ATTENTION_V2(96);
+    break;
+  case 112:
+    LAUNCH_PAGED_ATTENTION_V2(112);
+    break;
   case 128:
     LAUNCH_PAGED_ATTENTION_V2(128);
     break;
@@ -2592,21 +2592,21 @@ void paged_attention_v2_target_launcher(
   case 64:
     LAUNCH_PAGED_ATTENTION_V2_TARGET(64);
     break;
-  // case 80:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
-  //   break;
-  // case 96:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(96);
-  //   break;
-  // case 112:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(112);
-  //   break;
+  case 80:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(80);
+    break;
+  case 96:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(96);
+    break;
+  case 112:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(112);
+    break;
   case 128:
     LAUNCH_PAGED_ATTENTION_V2_TARGET(128);
     break;
-  // case 256:
-  //   LAUNCH_PAGED_ATTENTION_V2_TARGET(256);
-  //   break;
+  case 256:
+    LAUNCH_PAGED_ATTENTION_V2_TARGET(256);
+    break;
   default:
     TORCH_CHECK(false, "Unsupported head size: ", head_size);
     break;
