@@ -56,14 +56,6 @@ class SpSSchedulerOutputs:
 
 
 class SpSScheduler:
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
-
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     def __init__(
         self,
         scheduler_config: SchedulerConfig,
@@ -98,16 +90,11 @@ class SpSScheduler:
         self.need_to_run_draft: List[SequenceGroup] = []
         self.need_to_run_target: List[SequenceGroup] = []
 
-<<<<<<< HEAD
-<<<<<<< HEAD
+
     @property
     def running(self) -> List[SequenceGroup]:
         return self.need_to_run_draft + self.need_to_run_target
-
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
+    
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
@@ -135,20 +122,9 @@ class SpSScheduler:
 
         request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
         self.waiting = clear_state_queue(self.waiting, request_ids)
-<<<<<<< HEAD
-<<<<<<< HEAD
+
         self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
         self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
-=======
-        # self.running = clear_state_queue(self.running, request_ids)
-        self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
-        self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
-        # self.running = clear_state_queue(self.running, request_ids)
-        self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
-        self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
         self.swapped = clear_state_queue(self.swapped, request_ids)
 
     def abort_all_seq_groups(self) -> None:
@@ -171,8 +147,6 @@ class SpSScheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     def update_draft_target_queues(self, stage: SpSStage) -> None:
         if stage == SpSStage.DRAFT_DECODE:
             self.need_to_run_target += self.need_to_run_draft
@@ -180,27 +154,6 @@ class SpSScheduler:
         elif stage == SpSStage.TARGET_DECODE:
             self.need_to_run_draft += self.need_to_run_target
             self.need_to_run_target = []
-=======
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-    # Move the sequence group from the draft queue to the target queue.
-    def move_to_target_queue(self) -> None:
-        self.need_to_run_target.extend(self.need_to_run_draft)
-        self.need_to_run_draft = []
-
-    # Move the sequence group from the target queue to the draft queue.
-    def move_to_draft_queue(self) -> None:
-        self.need_to_run_draft.extend(self.need_to_run_target)
-        self.need_to_run_target = []
-    
-    # def swap_draft_target_queues(self) -> None:
-    #     # One queue should be empty.
-    #     assert not self.need_to_run_draft or not self.need_to_run_target
-    #     self.need_to_run_draft, self.need_to_run_target = self.need_to_run_target, self.need_to_run_draft
-<<<<<<< HEAD
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
     def _multi_step_schedule(self) -> SpSSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -303,8 +256,7 @@ class SpSScheduler:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
             # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
-<<<<<<< HEAD
-<<<<<<< HEAD
+
             # if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
             #     if self.sps_config.use_tile_size_constraint:
             #         find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
@@ -313,9 +265,7 @@ class SpSScheduler:
             
             # Sort by draft size 
             # self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
-=======
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
+
             if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
                 if self.sps_config.use_tile_size_constraint:
                     find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
@@ -324,10 +274,7 @@ class SpSScheduler:
             
             # Sort by draft size 
             self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
-<<<<<<< HEAD
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
+
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
             # In this case, the policy is responsible for deciding which sequence
@@ -341,16 +288,10 @@ class SpSScheduler:
             while self.need_to_run_draft:
                 seq_group = self.need_to_run_draft.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-<<<<<<< HEAD
-<<<<<<< HEAD
-                # seq.draft_size = 7
+
                 if self.sps_config.use_dynamic_draft_size:
                     seq.draft_size = 7
                     
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
                 if seq.draft_size > 0:
                     # Simplify preemption logic
                     if not self.block_manager.can_append_slots(seq_group, seq.draft_size):

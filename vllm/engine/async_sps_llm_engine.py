@@ -187,10 +187,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
-<<<<<<< HEAD
-=======
-        num_batched_tokens = scheduler_outputs.num_batched_tokens
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         if sps_stage == SpSStage.PROMPT:
             output = await self._run_workers_async(
@@ -201,7 +197,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-<<<<<<< HEAD
             if not self.sps_config.use_lazy_draft_kv_cache:
                 # Don't need output for draft model. Execution required for draft KV cache.
                 await self._run_workers_async(
@@ -217,13 +212,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
         elif sps_stage == SpSStage.DRAFT_DECODE:
             output = await self._run_workers_async(
                 "execute_multi_step_draft_model",
-=======
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
-
-        elif sps_stage == SpSStage.DRAFT_DECODE:
-            output = await self._run_workers_async(
-                "execute_draft_model",
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
@@ -241,7 +229,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
 
-<<<<<<< HEAD
             target_output = self._process_model_outputs(output, scheduler_outputs, sps_stage)
 
             if not self.sps_config.use_lazy_draft_kv_cache:
@@ -285,10 +272,6 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                             seq.append_bonus_token_id()
 
             return target_output
-=======
-            return self._process_model_outputs(
-                output, scheduler_outputs, sps_stage)
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         else:
             raise ValueError(f"Invalid SpS stage: {sps_stage}")

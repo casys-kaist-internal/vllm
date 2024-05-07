@@ -248,11 +248,7 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-<<<<<<< HEAD
     draft_size: int = 7
-=======
-    draft_size: int = 8
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     tile_size: int = 64
     use_dynamic_draft_size: bool = False
     use_tile_size_constraint: bool = False
@@ -309,7 +305,6 @@ class SpSEngineArgs:
                             type=int,
                             default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
-<<<<<<< HEAD
         parser.add_argument('--tile-size',
                             type=int,
                             default=SpSEngineArgs.tile_size,
@@ -330,12 +325,6 @@ class SpSEngineArgs:
                             type=bool,
                             default=SpSEngineArgs.use_lazy_draft_kv_cache,
                             help='whether to use lazy draft KV cache')
-=======
-        parser.add_argument('--use-target-attention',
-                            type=bool,
-                            default=SpSEngineArgs.use_target_attention,
-                            help='use target attention kernel')
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
         parser.add_argument(
             '--tokenizer',
             type=str,

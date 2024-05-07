@@ -8,19 +8,11 @@ from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
-<<<<<<< HEAD
-=======
-from vllm.core.sps_scheduler import SpSSchedulerOutputs
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage, SequenceData, SequenceGroupOutput,
-<<<<<<< HEAD
                            SequenceGroup, SequenceStatus)
-=======
-                           SequenceGroup, SequenceOutput, SequenceStatus)
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
 from vllm.utils import get_gpu_memory
@@ -242,15 +234,12 @@ class SpSWorker:
                 child_sample.logprobs,
                 child_sample.probs,
             )
-<<<<<<< HEAD
 
             # check early stopping
             if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
                 # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
                 parent_seq.draft_size = parent_seq.get_draft_len()
                 seq_group_metadata.draft_size = parent_seq.draft_size
-=======
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     
     @torch.inference_mode()
     def execute_target_model(
@@ -352,7 +341,6 @@ class SpSWorker:
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
-<<<<<<< HEAD
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
@@ -366,17 +354,6 @@ class SpSWorker:
                     )[0].get_draft_len()
                 )
             ]
-=======
-        # Initialize draft_iteration
-        draft_iteration = 0
-
-        # Run this loop until seq_group_metadata_list is empty
-        while True:
-            # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
-            # Note: It's possible for the initial assigned draft size to be 0.     
-            seq_group_metadata_list = [seq_group_metadata for seq_group_metadata in seq_group_metadata_list 
-                                    if seq_group_metadata.draft_size > draft_iteration]
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
             # Break the loop if seq_group_metadata_list is empty
             if not seq_group_metadata_list:
@@ -386,14 +363,8 @@ class SpSWorker:
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
             cache_events = None
-<<<<<<< HEAD
         
         # print("Multi-step draft model execution complete")
-=======
-
-            # Increase draft_iteration
-            draft_iteration += 1
->>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         return outputs
 
