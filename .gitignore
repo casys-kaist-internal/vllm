@@ -183,3 +183,5 @@ _build/
 benchmarks/nsight/*
 benchmarks/*.json
 benchmarks/figures/*.txt
+benchmarks/figures/*.pkl
+benchmarks/result/*
