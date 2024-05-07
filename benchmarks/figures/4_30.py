@@ -293,6 +293,9 @@ def main(args: argparse.Namespace):
 
     # Warmup
     warmup(llm)
+    # TODO(noppanat): Workaround for now. Need to reset the draft optimizer.
+    if isinstance(llm, SpSLLM):
+        llm.llm_engine.workers[0].draft_optimizer.reset()
 
     # Profile 
     llm._run_profile()

@@ -1,7 +1,7 @@
 """Sequence and its related classes."""
 import copy
 import enum
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.block import LogicalTokenBlock
@@ -232,6 +232,9 @@ class Sequence:
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
         self.last_ema = None  # This will store the last calculated EMA value
+        self.new_beta_emas: List[float] = []
+        self.new_draft_probs: List[float] = []
+        self.new_accept_probs: List[float] = []
         self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
         self.cumulative_accept_prob = 1
 
@@ -397,6 +400,13 @@ class Sequence:
     
         # # This is for E(# of expected tokens)
         # return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
+    
+    def get_new_draft_history(self) -> Tuple[List[float], List[float], List[float]]:
+        out = self.new_beta_emas, self.new_draft_probs, self.new_accept_probs
+        self.new_beta_emas = []
+        self.new_draft_probs = []
+        self.new_accept_probs = []
+        return out
         
     def append_draft_token_id(
         self,
@@ -461,7 +471,13 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
-        print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+        
+        # Update the stats for calculating the dynamic draft size.
+        new_draft_probs = self.data.get_draft_prob_for_tokens()
+        self.new_beta_emas.extend([self.get_beta_ema()] * len(new_draft_probs))
+        self.new_draft_probs.extend(new_draft_probs)
+        self.new_accept_probs.extend(accept_probs[:len(new_draft_probs)])
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
