@@ -182,3 +182,7 @@ _build/
 *.nsys
 benchmarks/nsight/*
 benchmarks/*.json
+benchmarks/figures/*.txt
+benchmarks/figures/*.pkl
+benchmarks/figures/*.zip
+benchmarks/result/*

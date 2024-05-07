@@ -408,7 +408,6 @@ class SpSLLMEngine:
                 # print("accept_cnt / total_cnt ",
                 #       child_sample.accept_cnt, child_sample.total_cnt)
 
-
                 if self.sps_config.use_lazy_draft_kv_cache:
                     if child_sample.accept_cnt != child_sample.total_cnt:
                         parent.data.draft_cache_cnt += 1

@@ -248,7 +248,7 @@ class SpSEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
-    draft_size: int = 8
+    draft_size: int = 7
     tile_size: int = 64
     use_dynamic_draft_size: bool = False
     use_tile_size_constraint: bool = False

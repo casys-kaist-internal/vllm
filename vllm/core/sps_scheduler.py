@@ -121,6 +121,7 @@ class SpSScheduler:
 
         request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
         self.waiting = clear_state_queue(self.waiting, request_ids)
+
         self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
         self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
         self.swapped = clear_state_queue(self.swapped, request_ids)
@@ -254,6 +255,16 @@ class SpSScheduler:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
             # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
+
+            # if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
+            #     if self.sps_config.use_tile_size_constraint:
+            #         find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
+            #     else:
+            #         find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
+            
+            # Sort by draft size 
+            # self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
+
             if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
                 if self.sps_config.use_tile_size_constraint:
                     find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
@@ -262,6 +273,7 @@ class SpSScheduler:
             
             # Sort by draft size 
             self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
+
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
             # In this case, the policy is responsible for deciding which sequence
@@ -275,6 +287,10 @@ class SpSScheduler:
             while self.need_to_run_draft:
                 seq_group = self.need_to_run_draft.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+
+                if self.sps_config.use_dynamic_draft_size:
+                    seq.draft_size = 7
+                    
                 if seq.draft_size > 0:
                     # Simplify preemption logic
                     if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
