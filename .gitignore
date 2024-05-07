@@ -182,3 +182,4 @@ _build/
 *.nsys
 benchmarks/nsight/*
 benchmarks/*.json
+*.txt

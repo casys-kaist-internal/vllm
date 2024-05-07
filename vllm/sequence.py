@@ -425,9 +425,13 @@ class Sequence:
         # 1.43*beta_ema_binned + 1.38*draft_prob_binned + -0.52*beta_ema_binned^2 + -1.24*beta_ema_binned draft_prob_binned + -0.79*draft_prob_binned^2 + -0.44*beta_ema_binned^3 + 1.22*beta_ema_binned^2 draft_prob_binned + -0.53*beta_ema_binned draft_prob_binned^2 + 0.61*draft_prob_binned^3 + -0.09
         # predicted_accept_prob = 1.43*beta_ema + 1.38*draft_prob + -0.52*beta_ema**2 + -1.24*beta_ema*draft_prob + -0.79*draft_prob**2 + -0.44*beta_ema**3 + 1.22*(beta_ema**2)*draft_prob + -0.53*beta_ema*(draft_prob**2) + 0.61*draft_prob**3 + -0.09
         # 1.81*beta_ema_binned + 1.44*draft_prob_binned + -1.95*beta_ema_binned^2 + -1.17*beta_ema_binned draft_prob_binned + -1.09*draft_prob_binned^2 + 0.61*beta_ema_binned^3 + 1.13*beta_ema_binned^2 draft_prob_binned + -0.42*beta_ema_binned draft_prob_binned^2 + 0.75*draft_prob_binned^3 + -0.03
+        # interval param for retraining 
+        # if interval > 100000: 
+        # retrain 
+
         predicted_accept_prob = 1.81*beta_ema + 1.44*draft_prob + -1.95*beta_ema**2 + -1.17*beta_ema*draft_prob + -1.09*draft_prob**2 + 0.61*beta_ema**3 + 1.13*(beta_ema**2)*draft_prob + -0.42*beta_ema*(draft_prob**2) + 0.75*draft_prob**3 + -0.03
         # print(predicted_accept_prob, beta_ema, draft_prob)
-
+        
         self.cumulative_accept_prob *= predicted_accept_prob
 
         random_accept_prob = np.random.uniform(0, 1)
@@ -457,7 +461,7 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
-        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+        print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  "|", self.accept_probs, " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
