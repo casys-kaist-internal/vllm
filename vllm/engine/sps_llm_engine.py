@@ -408,6 +408,10 @@ class SpSLLMEngine:
                 # print("accept_cnt / total_cnt ",
                 #       child_sample.accept_cnt, child_sample.total_cnt)
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
                 if self.sps_config.use_lazy_draft_kv_cache:
                     if child_sample.accept_cnt != child_sample.total_cnt:
                         parent.data.draft_cache_cnt += 1
@@ -445,8 +449,11 @@ class SpSLLMEngine:
             self, output: SamplerOutput,
             scheduler_outputs: SpSSchedulerOutputs,
             sps_stage: SpSStage) -> List[RequestOutput]:
+<<<<<<< HEAD
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
 
+=======
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         if sps_stage != SpSStage.DRAFT_DECODE:
@@ -456,8 +463,18 @@ class SpSLLMEngine:
             # Free the finished sequence groups.
             self.scheduler.free_finished_seq_groups()
 
+<<<<<<< HEAD
         # Update the draft target queues.
         self.scheduler.update_draft_target_queues(sps_stage)
+=======
+        # Swap the draft target queues.
+        if sps_stage == SpSStage.DRAFT_DECODE:
+            self.scheduler.move_to_target_queue()
+        elif sps_stage == SpSStage.TARGET_DECODE:
+            self.scheduler.move_to_draft_queue()
+
+        # self.scheduler.swap_draft_target_queues()
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
@@ -560,7 +577,11 @@ class SpSLLMEngine:
                     )
 
                     for seq_group in scheduler_outputs.scheduled_seq_groups:
+<<<<<<< HEAD
                         for seq in seq_group.get_seqs(status=SequenceStatus.SPS_ALL_ACCEPT):
+=======
+                        for seq in seq_group.get_seq(status=SequenceStatus.SPS_ALL_ACCEPT):
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
                             # change back to original RUNNING status
                             seq.status = SequenceStatus.RUNNING
                             # Append the bonus token saved in all accept case for target decode 

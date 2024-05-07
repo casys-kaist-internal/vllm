@@ -233,7 +233,11 @@ class Sequence:
         self.beta_list: List[float] = []
         self.last_ema = None  # This will store the last calculated EMA value
         self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
+<<<<<<< HEAD
         self.cumulative_accept_prob = 1
+=======
+
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
@@ -377,7 +381,11 @@ class Sequence:
             return 0.5  # Return a default initial beta value if list is empty
 
         # Define the span for EMA calculation
+<<<<<<< HEAD
         decay = 0.75
+=======
+        decay = 0.5
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         # Initialize EMA; if no previous EMAs, start with the first beta value
         if self.last_ema is None:
@@ -409,6 +417,7 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
+<<<<<<< HEAD
     def check_early_stop(self) -> bool:
         # Check if the sequence should be stopped early
         # Get probability of last draft token
@@ -443,6 +452,8 @@ class Sequence:
 
         return (predicted_accept_prob < random_accept_prob)
 
+=======
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     def custom_score(self, y_true, y_pred):
         # Convert predictions to nearest integers
         nearest_int_pred = np.round(y_pred)
@@ -461,7 +472,11 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
+<<<<<<< HEAD
         print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  "|", self.accept_probs, " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+=======
+        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]

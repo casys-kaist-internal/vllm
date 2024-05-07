@@ -436,6 +436,7 @@ def _random_sample(
     is_prompts: List[bool],
     probs: torch.Tensor,
 ) -> List[Tuple[List[int], List[int]]]:
+<<<<<<< HEAD
     # # Find the maximum best_of value of the prompt phase requests.
     # max_best_of = 1
 
@@ -445,14 +446,22 @@ def _random_sample(
     max_best_of = 2
 
 
+=======
+    # Find the maximum best_of value of the prompt phase requests.
+    max_best_of = 1
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     for seq_group, is_prompt in zip(selected_seq_groups, is_prompts):
         if is_prompt:
             seq_ids, sampling_params = seq_group
             max_best_of = max(max_best_of, sampling_params.best_of)
     random_samples = torch.multinomial(probs,
                                        num_samples=max_best_of,
+<<<<<<< HEAD
                                        replacement=False).cpu()
     
+=======
+                                       replacement=True).cpu()
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     sample_idx = 0
     results = []
     for seq_group, is_prompt in zip(selected_seq_groups, is_prompts):
@@ -470,12 +479,15 @@ def _random_sample(
             parent_ids = list(range(num_parent_seqs))
             next_token_ids = random_samples[sample_idx:sample_idx +
                                             num_parent_seqs, 0].tolist()
+<<<<<<< HEAD
             
             if next_token_ids[0] == rejection_token:
                 next_token_ids = random_samples[sample_idx:sample_idx +
                                             num_parent_seqs, 1].tolist()
             
 
+=======
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
         results.append((next_token_ids, parent_ids))
         sample_idx += num_parent_seqs
 
@@ -600,7 +612,11 @@ def _sps_sample(
     # target_prob_for_draft_token_id: [seq_idx, max_draft_len]
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+<<<<<<< HEAD
     # print("t", target_prob_for_sampled_draft_token)
+=======
+
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_adjusted_target_lens, adjusted_vocab_size]
     draft_probs = _reshape_and_pad(
         sampling_metadata.draft_probs, adjusted_target_lens, target_probs.size(-1))
@@ -610,7 +626,11 @@ def _sps_sample(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
     # [start] 1.5ms
+<<<<<<< HEAD
     # print("d", draft_prob_for_sampled_draft_token)
+=======
+    # print(draft_prob_for_sampled_draft_token)
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     beta = _calculate_beta_vectorized(
         target_probs, draft_probs, adjusted_target_lens)
     # [end] 1.5ms
@@ -620,6 +640,11 @@ def _sps_sample(
         draft_prob_for_sampled_draft_token)
     del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
+<<<<<<< HEAD
+=======
+    # print("accept_prob", accept_prob)
+
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     torch.cuda.nvtx.range_push("accept_prob")
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
@@ -642,9 +667,12 @@ def _sps_sample(
 
     # accept_cnt: [seq_idx]
     accept_cnt = torch.sum(accepted, dim=1)
+<<<<<<< HEAD
 
     # print("accept_prob", accept_prob, "accept_cnt", accept_cnt)
 
+=======
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     del accepted
     torch.cuda.nvtx.range_pop()
 
@@ -680,7 +708,10 @@ def _sps_sample(
         0)).long().to(all_accept_mask.device)
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
+<<<<<<< HEAD
     
+=======
+>>>>>>> 0ca90eade2da4c86f582f0d293b18ede0a4fd06f
     modified_rejection_logprobs = torch.log(modified_rejection_prob)
     
     del target_probs, draft_probs, target_lens_tensor
