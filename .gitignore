@@ -50,7 +50,10 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+
+# Hyunjae
 .huggingface_cache/*
+tiling_profile_results_json/
 
 # Translations
 *.mo

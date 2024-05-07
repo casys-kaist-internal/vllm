@@ -29,7 +29,7 @@ if __name__ == "__main__":
     fig, ax1 = plt.subplots()
     
     # set size 
-    fig.set_size_inches(9,5)
+    fig.set_size_inches(20,15)
     
     color = 'tab:red'
     ax1.set_xlabel('input_tok_len')

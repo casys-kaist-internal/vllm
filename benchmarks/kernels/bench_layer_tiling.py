@@ -11,17 +11,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 from tqdm import tqdm
 from vllm.model_executor.input_metadata import InputMetadata
 
-
-NUM_BLOCKS = 8192
-PARTITION_SIZE = 512
-
 download_dir = "/workspace/vllm/.huggingface_cache"
 import os
 
 os.environ["HF_HOME"] = "/workspace/vllm/.huggingface_cache"
 
-
-def gen_context_len(max_context_len_per_query: List[int], query_lens: List[int]):
+# Function for pre-processing context-len for new attention kernel
+def expand_context_lens(max_context_len_per_query: List[int], query_lens: List[int]):
     res = []
     for query_len, c_max in zip(query_lens, max_context_len_per_query):
         for i in range(query_len):
@@ -50,21 +46,44 @@ def _make_tensor_with_pad(
     return torch.tensor(padded_x, dtype=dtype, device="cuda")
 
 
+def generate_context_lens(args, avg_context_len, target_lens, batch_size):
+    if args.random_context_len:
+        gen = lambda x: max(10, int(random.normalvariate(x, 64)))
+        context_lens_perbatch = [gen(avg_context_len) for i in range(batch_size)]
+    else:
+        context_lens_perbatch = [
+            avg_context_len + target_lens[i] for i in range(batch_size)
+        ]
+    return context_lens_perbatch
+
+
+def generate_target_lens(args, input_tok_len, batch_size):
+    target_lens = []
+    avg_draft_len = int(input_tok_len / batch_size)
+
+    if args.random_draft_len:
+        # Generate random target_lens with mean of avg_draft_len
+        def gen():
+            return max(1, min(8, int(random.normalvariate(avg_draft_len, 4))))
+
+        for i in range(batch_size):
+            target_lens.append(gen())
+    else:
+        target_lens = [avg_draft_len for _ in range(batch_size)]
+        num_toks_to_add = input_tok_len - sum(target_lens)
+        for i in range(num_toks_to_add):
+            target_lens[i] += 1
+
+    input_tok_len = sum(target_lens)
+
+    return sorted(target_lens), input_tok_len
+
+
 @torch.inference_mode()
 def main(args) -> None:
     from vllm import LLM, SpSLLM, SamplingParams
 
     global download_dir
-
-    target_model = args.target_model
-    draft_model = args.draft_model
-    draft_size = args.draft_size
-    tokenizer = args.tokenizer
-    quantization = args.quantization
-    tensor_parallel_size = args.tensor_parallel_size
-    seed = args.seed
-    trust_remote_code = args.trust_remote_code
-    dtype = args.dtype
 
     llm = SpSLLM(
         target_model=args.target_model,
@@ -85,68 +104,67 @@ def main(args) -> None:
         download_dir=download_dir,
     )
 
-    # print("hei")
     llm_engine = llm.llm_engine
     worker = llm_engine.workers[0]
     target_model_runner = worker.target_model_runner
     target_model = target_model_runner.model
 
+    # Extracted Models
     decoder = target_model.model.decoder
     layer = decoder.layers[0]
-    # hidden_states : [batch_size x max_query_len x dmodel]
 
-    time_results = []
+    block_size = worker.cache_config.block_size
+
     CONTEXT_LEN = 256
+    REPEAT = 1
 
-    # for batch_size in range(32, 512, 4):
-    for batch_size in [64]:
+    # Where to save results (for json)
+    time_results = []
 
+    # for batch_size in [16, 32, 64]:  # This is to test different granularities!
+    for batch_size in [32,32,32]:
         max_query_len = 8
-        # dmodel = 4096  # todo: get from model
-        dmodel = 2560
+        dmodel = layer.config.num_attention_heads  # please work
 
         target_gpu_cache = worker.target_gpu_cache
         kv_cache = target_gpu_cache
 
-        print(kv_cache[0][1].shape)
-
-        # generate random input metadata
-        prompt_lens = []
-        draft_lens = []
-
-        block_size = worker.cache_config.block_size
-
-        num_blocks_per_layer = (CONTEXT_LEN + 10) // block_size + 1
-
         # for input_tok_len in range(batch_size, 225):
-        for input_tok_len in range(batch_size, batch_size * 8 + 1, 1):
-        # for input_tok_len in range(batch_size, batch_size + 1, 1):
-            print(f"Input token length: {input_tok_len}")
+        for avg_input_tok_lens in range(batch_size, batch_size * 8 + 1, 1):
+            # for input_tok_len in range(batch_size, batch_size + 1, 1):
 
             input_tokens = []
             input_positions = []
 
             # Add arbitrary draft_size.
-            avg_draft_len = int(input_tok_len / batch_size)
-            target_lens = [avg_draft_len for _ in range(batch_size)]
-            num_toks_to_add = input_tok_len - sum(target_lens)
-            for i in range(num_toks_to_add):
-                target_lens[i] += 1
+            target_lens, input_tok_len = generate_target_lens(
+                args, avg_input_tok_lens, batch_size
+            )
 
-            context_lens_perbatch = [
-                CONTEXT_LEN + target_lens[i] for i in range(batch_size)
-            ]  # TODO: parameterise]
-            
-            print(context_lens_perbatch)
+            print(f"Input token length: {input_tok_len}")
 
-            context_lens = gen_context_len(context_lens_perbatch, target_lens)
+            context_lens_perbatch = generate_context_lens(
+                args, CONTEXT_LEN, target_lens, batch_size
+            )
+
+            num_blocks_per_layer = [
+                (context_len + 10) // block_size + 1
+                for context_len in context_lens_perbatch
+            ]
+
+            print("context_lens : ", context_lens_perbatch)
+            print("target_lens : ", target_lens)
+
+            context_lens = expand_context_lens(context_lens_perbatch, target_lens)
             block_tables = []
             bt_idx = 0
             slot_mapping = []
             for seq_idx in range(batch_size):  # (hj) : Valid in target context too!
                 # Sequence 사이에는 공유하는 K/V 없다고 가정
-                block_table = [i for i in range(bt_idx, bt_idx + num_blocks_per_layer)]
-                bt_idx += num_blocks_per_layer
+                block_table = [
+                    i for i in range(bt_idx, bt_idx + num_blocks_per_layer[seq_idx])
+                ]
+                bt_idx += num_blocks_per_layer[seq_idx]
 
                 position_start = context_lens_perbatch[seq_idx]
 
@@ -167,8 +185,6 @@ def main(args) -> None:
 
                 # for remaining, (until block edge) pad slot with -1
 
-            print(target_lens)
-
             slot_mapping = torch.tensor(slot_mapping, dtype=torch.long, device="cuda")
             max_context_len = max(context_lens)
             context_lens = torch.tensor(context_lens, dtype=torch.int, device="cuda")
@@ -177,10 +193,6 @@ def main(args) -> None:
             block_tables = _make_tensor_with_pad(
                 block_tables, max_len=max_block_table_len, pad=0, dtype=torch.int
             )
-
-            print(slot_mapping.shape)
-
-            # assert slot_mapping.shape[0] == input_tok_len
 
             input_metadata = InputMetadata(
                 prompt_lens=[],
@@ -193,32 +205,22 @@ def main(args) -> None:
                 block_tables=block_tables,
                 use_target_attention=True,
             )
-            REPEAT = 1
             input_ids = torch.tensor(input_tokens, dtype=torch.long, device="cuda")
             input_positions = torch.tensor(
                 input_positions, dtype=torch.long, device="cuda"
             )
 
-            # sample_input = torch.rand((input_tok_len, ,dmodel ), device="cuda")
-
-
-            # Run the layer
+            # Run the forward pass
             start = time.perf_counter()
             for _ in range(REPEAT):
                 res = decoder.forward(
                     input_ids, input_positions, kv_cache, input_metadata, None
                 )
-                # res = layer.forward(
-                #     sample_input,
-                #     input_metadata,
-                #     kv_cache,
-                #     None,
-                # )
             torch.cuda.synchronize()
             end = time.perf_counter()
-
             time_taken = (end - start) / REPEAT
 
+            # Insert into results
             results = {
                 "input_tok_len": input_tok_len,
                 "time_taken": time_taken,
@@ -230,8 +232,15 @@ def main(args) -> None:
 
     # Save time_results as json
     import json
-
-    with open(f"layer_tiling_results_decoderlayer_{args.gpunum}.json", "w") as f:
+    
+    gpu_model_name = torch.cuda.get_device_name(args.gpunum)
+    target_model_name = args.target_model
+    # Naming convention :
+    # GPU model - Target model name
+    file_name = f"tiling_test_{gpu_model_name}_{target_model_name}.json"
+    file_name = file_name.replace("/", "_")
+    
+    with open("tiling_profile_results_json/" + file_name, "w") as f:
         json.dump(time_results, f, indent=4)
 
 
@@ -316,11 +325,22 @@ if __name__ == "__main__":
         action="store_true",
         help="profile the generation process of a single batch",
     )
+
+    # This argument added for naming output files
     parser.add_argument(
         "--gpunum",
         type=int,
         default=0,
     )
+    parser.add_argument(
+        "--random-draft-len",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--random-context-len",
+        action="store_true",
+    )
+
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.target_model
