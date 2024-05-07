@@ -11,10 +11,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 from tqdm import tqdm
 from vllm.model_executor.input_metadata import InputMetadata
 
-download_dir = "/workspace/vllm/.huggingface_cache"
+download_dir = "/data/models/"
 import os
 
-os.environ["HF_HOME"] = "/workspace/vllm/.huggingface_cache"
+os.environ["HF_HOME"] = "/data/models/"
 
 # Function for pre-processing context-len for new attention kernel
 def expand_context_lens(max_context_len_per_query: List[int], query_lens: List[int]):
@@ -110,8 +110,19 @@ def main(args) -> None:
     target_model = target_model_runner.model
 
     # Extracted Models
-    decoder = target_model.model.decoder
-    layer = decoder.layers[0]
+    
+    # opt -> target_model.model.decoder
+    # llama -> 
+    if "opt" in args.target_model:
+        decoder = target_model.model.decoder
+    elif "llama" in args.target_model:
+        decoder = target_model.model
+    elif "bloom" in args.target_model:
+        decoder = target_model
+    elif "pythia" in args.target_model:
+        decoder = target_model
+    else:
+        raise ValueError("Unknown model type")
 
     block_size = worker.cache_config.block_size
 
@@ -124,7 +135,6 @@ def main(args) -> None:
     # for batch_size in [16, 32, 64]:  # This is to test different granularities!
     for batch_size in [32,32,32]:
         max_query_len = 8
-        dmodel = layer.config.num_attention_heads  # please work
 
         target_gpu_cache = worker.target_gpu_cache
         kv_cache = target_gpu_cache
@@ -237,7 +247,7 @@ def main(args) -> None:
     target_model_name = args.target_model
     # Naming convention :
     # GPU model - Target model name
-    file_name = f"tiling_test_{gpu_model_name}_{target_model_name}.json"
+    file_name = f"tiling_test_gpu_{gpu_model_name}_model_{target_model_name}.json"
     file_name = file_name.replace("/", "_")
     
     with open("tiling_profile_results_json/" + file_name, "w") as f:
