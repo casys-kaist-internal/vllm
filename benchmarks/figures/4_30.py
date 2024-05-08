@@ -13,11 +13,11 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/home/sjchoi/workspace/models'
+download_dir = '/data/models'
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('gsm8k', 'main')['train']
+    dataset = load_dataset('gsm8k', 'main', cache_dir=download_dir)['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['question'] for data in dataset]
@@ -49,7 +49,7 @@ def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_humaneval(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('openai_humaneval')['test']
+    dataset = load_dataset('openai_humaneval', cache_dir=download_dir)['test']
 
     # Tokenize the prompts and completions.
     prompts = [data['prompt'] for data in dataset]
@@ -81,7 +81,7 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_alpaca(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('tatsu-lab/alpaca')['train']
+    dataset = load_dataset('tatsu-lab/alpaca', cache_dir=download_dir)['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['instruction'] + data['input'] for data in dataset]
@@ -113,7 +113,7 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('philschmid/mt-bench')['train']
+    dataset = load_dataset('philschmid/mt-bench', cache_dir=download_dir)['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
@@ -188,7 +188,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
     return filtered_dataset
 
 def load_apps(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('codeparrot/apps')['train']
+    dataset = load_dataset('codeparrot/apps', cache_dir=download_dir)['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['question'] for data in dataset]
@@ -301,9 +301,9 @@ def main(args: argparse.Namespace):
     throughputs = []
     # output_lens = []
         
-    for i in range(1, 10):
+    for i in range(1, 51):
         # sampled_requests = random.sample(requests, args.batch_size)
-        sampled_requests = requests[args.batch_size *args.num_iters:args.batch_size * (args.num_iters + 1)]
+        sampled_requests = requests[args.batch_size *i:args.batch_size * (i + 1)]
         # sampled_requests = requests[args.index:args.index + 1]
 
         # print(sampled_requests)
@@ -318,7 +318,7 @@ def main(args: argparse.Namespace):
                     top_p=1.0,
                     use_beam_search=False,
                     ignore_eos=True,
-                    max_tokens=512,
+                    max_tokens=output_len,
                 )
             else:
                 sampling_params = SamplingParams(
@@ -349,11 +349,22 @@ def main(args: argparse.Namespace):
         for idx, output in enumerate(outputs):
             output_tokens += len(output.outputs[0].token_ids)
             total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
+        # # write down output to csv file 
+        # with open('output.csv', 'a') as f:
+        #     for idx, output in enumerate(outputs):
+        #         output_tokens += len(output.outputs[0].token_ids)
+        #         total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
+        #         # write the output in one line without breaking new line 
+        #         clean_text = output.outputs[0].text.replace('\n', ' ')
+        #         f.write(f"{idx}, {sampled_requests[idx][0]}, {clean_text}\n")
+            # print(f"{idx}, {sampled_requests[idx][0]}, {output.outputs[0].text}")
+
             # print("-" * 80)
             # print(f"{idx} Prompt: {sampled_requests[idx][0]}")
+            # print("-" * 80)
             # print(f"{idx} Output: {output.outputs[0].text}")
         throughputs.append(total_tokens / (end_time - start_time))
-        print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
+        # print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
         # print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")
@@ -365,7 +376,7 @@ def main(args: argparse.Namespace):
     #     throughputs.append(throughput)
     #     output_lens.append(np.mean(output_len))
 
-    print("throughput: ", np.mean(throughputs))
+    print("throughput: ", np.mean(throughputs), throughputs)
 
     # print(
     #     f"result, {np.mean(latencies):.6f}, {np.mean(throughputs):.6f}, {np.mean(output_lens):.3f}")
@@ -378,18 +389,19 @@ if __name__ == '__main__':
     parser.add_argument("--index", type=int, default=1)
     parser.add_argument("--engine", type=str, choices=["base", "sps"],
                         default="base")
-    parser.add_argument("--dataset", type=str, default="gsm8k",
+    parser.add_argument("--dataset", type=str, default="apps",
                         choices=["gsm8k", "humaneval",
                                  "alpaca", "mt-bench", "sharegpt", "apps"],
                         help="Dataset to use.")
-    parser.add_argument('--target-model', type=str, 
+    parser.add_argument('--target-model', type=str,
+                        # default='EleutherAI/pythia-6.9b') 
                         # default='EleutherAI/pythia-12b')
                         default='facebook/opt-6.7b')
                         # default='bigscience/bloom-7b1')
                         # default='daryl149/llama-2-7b-chat-hf')
                         # default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, 
-                        # default='EleutherAI/pythia-410m')
+                        # default='EleutherAI/pythia-14m')
                         # default='bigscience/bloomz-560m')
                         # default='Felladrin/Llama-68M-Chat-v1')
                         default='facebook/opt-125m')
@@ -410,11 +422,11 @@ if __name__ == '__main__':
                         choices=['awq', 'squeezellm', None],
                         default=None)
     parser.add_argument('--tensor-parallel-size', '-tp', type=int, default=1)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=0.5,
+                        default=0.75,
                         help='Sampling temperature.')
     parser.add_argument('--random-temp', action='store_true')
     parser.add_argument('--n',

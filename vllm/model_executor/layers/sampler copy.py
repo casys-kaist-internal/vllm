@@ -164,9 +164,15 @@ def _get_penalties(
             repetition_penalties += [1] * (prompt_len - 1)
 
         if not sampling_metadata.is_target_decode:
-            presence_penalties += [p] * len(seq_ids)
-            frequency_penalties += [f] * len(seq_ids)
-            repetition_penalties += [r] * len(seq_ids)
+            if not sampling_metadata.is_draft_decode:
+                presence_penalties += [p] * len(seq_ids)
+                frequency_penalties += [f] * len(seq_ids)
+                repetition_penalties += [r] * len(seq_ids)
+            else:
+                assert len(seq_ids) == 1
+                presence_penalties += [p] * sampling_metadata.draft_lens[i]
+                frequency_penalties += [f] * sampling_metadata.draft_lens[i]
+                repetition_penalties += [r] * sampling_metadata.draft_lens[i]
         else:
             assert len(seq_ids) == 1
             presence_penalties += [p] * sampling_metadata.target_lens[i]
@@ -194,6 +200,10 @@ def _get_prompt_and_output_tokens(
             seq_data = sampling_metadata.seq_data[seq_id]
             if sampling_metadata.target_lens:
                 for _ in range(sampling_metadata.target_lens[i]):
+                    prompt_tokens.append(seq_data.prompt_token_ids)
+                    output_tokens.append(seq_data.output_token_ids)
+            elif sampling_metadata.draft_lens:
+                for _ in range(sampling_metadata.draft_lens[i]):
                     prompt_tokens.append(seq_data.prompt_token_ids)
                     output_tokens.append(seq_data.output_token_ids)
             else:
@@ -321,7 +331,11 @@ def _get_temperatures(sampling_metadata: SamplingMetadata) -> List[float]:
             temperatures += [temperature] * (prompt_len - 1)
 
         if not sampling_metadata.is_target_decode:
-            temperatures += [temperature] * len(seq_ids)
+            if not sampling_metadata.is_draft_decode:
+                temperatures += [temperature] * len(seq_ids)
+            else:
+                assert len(seq_ids) == 1
+                temperatures += [temperature] * sampling_metadata.draft_lens[i]
         else:
             assert len(seq_ids) == 1
             temperatures += [temperature] * sampling_metadata.target_lens[i]
@@ -352,9 +366,15 @@ def _get_top_p_top_k_min_p(
             min_ps += [min_p] * (prompt_len - 1)
 
         if not sampling_metadata.is_target_decode:
-            top_ps += [top_p] * len(seq_ids)
-            top_ks += [top_k] * len(seq_ids)
-            min_ps += [min_p] * len(seq_ids)
+            if not sampling_metadata.is_draft_decode:
+                top_ps += [top_p] * len(seq_ids)
+                top_ks += [top_k] * len(seq_ids)
+                min_ps += [min_p] * len(seq_ids)
+            else:
+                assert len(seq_ids) == 1
+                top_ps += [top_p] * sampling_metadata.draft_lens[i]
+                top_ks += [top_k] * sampling_metadata.draft_lens[i]
+                min_ps += [min_p] * sampling_metadata.draft_lens[i]
         else:
             assert len(seq_ids) == 1
             top_ps += [top_p] * sampling_metadata.target_lens[i]

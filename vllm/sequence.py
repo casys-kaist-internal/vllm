@@ -377,7 +377,7 @@ class Sequence:
             return 0.5  # Return a default initial beta value if list is empty
 
         # Define the span for EMA calculation
-        decay = 0.75
+        decay = 0.5
 
         # Initialize EMA; if no previous EMAs, start with the first beta value
         if self.last_ema is None:
@@ -428,10 +428,19 @@ class Sequence:
         # interval param for retraining 
         # if interval > 100000: 
         # retrain 
-
-        predicted_accept_prob = 1.81*beta_ema + 1.44*draft_prob + -1.95*beta_ema**2 + -1.17*beta_ema*draft_prob + -1.09*draft_prob**2 + 0.61*beta_ema**3 + 1.13*(beta_ema**2)*draft_prob + -0.42*beta_ema*(draft_prob**2) + 0.75*draft_prob**3 + -0.03
+        # predicted_accept_prob = 1.81*beta_ema + 1.44*draft_prob + -1.95*beta_ema**2 + -1.17*beta_ema*draft_prob + -1.09*draft_prob**2 + 0.61*beta_ema**3 + 1.13*(beta_ema**2)*draft_prob + -0.42*beta_ema*(draft_prob**2) + 0.75*draft_prob**3 + -0.03
         # print(predicted_accept_prob, beta_ema, draft_prob)
+        # 1.12*beta_ema_binned + 0.80*draft_prob_binned + -0.64*beta_ema_binned^2 + -0.95*beta_ema_binned draft_prob_binned + 0.23*draft_prob_binned^2 + 0.03*beta_ema_binned^3 + 0.71*beta_ema_binned^2 draft_prob_binned + -0.08*beta_ema_binned draft_prob_binned^2 + -0.02*draft_prob_binned^3 + -0.04
+        # Median 
+        # predicted_accept_prob = 1.12*beta_ema + 0.80*draft_prob + -0.64*beta_ema**2 + -0.95*beta_ema*draft_prob + 0.23*draft_prob**2 + 0.03*beta_ema**3 + 0.71*(beta_ema**2)*draft_prob + -0.08*beta_ema*(draft_prob**2) + -0.02*draft_prob**3 + -0.04
+        # Mean 
+        # 0.71*beta_ema + 0.95*draft_prob + -0.56*beta_ema^2 + -0.70*beta_ema draft_prob + -1.39*draft_prob^2 + 0.31*beta_ema^3 + -0.10*beta_ema^2 draft_prob + 0.61*beta_ema draft_prob^2 + 1.01*draft_prob^3 + 0.18
+        # predicted_accept_prob = 0.71*beta_ema + 0.95*draft_prob + -0.56*beta_ema**2 + -0.70*beta_ema*draft_prob + -1.39*draft_prob**2 + 0.31*beta_ema**3 + -0.10*(beta_ema**2)*draft_prob + 0.61*beta_ema*(draft_prob**2) + 1.01*draft_prob**3 + 0.18
         
+        # 0.79*beta_ema_binned + 0.75*draft_prob_binned + -0.26*beta_ema_binned^2 + -0.36*beta_ema_binned draft_prob_binned + 0.15*draft_prob_binned^2 
+        predicted_accept_prob = 0.79*beta_ema + 0.75*draft_prob + -0.26*beta_ema**2 + -0.36*beta_ema*draft_prob + 0.15*draft_prob**2
+        # 0.47*beta_ema + 0.27*draft_prob + -0.11*beta_ema^2 + -0.23*beta_ema draft_prob + 0.29*draft_prob^2 + 0.24
+        # predicted_accept_prob = 0.47*beta_ema + 0.27*draft_prob + -0.11*beta_ema**2 + -0.23*beta_ema*draft_prob + 0.29*draft_prob**2 + 0.24
         self.cumulative_accept_prob *= predicted_accept_prob
 
         random_accept_prob = np.random.uniform(0, 1)
@@ -461,7 +470,8 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
-        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  "|", self.accept_probs, " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+
+        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  "|", self.accept_probs, " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list, "|", self.data.get_draft_prob_skewness())
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
@@ -478,10 +488,6 @@ class Sequence:
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-
-        # else:  # all accept bonus token
-        #     accept_probs.append(1)
-        #     beta_list.append(1)
 
         # print("!", self.get_beta_ema(), accept_cnt)
 

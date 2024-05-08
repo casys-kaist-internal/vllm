@@ -43,6 +43,7 @@ class SamplingMetadata:
         # SpS related attributes start
         self.sampled_draft_token_ids = sampled_draft_token_ids
         self.draft_probs = draft_probs
+        self.is_draft_decode = len(draft_lens) > 0
         self.is_target_decode = len(target_lens) > 0
         # SpS related attributes end
 
