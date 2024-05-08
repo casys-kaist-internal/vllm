@@ -8,11 +8,12 @@ from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
+from vllm.core.sps_draft_optim import BetaEMADraftSizeOptimizer
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage, SequenceData, SequenceGroupOutput,
-                           SequenceGroup, SequenceStatus)
+from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage,
+                           SequenceData, SequenceStatus)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
 from vllm.utils import get_gpu_memory
@@ -48,6 +49,7 @@ class SpSWorker:
                                                   scheduler_config, sps_config)
         self.draft_model_runner = SpSModelRunner(draft_model_config, parallel_config,
                                                  scheduler_config, sps_config)
+        self.draft_optimizer = BetaEMADraftSizeOptimizer()
 
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
@@ -235,11 +237,15 @@ class SpSWorker:
                 child_sample.probs,
             )
 
-            # check early stopping
-            if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
-                # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
-                parent_seq.draft_size = parent_seq.get_draft_len()
+            if self.sps_config.use_dynamic_draft_size:
+                self.draft_optimizer.update_draft_size_seq(parent_seq)
                 seq_group_metadata.draft_size = parent_seq.draft_size
+            
+            # # check early stopping
+            # if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
+            #     # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
+            #     parent_seq.draft_size = parent_seq.get_draft_len()
+            #     seq_group_metadata.draft_size = parent_seq.draft_size
     
     @torch.inference_mode()
     def execute_target_model(

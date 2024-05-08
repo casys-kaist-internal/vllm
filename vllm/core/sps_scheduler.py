@@ -90,11 +90,10 @@ class SpSScheduler:
         self.need_to_run_draft: List[SequenceGroup] = []
         self.need_to_run_target: List[SequenceGroup] = []
 
-
     @property
     def running(self) -> List[SequenceGroup]:
         return self.need_to_run_draft + self.need_to_run_target
-    
+
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
