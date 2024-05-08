@@ -247,6 +247,8 @@ class Sequence:
 
         # Can change every iteration if use_dynamic_draft_size is True
         self.draft_size = draft_size
+        self.score = []
+        self.draft_size_list = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -394,12 +396,6 @@ class Sequence:
         self.last_calculated_index = len(self.beta_list) - 1
 
         return self.last_ema
-        # if self.last_ema == 1:
-        #     # Avoid division by Zero 
-        #     self.last_ema = 0.9999999999999999
-    
-        # # This is for E(# of expected tokens)
-        # return (1 - self.last_ema**(7 + 1)) / (1 - self.last_ema)
     
     def get_new_draft_history(self) -> Tuple[List[float], List[float], List[float]]:
         out = self.new_beta_emas, self.new_draft_probs, self.new_accept_probs
@@ -419,60 +415,6 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
-    def check_early_stop(self) -> bool:
-        # Check if the sequence should be stopped early
-        # Get probability of last draft token
-        last_draft_token_id = self.data.get_last_draft_token_id()
-        draft_prob = self.data.get_draft_probs()[-1][last_draft_token_id].item()
-        beta_ema = self.get_beta_ema()
-        # predicted_accept_prob = 0.48*beta_ema + 1.07*draft_prob + -0.05*beta_ema**2 + -0.46*beta_ema*draft_prob + -1.98*draft_prob**2 + -0.16*beta_ema**3 + 0.35*(beta_ema**2)*draft_prob + -0.10*beta_ema*draft_prob**2 + 1.62*draft_prob**3 + 0.22
-        # predicted_accept_prob = 0.1*beta_ema + 0.9*draft_prob 
-        # predicted_accept_prob = 0.59*beta_ema + 1.00*draft_prob + -0.51*beta_ema**2 + -0.25*beta_ema*draft_prob + -2.04*draft_prob**2 + 0.18*beta_ema**3 + 0.19*(beta_ema**2)*draft_prob + -0.07*beta_ema*draft_prob**2 + 1.65*draft_prob**3 + 0.23
-        # 0.33*beta_ema + 0.73*draft_prob + -0.28*beta_ema^2 + 0.03*beta_ema draft_prob + -1.33*draft_prob^2 + 0.09*beta_ema^3 + 0.05*beta_ema^2 draft_prob + -0.15*beta_ema draft_prob^2 + 1.16*draft_prob^3 + 0.32
-        # predicted_accept_prob = 0.33*beta_ema + 0.73*draft_prob + -0.28*beta_ema**2 + 0.03*beta_ema*draft_prob + -1.33*draft_prob**2 + 0.09*beta_ema**3 + 0.05*(beta_ema**2)*draft_prob + -0.15*beta_ema*(draft_prob**2) + 1.16*draft_prob**3 + 0.32
-        # 0.97*beta_ema_binned + 1.13*draft_prob_binned + -1.22*beta_ema_binned^2 + -0.08*beta_ema_binned draft_prob_binned + -1.03*draft_prob_binned^2 + 0.59*beta_ema_binned^3 + 0.08*beta_ema_binned^2 draft_prob_binned + -0.26*beta_ema_binned draft_prob_binned^2 + 0.82*draft_prob_binned^3 + 0.08
-        # predicted_accept_prob = 0.97*beta_ema + 1.13*draft_prob + -1.22*beta_ema**2 + -0.08*beta_ema*draft_prob + -1.03*draft_prob**2 + 0.59*beta_ema**3 + 0.08*(beta_ema**2)*draft_prob + -0.26*beta_ema*(draft_prob**2) + 0.82*draft_prob**3 + 0.08
-        # 1.43*beta_ema_binned + 1.38*draft_prob_binned + -0.52*beta_ema_binned^2 + -1.24*beta_ema_binned draft_prob_binned + -0.79*draft_prob_binned^2 + -0.44*beta_ema_binned^3 + 1.22*beta_ema_binned^2 draft_prob_binned + -0.53*beta_ema_binned draft_prob_binned^2 + 0.61*draft_prob_binned^3 + -0.09
-        # predicted_accept_prob = 1.43*beta_ema + 1.38*draft_prob + -0.52*beta_ema**2 + -1.24*beta_ema*draft_prob + -0.79*draft_prob**2 + -0.44*beta_ema**3 + 1.22*(beta_ema**2)*draft_prob + -0.53*beta_ema*(draft_prob**2) + 0.61*draft_prob**3 + -0.09
-        # 1.81*beta_ema_binned + 1.44*draft_prob_binned + -1.95*beta_ema_binned^2 + -1.17*beta_ema_binned draft_prob_binned + -1.09*draft_prob_binned^2 + 0.61*beta_ema_binned^3 + 1.13*beta_ema_binned^2 draft_prob_binned + -0.42*beta_ema_binned draft_prob_binned^2 + 0.75*draft_prob_binned^3 + -0.03
-        # interval param for retraining 
-        # if interval > 100000: 
-        # retrain 
-        # predicted_accept_prob = 1.81*beta_ema + 1.44*draft_prob + -1.95*beta_ema**2 + -1.17*beta_ema*draft_prob + -1.09*draft_prob**2 + 0.61*beta_ema**3 + 1.13*(beta_ema**2)*draft_prob + -0.42*beta_ema*(draft_prob**2) + 0.75*draft_prob**3 + -0.03
-        # print(predicted_accept_prob, beta_ema, draft_prob)
-        # 1.12*beta_ema_binned + 0.80*draft_prob_binned + -0.64*beta_ema_binned^2 + -0.95*beta_ema_binned draft_prob_binned + 0.23*draft_prob_binned^2 + 0.03*beta_ema_binned^3 + 0.71*beta_ema_binned^2 draft_prob_binned + -0.08*beta_ema_binned draft_prob_binned^2 + -0.02*draft_prob_binned^3 + -0.04
-        # Median 
-        # predicted_accept_prob = 1.12*beta_ema + 0.80*draft_prob + -0.64*beta_ema**2 + -0.95*beta_ema*draft_prob + 0.23*draft_prob**2 + 0.03*beta_ema**3 + 0.71*(beta_ema**2)*draft_prob + -0.08*beta_ema*(draft_prob**2) + -0.02*draft_prob**3 + -0.04
-        # Mean 
-        # 0.71*beta_ema + 0.95*draft_prob + -0.56*beta_ema^2 + -0.70*beta_ema draft_prob + -1.39*draft_prob^2 + 0.31*beta_ema^3 + -0.10*beta_ema^2 draft_prob + 0.61*beta_ema draft_prob^2 + 1.01*draft_prob^3 + 0.18
-        # predicted_accept_prob = 0.71*beta_ema + 0.95*draft_prob + -0.56*beta_ema**2 + -0.70*beta_ema*draft_prob + -1.39*draft_prob**2 + 0.31*beta_ema**3 + -0.10*(beta_ema**2)*draft_prob + 0.61*beta_ema*(draft_prob**2) + 1.01*draft_prob**3 + 0.18
-        
-        # 0.79*beta_ema_binned + 0.75*draft_prob_binned + -0.26*beta_ema_binned^2 + -0.36*beta_ema_binned draft_prob_binned + 0.15*draft_prob_binned^2 
-        predicted_accept_prob = 0.79*beta_ema + 0.75*draft_prob + -0.26*beta_ema**2 + -0.36*beta_ema*draft_prob + 0.15*draft_prob**2
-        # 0.47*beta_ema + 0.27*draft_prob + -0.11*beta_ema^2 + -0.23*beta_ema draft_prob + 0.29*draft_prob^2 + 0.24
-        # predicted_accept_prob = 0.47*beta_ema + 0.27*draft_prob + -0.11*beta_ema**2 + -0.23*beta_ema*draft_prob + 0.29*draft_prob**2 + 0.24
-        self.cumulative_accept_prob *= predicted_accept_prob
-
-        random_accept_prob = np.random.uniform(0, 1)
-        if self.cumulative_accept_prob < random_accept_prob:
-            self.cumulative_accept_prob = 1
-            return True
-        else:
-            return False
-
-        return (predicted_accept_prob < random_accept_prob)
-
-    def custom_score(self, y_true, y_pred):
-        # Convert predictions to nearest integers
-        nearest_int_pred = np.round(y_pred)
-        
-        # Calculate the absolute difference
-        abs_errors = np.abs(y_true - nearest_int_pred)
-        
-        # Mean Absolute Error based on integer predictions
-        mae = np.mean(abs_errors)
-        return mae
-
     def accept_draft_tokens(self,
                             accept_cnt: int,
                             accept_probs: List[float],
@@ -480,18 +422,21 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
-<<<<<<< HEAD
-
-        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  "|", self.accept_probs, " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list, "|", self.data.get_draft_prob_skewness())
-=======
         # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
-        
+        # print("accept_cnt", accept_cnt, "draft_size", self.draft_size)
+        # print(new_draft_probs)
+        # print(accept_probs[:accept_cnt+1])
         # Update the stats for calculating the dynamic draft size.
         new_draft_probs = self.data.get_draft_prob_for_tokens()
-        self.new_beta_emas.extend([self.get_beta_ema()] * len(new_draft_probs))
-        self.new_draft_probs.extend(new_draft_probs)
-        self.new_accept_probs.extend(accept_probs[:len(new_draft_probs)])
->>>>>>> origin/npn
+
+        if accept_cnt != self.draft_size:
+            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt+1))
+            self.new_draft_probs.extend(new_draft_probs[:accept_cnt+1])
+            self.new_accept_probs.extend(accept_probs[:accept_cnt+1])
+        else:
+            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt))
+            self.new_draft_probs.extend(new_draft_probs[:accept_cnt])
+            self.new_accept_probs.extend(accept_probs[:accept_cnt])
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
@@ -514,6 +459,8 @@ class Sequence:
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
         self.beta_list.extend(beta_list)
+        self.score.append(accept_cnt / self.draft_size)
+        self.draft_size_list.append(self.draft_size)
 
         return free_block_cnt
 

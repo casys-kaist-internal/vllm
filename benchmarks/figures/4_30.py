@@ -350,6 +350,9 @@ def main(args: argparse.Namespace):
         total_tokens = 0
         output_tokens = 0
         for idx, output in enumerate(outputs):
+            avg_score = output.outputs[0].avg_score
+            avg_draft_size = output.outputs[0].avg_draft_size
+            print(f"{avg_draft_size:2f}, {avg_score:.2f}")
             output_tokens += len(output.outputs[0].token_ids)
             total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
         # # write down output to csv file 
@@ -367,7 +370,7 @@ def main(args: argparse.Namespace):
             # print("-" * 80)
             # print(f"{idx} Output: {output.outputs[0].text}")
         throughputs.append(total_tokens / (end_time - start_time))
-        # print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
+        print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
         # print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")

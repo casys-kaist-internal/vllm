@@ -265,11 +265,11 @@ class SpSScheduler:
             # Sort by draft size 
             # self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
 
-            if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
-                if self.sps_config.use_tile_size_constraint:
-                    find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
-                else:
-                    find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
+            # if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
+            #     if self.sps_config.use_tile_size_constraint:
+            #         find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
+            #     else:
+            #         find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
             
             # Sort by draft size 
             self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
