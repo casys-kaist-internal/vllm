@@ -199,9 +199,9 @@ class SpSLLM:
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
-                    # Return at first output
-                    self.llm_engine.abort_all_requests()
-                    return step_outputs
+                    # # Return at first output
+                    # self.llm_engine.abort_all_requests()
+                    # return step_outputs
                     if use_tqdm:
                         pbar.update(1)
         if use_tqdm:

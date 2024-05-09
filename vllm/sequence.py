@@ -402,7 +402,11 @@ class Sequence:
         self.new_beta_emas = []
         self.new_draft_probs = []
         self.new_accept_probs = []
-        return out
+
+        if len(self.beta_list) >= 30:
+            return out
+        else:
+            return [], [], []
         
     def append_draft_token_id(
         self,

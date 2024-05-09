@@ -343,6 +343,7 @@ def main(args: argparse.Namespace):
         torch.cuda.synchronize()
         start_time = time.monotonic()
         outputs = llm._run_engine(use_tqdm=True)
+        
         torch.cuda.synchronize()
         end_time = time.monotonic()
 
