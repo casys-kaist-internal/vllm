@@ -143,9 +143,10 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         X = binned_df[['beta_ema', 'draft_prob']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         y = binned_df['accept_prob']
 
-        # # Prepare data for regression
-        # X = binned_df[["beta_ema_binned_code", "draft_prob_binned_code"]].values
-        # y = binned_df["accept_prob"].values
+        # Check if the input data is empty
+        if X.shape[0] == 0 or y.shape[0] == 0:
+            print("No data available for training the predictor. Skipping this training step.")
+            return
 
         # Set the grid dimensions
         grid_extent = [0, 1, 0, 1]
@@ -268,10 +269,6 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
                 .dropna()
             )
         binned_df.reset_index(inplace=True)
-
-        # # Convert categories to codes to be used in regression
-        # binned_df["beta_ema_binned_code"] = binned_df["beta_ema"].cat.codes
-        # binned_df["draft_prob_binned_code"] = binned_df["draft_prob"].cat.codes
 
         return binned_df
 
