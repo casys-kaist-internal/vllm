@@ -13,7 +13,7 @@ from sklearn.pipeline import Pipeline
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
-PLOT_HEATMAP = True
+PLOT_HEATMAP = False
 
 # print the polynomial function
 def create_polynomial_equation(model, feature_names):
@@ -42,7 +42,7 @@ class DraftSizeOptimizer:
 class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
     def __init__(self):
         self.retrain_index = 0
-        self.retrain_period = 100000
+        self.retrain_period = 1000
         self.history_size = 1000000
         self.num_bins = 20
         self.predictor_degree = 2
@@ -82,7 +82,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         poly_features = PolynomialFeatures(
             degree=self.predictor_degree, include_bias=False
         )
-        poly_features.fit([[0, 0]])  # Fit with dummy features.
+        # fit with dummy
+        dummy_df = pd.DataFrame([[0, 0]], columns=["beta_ema", "draft_prob"])
+        poly_features.fit(dummy_df) 
 
         # predictor = ElasticNet(alpha=0.1, l1_ratio=0.5, fit_intercept=True)
         predictor = LinearRegression(fit_intercept=True)
@@ -121,25 +123,50 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.draft_history["accept_prob"].extend(accept_probs)
 
     def _predict_accept_prob(self, beta_ema: float, draft_prob: float) -> float:
-        X = np.array([[beta_ema, draft_prob]])
-        accept_prob = self.predictor.predict(X)
+        # Prepare the input data with appropriate feature names
+        X = pd.DataFrame([[beta_ema, draft_prob]], columns=["beta_ema", "draft_prob"])
+        
+        # Apply polynomial feature transformation with the proper feature names
+        X_poly = self.predictor.named_steps['poly'].transform(X)
+        
+        # Predict acceptance probability using the linear model
+        accept_prob = self.predictor.named_steps['linear'].predict(X_poly)
+        
+        # Clip the result to ensure it's within [0, 1]
         return np.clip(accept_prob[0], 0, 1)
+
 
     def _train_predictor(self):
         start_time = time.monotonic()
         binned_df = self._get_binned_draft_history_df()
 
-        # Prepare data for regression
-        X = binned_df[["beta_ema_binned_code", "draft_prob_binned_code"]].values
-        y = binned_df["accept_prob"].values
+        X = binned_df[['beta_ema', 'draft_prob']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+        y = binned_df['accept_prob']
+
+        # # Prepare data for regression
+        # X = binned_df[["beta_ema_binned_code", "draft_prob_binned_code"]].values
+        # y = binned_df["accept_prob"].values
 
         # Set the grid dimensions
         grid_extent = [0, 1, 0, 1]
 
         if PLOT_HEATMAP:
             # Predict the "before" state
-            X_predict = np.array([[beta, draft] for beta in np.linspace(0, 1, self.num_bins) for draft in np.linspace(0, 1, self.num_bins)])
+            # Create a grid of (beta, draft) pairs using a Pandas DataFrame with feature names
+            beta_values = np.linspace(0, 1, self.num_bins)
+            draft_values = np.linspace(0, 1, self.num_bins)
+
+            # Generate pairs as a DataFrame
+            X_predict = pd.DataFrame(
+                [[beta, draft] for beta in beta_values for draft in draft_values],
+                columns=["beta_ema", "draft_prob"]
+            )
             y_initial_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
+        
+        # Check if the input data is empty
+        if X.shape[0] == 0 or y.shape[0] == 0:
+            print("No data available for training the predictor. Skipping this training step.")
+            return
 
         # Linear regression training
         self.predictor.fit(X, y)
@@ -235,14 +262,16 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         else:
             binned_df = (
                 draft_accepted_df.groupby(["beta_ema", "draft_prob"])
-                .agg({"accept_prob": self.agg_type})
+                .agg(accept_prob=pd.NamedAgg(
+                        column="accept_prob", aggfunc=self.agg_type
+                    ))
                 .dropna()
             )
         binned_df.reset_index(inplace=True)
 
-        # Convert categories to codes to be used in regression
-        binned_df["beta_ema_binned_code"] = binned_df["beta_ema"].cat.codes
-        binned_df["draft_prob_binned_code"] = binned_df["draft_prob"].cat.codes
+        # # Convert categories to codes to be used in regression
+        # binned_df["beta_ema_binned_code"] = binned_df["beta_ema"].cat.codes
+        # binned_df["draft_prob_binned_code"] = binned_df["draft_prob"].cat.codes
 
         return binned_df
 
