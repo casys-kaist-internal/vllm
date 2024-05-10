@@ -218,6 +218,20 @@ def load_apps(tokenizer: PreTrainedTokenizerBase):
 
     return filtered_dataset
 
+def load_all_datasets(tokenizer: PreTrainedTokenizerBase):
+    gsm8k = load_gsm8k(tokenizer)
+    humaneval = load_humaneval(tokenizer)
+    alpaca = load_alpaca(tokenizer)
+    mt_bench = load_mt_bench(tokenizer)
+    sharegpt = load_sharegpt(tokenizer)
+    apps = load_apps(tokenizer)
+
+    # shuffle all datasets
+    result = gsm8k + humaneval + alpaca + mt_bench + sharegpt + apps
+    random.shuffle(result)
+
+    return result
+
 
 def warmup(llm):
     dummy_prompt_token_ids = [[0] * 32] * 32
@@ -288,6 +302,8 @@ def main(args: argparse.Namespace):
         requests = load_sharegpt(tokenizer)
     elif args.dataset == "apps":
         requests = load_apps(tokenizer)
+    elif args.dataset == "all":
+        requests = load_all_datasets(tokenizer)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
@@ -398,7 +414,7 @@ if __name__ == '__main__':
                         default="base")
     parser.add_argument("--dataset", type=str, default="apps",
                         choices=["gsm8k", "humaneval",
-                                 "alpaca", "mt-bench", "sharegpt", "apps"],
+                                 "alpaca", "mt-bench", "sharegpt", "apps", "all"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str,
                         # default='EleutherAI/pythia-6.9b') 

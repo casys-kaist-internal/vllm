@@ -10,6 +10,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import ElasticNet
 from sklearn.pipeline import Pipeline
+from sklearn.exceptions import NotFittedError
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
@@ -42,10 +43,10 @@ class DraftSizeOptimizer:
 class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
     def __init__(self):
         self.retrain_index = 0
-        self.retrain_period = 1000
+        self.retrain_period = 10000
         self.history_size = 1000000
         self.num_bins = 20
-        self.predictor_degree = 2
+        self.predictor_degree = 3
         self.agg_type = "median"
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
@@ -80,7 +81,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
     def _init_predictor(self) -> Pipeline:
         poly_features = PolynomialFeatures(
-            degree=self.predictor_degree, include_bias=False
+            degree=self.predictor_degree, include_bias=True
         )
         # fit with dummy
         dummy_df = pd.DataFrame([[0, 0]], columns=["beta_ema", "draft_prob"])
@@ -88,11 +89,16 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         # predictor = ElasticNet(alpha=0.1, l1_ratio=0.5, fit_intercept=True)
         predictor = LinearRegression(fit_intercept=True)
-        # Set initial parameters.
+        # # Set initial parameters.
+        # predictor.coef_ = np.array(
+        #     [0.85221723, 0.67564867, -0.29379885, -0.38084159, 0.24302686]
+        # )
+        # predictor.intercept_ = -0.015180676837696971
+
         predictor.coef_ = np.array(
-            [0.85221723, 0.67564867, -0.29379885, -0.38084159, 0.24302686]
+            [0, 0.240050765,1.42375935,-3.22546415,-0.03299826,-0.78081028,1.66473911,-0.04958285,-0.6562083,0.41092696]
         )
-        predictor.intercept_ = -0.015180676837696971
+        predictor.intercept_ = -0.21273702585116017
 
         return Pipeline([("poly", poly_features), ("linear", predictor)])
 
@@ -134,11 +140,12 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         
         # Clip the result to ensure it's within [0, 1]
         return np.clip(accept_prob[0], 0, 1)
-
+ 
 
     def _train_predictor(self):
         start_time = time.monotonic()
         binned_df = self._get_binned_draft_history_df()
+        binning_time = time.monotonic()
 
         X = binned_df[['beta_ema', 'draft_prob']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         y = binned_df['accept_prob']
@@ -173,7 +180,11 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.predictor.fit(X, y)
         end_time = time.monotonic()
         elapsed_time_ms = (end_time - start_time) * 1000
+        binning_time_ms = (binning_time - start_time) * 1000
         print(f"Trained predictor in {elapsed_time_ms:.2f} ms")
+        print(f"Binning time: {binning_time_ms:.2f} ms")
+        print(f"{self.predictor.named_steps['linear'].coef_}")
+        print(f"{self.predictor.named_steps['linear'].intercept_}")
 
         if PLOT_HEATMAP:
             # Create a matrix for real acceptance probability heatmap
@@ -183,7 +194,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             y_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
 
             # Create the four subplots: Before, Real Data, After, Token Distribution
-            fig, axs = plt.subplots(1, 4, figsize=(24, 6), sharey=True)
+            fig, axs = plt.subplots(1, 3, figsize=(24, 6), sharey=True)
 
             # Plot "Before" (Initial Model Prediction)
             axs[0].imshow(y_initial_predict, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
@@ -200,12 +211,6 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             axs[2].imshow(y_predict, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
             axs[2].set_title('After (Final Model Prediction)')
             axs[2].set_xlabel('Draft Probability')
-
-            # Plot the token distribution
-            count_pivot = binned_df.pivot(index="beta_ema", columns="draft_prob", values="freq")
-            axs[3].imshow(count_pivot, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
-            axs[3].set_title('Token Distribution Heatmap')
-            axs[3].set_xlabel('Draft Probability')
 
             # Retrieve the final coefficients and intercept
             feature_names = self.predictor.named_steps['poly'].get_feature_names_out(['beta_ema', 'draft_prob'])
@@ -248,26 +253,13 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         draft_accepted_df["accept_prob"] = draft_accepted_df["accept_prob"].clip(0, 1)
 
         # Group and aggregate data
-        if PLOT_HEATMAP:
-            binned_df = (
-                draft_accepted_df.groupby(["beta_ema", "draft_prob"])
-                .agg(
-                    accept_prob=pd.NamedAgg(
-                        column="accept_prob", aggfunc=self.agg_type
-                    ),
-                    freq=pd.NamedAgg(column="accept_prob", aggfunc="count"),
-                )
-                .dropna()
-            )
-            binned_df["freq"] = binned_df["freq"] / len(binned_df)
-        else:
-            binned_df = (
-                draft_accepted_df.groupby(["beta_ema", "draft_prob"])
-                .agg(accept_prob=pd.NamedAgg(
-                        column="accept_prob", aggfunc=self.agg_type
-                    ))
-                .dropna()
-            )
+        binned_df = (
+            draft_accepted_df.groupby(["beta_ema", "draft_prob"])
+            .agg(accept_prob=pd.NamedAgg(
+                    column="accept_prob", aggfunc=self.agg_type
+                ))
+            .dropna()
+        )
         binned_df.reset_index(inplace=True)
 
         return binned_df
