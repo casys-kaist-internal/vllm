@@ -325,6 +325,10 @@ class SpSEngineArgs:
                             type=bool,
                             default=SpSEngineArgs.use_lazy_draft_kv_cache,
                             help='whether to use lazy draft KV cache')
+        parser.add_argument('--target-draft-latency-ratio', 
+                            '-c',
+                            type=float,
+                            default=0.2)
         parser.add_argument(
             '--tokenizer',
             type=str,
