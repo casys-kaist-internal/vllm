@@ -13,11 +13,11 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/data/models'
+download_dir = '/home/noppanat/workspace/models'
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('gsm8k', 'main', cache_dir=download_dir)['train']
+    dataset = load_dataset('gsm8k', 'main')['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['question'] for data in dataset]
@@ -49,7 +49,7 @@ def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_humaneval(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('openai_humaneval', cache_dir=download_dir)['test']
+    dataset = load_dataset('openai_humaneval')['test']
 
     # Tokenize the prompts and completions.
     prompts = [data['prompt'] for data in dataset]
@@ -81,7 +81,7 @@ def load_humaneval(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_alpaca(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('tatsu-lab/alpaca', cache_dir=download_dir)['train']
+    dataset = load_dataset('tatsu-lab/alpaca')['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['instruction'] + data['input'] for data in dataset]
@@ -113,7 +113,7 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('philschmid/mt-bench', cache_dir=download_dir)['train']
+    dataset = load_dataset('philschmid/mt-bench')['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
@@ -151,7 +151,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/sjchoi/workspace/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -188,7 +188,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
     return filtered_dataset
 
 def load_apps(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('codeparrot/apps', cache_dir=download_dir)['train']
+    dataset = load_dataset('codeparrot/apps')['train']
 
     # Tokenize the prompts and completions.
     prompts = [data['question'] for data in dataset]
@@ -249,7 +249,6 @@ def warmup(llm):
 
 
 def main(args: argparse.Namespace):
-    global download_dir
     print(args)
 
     tokenizer = AutoTokenizer.from_pretrained(
