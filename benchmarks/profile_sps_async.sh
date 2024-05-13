@@ -1,8 +1,8 @@
 dataset="/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json"
 target_model="facebook/opt-6.7b"
 draft_model="facebook/opt-125m"
-draft_size=7
-request_rate=16
+draft_size=4
+request_rate=4
 num_iters=3
 num_prompts=$((request_rate * num_iters))
 
@@ -25,7 +25,6 @@ echo "Running sps server at port $port"
     --target-model $target_model \
     --draft-model $draft_model \
     --draft-size $draft_size \
-    --use-dynamic-draft-size \
     --disable-log-requests \
     > $log_file &
 sleep 30
