@@ -6,7 +6,7 @@ from vllm.config import CacheConfig, SchedulerConfig, SpSConfig
 from vllm.core.sps_block_manager import SpSAllocStatus, SpSBlockSpaceManager
 from vllm.core.block_manager import AllocStatus, BlockSpaceManager
 from vllm.core.policy import PolicyFactory
-from vllm.core.sps_util import find_optimal_draft_size
+from vllm.core.sps_util import find_optimal_draft_size_with_tile_constraint, find_optimal_draft_size_without_tile_constraint
 from vllm.logger import init_logger
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceStatus, SpSStage)
@@ -121,6 +121,7 @@ class SpSScheduler:
 
         request_ids = {request_id} if isinstance(request_id, str) else set(request_id)
         self.waiting = clear_state_queue(self.waiting, request_ids)
+
         self.need_to_run_draft = clear_state_queue(self.need_to_run_draft, request_ids)
         self.need_to_run_target = clear_state_queue(self.need_to_run_target, request_ids)
         self.swapped = clear_state_queue(self.swapped, request_ids)
@@ -129,7 +130,7 @@ class SpSScheduler:
         self.abort_seq_group(
             [
                 seq_group.request_id
-                for seq_group in self.waiting + self.running + self.swapped
+                for seq_group in self.waiting + self.need_to_run_draft + self.need_to_run_target + self.swapped
             ]
         )
 
@@ -253,10 +254,25 @@ class SpSScheduler:
         if self.need_to_run_draft:
             # DRAFT_DECODING PHASE START
             sps_stage = SpSStage.DRAFT_DECODE
-            
             # Dynamic Programming for finding optimal draft size with respect to the tile size constraint
-            if self.sps_config.use_dynamic_draft_size:
-                find_optimal_draft_size(self.need_to_run_draft, self.sps_config)
+
+            # if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
+            #     if self.sps_config.use_tile_size_constraint:
+            #         find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
+            #     else:
+            #         find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
+            
+            # Sort by draft size 
+            # self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
+
+            # if self.sps_config.use_dynamic_draft_size and self.sps_config.profile_finish:
+            #     if self.sps_config.use_tile_size_constraint:
+            #         find_optimal_draft_size_with_tile_constraint(self.need_to_run_draft, self.sps_config)
+            #     else:
+            #         find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
+            
+            # Sort by draft size 
+            self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
 
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
@@ -265,21 +281,27 @@ class SpSScheduler:
             # self.running = self.policy.sort_by_priority(now, self.running)
 
             # FIXME(sangjin): How to handle case of draft preemption? Should we not
-            # allow draft preemption at all?
-
+            # allow draft preemption at all?              
             # Reserve new token slots for the running sequence groups.
             need_to_run_draft: List[SequenceGroup] = []
             while self.need_to_run_draft:
                 seq_group = self.need_to_run_draft.pop(0)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
 
-                # Simplify preemption logic
-                if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
-                    raise AssertionError("Draft preemption is not supported.")
+                if self.sps_config.use_dynamic_draft_size:
+                    seq.draft_size = 7
+                    
+                if seq.draft_size > 0:
+                    # Simplify preemption logic
+                    if not self.block_manager.can_append_slots(seq_group, seq.draft_size):
+                        raise AssertionError("Draft preemption is not supported.")
+                    else:
+                        # Append new slots to the sequence group. 
+                        self._append_slots(seq_group, seq.draft_size, blocks_to_copy)
+                        need_to_run_draft.append(seq_group)
                 else:
-                    # Append new slots to the sequence group. 
-                    self._append_slots(seq_group, seq.draft_size, blocks_to_copy)
-                    need_to_run_draft.append(seq_group)
+                    # Since the draft size is 0, we queue it to target queue
+                    self.need_to_run_target.append(seq_group)
             self.need_to_run_draft = need_to_run_draft
 
             if self.need_to_run_draft:
@@ -302,7 +324,6 @@ class SpSScheduler:
 
         # TARGET_DECODING PHASE START
         sps_stage = SpSStage.TARGET_DECODE
-
         # NOTE(woosuk): Preemption happens only when there is no available slot
         # to keep all the sequence groups in the RUNNING state.
         # In this case, the policy is responsible for deciding which sequence

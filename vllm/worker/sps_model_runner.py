@@ -383,7 +383,7 @@ class SpSModelRunner:
         seq_data: Dict[int, SequenceData] = {}
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
-
+        
         sampling_metadata = SamplingMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,

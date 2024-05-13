@@ -72,12 +72,12 @@ class CacheEngine:
         key_block_shape = self.get_key_block_shape()
         value_block_shape = self.get_value_block_shape()
         for _ in range(self.num_layers):
-            key_blocks = torch.empty(
+            key_blocks = torch.zeros(
                 size=(self.num_gpu_blocks, *key_block_shape),
                 dtype=self.dtype,
                 device="cuda",
             )
-            value_blocks = torch.empty(
+            value_blocks = torch.zeros(
                 size=(self.num_gpu_blocks, *value_block_shape),
                 dtype=self.dtype,
                 device="cuda",

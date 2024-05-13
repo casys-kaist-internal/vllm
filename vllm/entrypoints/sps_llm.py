@@ -1,8 +1,10 @@
+import os
 from typing import List, Optional, Union
 
 import torch
 from torch.cuda import nvtx
 import time
+import random
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -67,7 +69,12 @@ class SpSLLM:
         target_model: str,
         draft_model: str,
         draft_size: int,
-        use_target_attention: bool,
+        tile_size: int,
+        use_dynamic_draft_size: bool = False,
+        use_tile_size_constraint: bool = False,
+        use_lazy_draft_kv_cache: bool = True,
+        use_target_attention: bool = False,
+        target_draft_latency_ratio: float = 0.2,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,
@@ -88,7 +95,12 @@ class SpSLLM:
             target_model=target_model,
             draft_model=draft_model,
             draft_size=draft_size,
+            tile_size=tile_size,
+            use_dynamic_draft_size=use_dynamic_draft_size,
+            use_tile_size_constraint=use_tile_size_constraint,
             use_target_attention=use_target_attention,
+            use_lazy_draft_kv_cache=use_lazy_draft_kv_cache,
+            target_draft_latency_ratio=target_draft_latency_ratio,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
             trust_remote_code=trust_remote_code,
@@ -192,6 +204,9 @@ class SpSLLM:
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
+                    # Return at first output
+                    self.llm_engine.abort_all_requests()
+                    return step_outputs
                     if use_tqdm:
                         pbar.update(1)
         if use_tqdm:
@@ -201,6 +216,116 @@ class SpSLLM:
         # its previous requests.
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         return outputs
+    
+    def _run_profile(self) -> None:
+        # Get current GPU device name 
+        device_name = torch.cuda.get_device_name()
+
+        target_model = self.llm_engine.target_model_config.model.split("/")[-1]
+        draft_model = self.llm_engine.draft_model_config.model.split("/")[-1]
+        use_target_attention = self.llm_engine.sps_config.use_target_attention
+
+        if use_target_attention:
+            file_name = f"profile/{device_name}_{target_model}_{draft_model}_target_attention.csv"
+        else:
+            file_name = f"profile/{device_name}_{target_model}_{draft_model}.csv"
+
+        # If profile directory does not exist then create it
+        if not os.path.exists("profile"):
+            os.mkdir("profile")
+
+        # If file exists then read the csv file and save it to dictionary 
+        try:
+            with open(file_name, 'r') as f:
+                lines = f.readlines()
+                for line in lines[1:]:
+                    batch_size, draft_size, draft_latency, target_latency = line.split(",")
+                    key = str(batch_size) + "_" + str(draft_size)
+                    self.llm_engine.sps_config.draft_latencies[str(batch_size)] = float(draft_latency)
+                    self.llm_engine.sps_config.target_latencies[key] = float(target_latency)
+                
+                self.llm_engine.sps_config.profile_finish = True
+                print("Profile file exists. Skipping profiling")
+                return
+        except: 
+            pass
+
+        draft_size_save = self.llm_engine.sps_config.draft_size
+
+        # Initialize tqdm.
+        profile_max_batch_size = 64
+        pbar = tqdm(total=profile_max_batch_size, desc="Profiling latencies")
+
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=0.0,
+            top_p=1.0,
+            use_beam_search=False,
+            ignore_eos=True,
+            max_tokens=128,
+        )
+
+
+        for batch_size in range(1, profile_max_batch_size + 1):
+            pbar.update(1)
+
+            # We also profile draft_size = 0 which is equivalent to the target model auto regressive inferencing
+            for draft_size in range(8):
+                self.llm_engine.sps_config.draft_size = draft_size
+
+                for _ in range(batch_size):
+                    self._add_request(None, sampling_params, [random.randint(1, 1000)] * 32)
+
+                sps_stage = None
+                # Warmup
+                warmup_iteration = 0
+                while warmup_iteration < 3:
+                    _, sps_stage = self.llm_engine.step()
+
+                    if sps_stage is SpSStage.TARGET_DECODE:
+                        warmup_iteration += 1
+            
+                draft_latencies = []
+                target_latencies = []
+
+                iteration = 10
+                for _ in range(iteration):
+                    torch.cuda.synchronize()
+                    start = time.monotonic()
+                    _, sps_stage = self.llm_engine.step()
+                    torch.cuda.synchronize()
+                    end = time.monotonic()
+                    latency = end - start
+
+                    if sps_stage is SpSStage.DRAFT_DECODE:
+                        draft_latencies.append(latency)
+                    elif sps_stage is SpSStage.TARGET_DECODE:
+                        target_latencies.append(latency)
+                    else:
+                        raise AssertionError("Prompt phase should not be included in profiling")
+
+                self.llm_engine.abort_all_requests()
+
+                key = str(batch_size) + "_" + str(draft_size)
+
+                if len(draft_latencies) > 0:
+                    self.llm_engine.sps_config.draft_latencies[str(batch_size)] = (sum(draft_latencies) / len(draft_latencies)) / self.llm_engine.sps_config.draft_size
+                
+                if len(target_latencies) > 0:
+                    self.llm_engine.sps_config.target_latencies[key] = sum(target_latencies) / len(target_latencies)
+
+        self.llm_engine.sps_config.profile_finish = True
+        # Write the latencies to a csv format file 
+        with open(file_name, 'w') as f:
+            f.write("batch_size,draft_size,draft_latency,target_latency\n")
+            for key in self.llm_engine.sps_config.target_latencies:
+                batch_size, draft_size = key.split("_")
+                if draft_size ==  "0":
+                    f.write(f"{batch_size},{draft_size},{0},{self.llm_engine.sps_config.target_latencies[key]:.3f}\n")
+                else:
+                    f.write(f"{batch_size},{draft_size},{self.llm_engine.sps_config.draft_latencies[batch_size]:.3f},{self.llm_engine.sps_config.target_latencies[key]:.3f}\n")
+
+        self.llm_engine.sps_config.draft_size = draft_size_save
 
     def _run_engine_benchmark(self) -> List[RequestOutput]:
         start = None
@@ -226,6 +351,7 @@ class SpSLLM:
                         end = time.monotonic()
                         self.llm_engine.abort_all_requests()
                         done = True
+                        print(output.outputs[0].text)
 
         output_len = []
         for output in step_outputs:

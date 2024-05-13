@@ -1,11 +1,15 @@
 """Sequence and its related classes."""
 import copy
 import enum
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
+
+import numpy as np
+import scipy.stats
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score       # type: ignore
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
@@ -143,7 +147,7 @@ class SequenceData:
         for i in range(accept_cnt):
             self.append_token_id(
                 self.draft_token_ids[i], self.draft_logprobs[i])
-
+        
         self.draft_cache_cnt = self.get_len() - 1
 
         self.draft_token_ids.clear()
@@ -158,6 +162,13 @@ class SequenceData:
 
     def get_draft_probs(self) -> List[torch.Tensor]:
         return self.draft_probs
+
+    def get_draft_prob_for_tokens(self) -> List[float]:
+        result = []
+        for i, draft_token_id in enumerate(self.draft_token_ids):
+            result.append(self.draft_probs[i][draft_token_id].item())
+
+        return result
 
     def get_last_draft_token_id(self) -> int:
         if len(self.draft_token_ids) == 0:
@@ -220,12 +231,24 @@ class Sequence:
         self.reject_pos: List[int] = []
         self.accept_probs: List[float] = []
         self.beta_list: List[float] = []
+        self.last_ema = None  # This will store the last calculated EMA value
+        self.new_beta_emas: List[float] = []
+        self.new_draft_probs: List[float] = []
+        self.new_accept_probs: List[float] = []
+        self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
+        self.cumulative_accept_prob = 1
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
 
+        self.correlation_x = []
+        self.correlation_y = []
+        self.correlation_z = []
+
         # Can change every iteration if use_dynamic_draft_size is True
         self.draft_size = draft_size
+        self.score = []
+        self.draft_size_list = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -352,14 +375,38 @@ class Sequence:
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
     
-    def get_beta(self) -> float:
-        # average the last window size betas 
-        # Note: this is just a temporary solution. 
-        window_size = 10
-        if len(self.beta_list) < window_size:
-            return sum(self.beta_list) / len(self.beta_list)
+    # Calculates the Exponential Moving Average (EMA) of beta values
+    def get_beta_ema(self) -> float:
+        # Ensure there is at least one beta to calculate EMA
+        if len(self.beta_list) < 3:
+            return 0.5  # Return a default initial beta value if list is empty
+
+        # Define the span for EMA calculation
+        decay = 0.5
+
+        # Initialize EMA; if no previous EMAs, start with the first beta value
+        if self.last_ema is None:
+            self.last_ema = self.beta_list[0]
+
+         # Update EMA only for new beta values added since last calculation
+        for beta in self.beta_list[self.last_calculated_index+1:]:
+            self.last_ema = decay * beta + (1 - decay) * self.last_ema
+
+        # Update the last calculated index
+        self.last_calculated_index = len(self.beta_list) - 1
+
+        return self.last_ema
+    
+    def get_new_draft_history(self) -> Tuple[List[float], List[float], List[float]]:
+        out = self.new_beta_emas, self.new_draft_probs, self.new_accept_probs
+        self.new_beta_emas = []
+        self.new_draft_probs = []
+        self.new_accept_probs = []
+
+        if len(self.beta_list) >= 30:
+            return out
         else:
-            return sum(self.beta_list[-window_size:]) / window_size
+            return [], [], []
         
     def append_draft_token_id(
         self,
@@ -379,24 +426,45 @@ class Sequence:
         # assert accept_cnt <= self.draft_size
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
+        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
+        # print("accept_cnt", accept_cnt, "draft_size", self.draft_size)
+        # print(new_draft_probs)
+        # print(accept_probs[:accept_cnt+1])
+        # Update the stats for calculating the dynamic draft size.
+        new_draft_probs = self.data.get_draft_prob_for_tokens()
+
+        if accept_cnt != self.draft_size:
+            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt+1))
+            self.new_draft_probs.extend(new_draft_probs[:accept_cnt+1])
+            self.new_accept_probs.extend(accept_probs[:accept_cnt+1])
+        else:
+            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt))
+            self.new_draft_probs.extend(new_draft_probs[:accept_cnt])
+            self.new_accept_probs.extend(accept_probs[:accept_cnt])
+
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
-
+        # print(accept_cnt, self.draft_size)
         # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
         # Need to free the blocks that are not used
         # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
         free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
+        # self.correlation_x.append(accept_cnt)
+        # ema = self.get_beta_ema()
+        # self.correlation_y.append(self.draft_size)
+        # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
 
         if accept_cnt != self.draft_size:
             accept_probs = accept_probs[:accept_cnt+1]
             beta_list = beta_list[:accept_cnt+1]
-        else:  # all accept bonus token
-            accept_probs.append(None)
-            beta_list.append(None)
+
+        # print("!", self.get_beta_ema(), accept_cnt)
 
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
         self.beta_list.extend(beta_list)
+        self.score.append(accept_cnt / self.draft_size)
+        self.draft_size_list.append(self.draft_size)
 
         return free_block_cnt
 

@@ -582,8 +582,8 @@ class LLMEngine:
             return ignored
 
         # Execute the model.
-        torch.cuda.synchronize()
-        start_time = time.monotonic()
+        # torch.cuda.synchronize()
+        # start_time = time.monotonic()
         output = self._run_workers(
             "execute_model",
             seq_group_metadata_list=seq_group_metadata_list,
@@ -591,12 +591,12 @@ class LLMEngine:
             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
         )
-        torch.cuda.synchronize()
-        end_time = time.monotonic()
-        elasped_time = end_time - start_time
-        batch_size = len(seq_group_metadata_list)
-        context_len = seq_group_metadata_list[0].seq_data[0].get_len()
-        print(f"profile, {batch_size}, {context_len}, {elasped_time*1000:.3f}")
+        # torch.cuda.synchronize()
+        # end_time = time.monotonic()
+        # elasped_time = end_time - start_time
+        # batch_size = len(seq_group_metadata_list)
+        # context_len = seq_group_metadata_list[0].seq_data[0].get_len()
+        # print(f"profile, {batch_size}, {context_len}, {elasped_time*1000:.3f}")
 
         return self._process_model_outputs(output, scheduler_outputs), scheduler_outputs.prompt_run
 

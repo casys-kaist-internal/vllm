@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.cuda import nvtx
+import time
 
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_all_gather)
@@ -15,6 +16,9 @@ from vllm.sequence import (PromptLogprobs, SampleLogprobs, SamplerOutput,
 
 _SAMPLING_EPS = 1e-5
 
+scores = []
+total_bonus_tokens = 0
+save_time = 0
 
 class Sampler(nn.Module):
     """Samples the next tokens from the model's outputs.
@@ -45,7 +49,6 @@ class Sampler(nn.Module):
     ) -> SamplerOutput:
         # Get the hidden states that we use for sampling.
         hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
-
         # Get the logits for the next tokens.
         logits = _get_logits(self.parallel_state, hidden_states, embedding, embedding_bias,
                              self.vocab_size)
@@ -189,10 +192,14 @@ def _get_prompt_and_output_tokens(
             output_tokens.extend([] for _ in range(prompt_len - 1))
         for seq_id in seq_ids:
             seq_data = sampling_metadata.seq_data[seq_id]
-            prompt_tokens.append(seq_data.prompt_token_ids)
-            output_tokens.append(seq_data.output_token_ids)
+            if sampling_metadata.target_lens:
+                for _ in range(sampling_metadata.target_lens[i]):
+                    prompt_tokens.append(seq_data.prompt_token_ids)
+                    output_tokens.append(seq_data.output_token_ids)
+            else:
+                prompt_tokens.append(seq_data.prompt_token_ids)
+                output_tokens.append(seq_data.output_token_ids)
     return prompt_tokens, output_tokens
-
 
 def _get_bin_counts_and_mask(
     logits: torch.Tensor,
@@ -266,6 +273,7 @@ def _apply_penalties(
 
     prompt_tokens, output_tokens = (
         _get_prompt_and_output_tokens(sampling_metadata))
+
     assert len(prompt_tokens) == logits.shape[0]
     assert len(output_tokens) == logits.shape[0]
 
@@ -428,15 +436,23 @@ def _random_sample(
     is_prompts: List[bool],
     probs: torch.Tensor,
 ) -> List[Tuple[List[int], List[int]]]:
-    # Find the maximum best_of value of the prompt phase requests.
-    max_best_of = 1
+    # # Find the maximum best_of value of the prompt phase requests.
+    # max_best_of = 1
+
+    # Define the rejection token
+    rejection_token = 1437
+    # Adjust max_best_of to 2
+    max_best_of = 2
+
+
     for seq_group, is_prompt in zip(selected_seq_groups, is_prompts):
         if is_prompt:
             seq_ids, sampling_params = seq_group
             max_best_of = max(max_best_of, sampling_params.best_of)
     random_samples = torch.multinomial(probs,
                                        num_samples=max_best_of,
-                                       replacement=True).cpu()
+                                       replacement=False).cpu()
+    
     sample_idx = 0
     results = []
     for seq_group, is_prompt in zip(selected_seq_groups, is_prompts):
@@ -454,6 +470,12 @@ def _random_sample(
             parent_ids = list(range(num_parent_seqs))
             next_token_ids = random_samples[sample_idx:sample_idx +
                                             num_parent_seqs, 0].tolist()
+            
+            if next_token_ids[0] == rejection_token:
+                next_token_ids = random_samples[sample_idx:sample_idx +
+                                            num_parent_seqs, 1].tolist()
+            
+
         results.append((next_token_ids, parent_ids))
         sample_idx += num_parent_seqs
 
@@ -562,6 +584,7 @@ def _sps_sample(
     probs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
 ) -> Tuple[List[Tuple[List[int], List[int]]], List[Tuple[int, int]], torch.Tensor, torch.Tensor]:
+    torch.cuda.nvtx.range_push("sps_sample")
     # draft_lens: List[int]
     # draft includes one additional token before draft tokens and draft tokens so we subtract 1
     target_lens = sampling_metadata.target_lens
@@ -577,7 +600,7 @@ def _sps_sample(
     # target_prob_for_draft_token_id: [seq_idx, max_draft_len]
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
-
+    # print("t", target_prob_for_sampled_draft_token)
     # draft_probs: [seq_len, vocab_size] -> [seq_idx, max_adjusted_target_lens, adjusted_vocab_size]
     draft_probs = _reshape_and_pad(
         sampling_metadata.draft_probs, adjusted_target_lens, target_probs.size(-1))
@@ -586,22 +609,18 @@ def _sps_sample(
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
-    # print("target", target_prob_for_sampled_draft_token)
-    # print("draft", draft_prob_for_sampled_draft_token)
-
-    # beta = _calculate_beta(
-    #     target_probs, draft_probs, adjusted_target_lens)
-    
+    # [start] 1.5ms
+    # print("d", draft_prob_for_sampled_draft_token)
     beta = _calculate_beta_vectorized(
         target_probs, draft_probs, adjusted_target_lens)
+    # [end] 1.5ms
 
     # accept_prob: [seq_idx, max_draft_len]
     accept_prob = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
     del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
-    # print("accept_prob", accept_prob)
-
+    torch.cuda.nvtx.range_push("accept_prob")
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
 
@@ -612,7 +631,7 @@ def _sps_sample(
 
     # This part is for accepting all draft tokens with prob 1 
     # accepted = torch.where(
-    #     torch.full_like(accept_prob, 0) < accept_prob,
+    #     torch.full_like(accept_prob, 0.5) < accept_prob,
     #     torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
     # cumulative sum
@@ -623,8 +642,13 @@ def _sps_sample(
 
     # accept_cnt: [seq_idx]
     accept_cnt = torch.sum(accepted, dim=1)
-    del accepted
 
+    # print("accept_prob", accept_prob, "accept_cnt", accept_cnt)
+
+    del accepted
+    torch.cuda.nvtx.range_pop()
+
+    torch.cuda.nvtx.range_push("mask and rejected_draft_idx")
     # rejected_draft_idx: [seq_idx]
     target_lens_tensor = torch.tensor(
         adjusted_target_lens, device=accept_cnt.device)
@@ -643,7 +667,9 @@ def _sps_sample(
     draft_prob_at_reject_idx = draft_probs[indices, masked_accept_cnt, :].squeeze(
         1)
     del masked_accept_cnt
+    torch.cuda.nvtx.range_pop()
 
+    torch.cuda.nvtx.range_push("get_modified_rejection_prob")
     # modified_rejection_prob: [seq_idx, vocab_size]
     modified_rejection_prob = _get_modified_rejection_prob(
         target_prob_at_reject_idx, draft_prob_at_reject_idx)
@@ -654,21 +680,57 @@ def _sps_sample(
         0)).long().to(all_accept_mask.device)
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
+    
     modified_rejection_logprobs = torch.log(modified_rejection_prob)
-
+    
     del target_probs, draft_probs, target_lens_tensor
+    torch.cuda.nvtx.range_pop()
 
+    torch.cuda.nvtx.range_push("sample")
     sample_results = _sample(modified_rejection_prob,
                              modified_rejection_logprobs, sampling_metadata)
+    torch.cuda.nvtx.range_pop()
 
     sps_results = []
     assert len(sample_results) == accept_prob.size(0)
     assert len(sample_results) == len(beta)
     
+    torch.cuda.nvtx.range_push("calculate sps_results")
+    total_tokens = 0
+    accepted_tokens = 0
+    bonus_tokens = 0
+
+    # [start] 2.07ms 
     for i in range(len(sample_results)):
+        total_tokens += adjusted_target_lens[i]
+        accepted_tokens += accept_cnt[i].item()
+        if accept_cnt[i].item() == adjusted_target_lens[i]:
+            bonus_tokens += 1
         sps_results.append(
             (adjusted_target_lens[i], accept_cnt[i].item(), accept_prob[i].tolist(), beta[i]))
+    torch.cuda.nvtx.range_pop()
+    # [end] 2.07ms 
+    
+    # global save_time, accepted_throughputs, bonus_throughputs
+    # torch.cuda.synchronize()
+    # current_time = time.monotonic()
+    # elapsed_time = current_time - save_time
+    # save_time = current_time
 
+    # # print(f"{accepted_tokens / elapsed_time:.3f} , {(bonus_tokens + accepted_tokens) / elapsed_time:.3f}")
+
+    # print(adjusted_target_lens)
+    # print(f"{accepted_tokens} {total_tokens} {bonus_tokens}")
+
+    # global scores
+    # scores.append((bonus_tokens + accepted_tokens) / elapsed_time)
+    # # scores.append(accepted_tokens / total_tokens)
+    # # total_bonus_tokens += bonus_tokens
+    # if len(scores) % 10 == 0:
+    #     print(f"Score: {sum(scores) / len(scores):.3f} {sum(scores[-10:]) / len(scores[-10:]):.3f} {adjusted_target_lens}")
+    # #     print("Bonus tokens: ", total_bonus_tokens)
+
+    torch.cuda.nvtx.range_pop()
     return sample_results, sps_results, modified_rejection_prob, modified_rejection_logprobs
 
 
@@ -794,6 +856,7 @@ def _build_sampler_output(
     sps_results: Optional[List[Tuple[int, int]]],
 ) -> SamplerOutput:
     sampler_output = []
+    torch.cuda.nvtx.range_push("build_sampler_output")
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
                                                   sample_results, prompt_logprobs,
@@ -822,6 +885,7 @@ def _build_sampler_output(
 
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
+    torch.cuda.nvtx.range_pop()
     return sampler_output
 
 
@@ -841,6 +905,7 @@ def _reshape_and_pad(
         lens: List[int],
         vocab_size: int
 ):
+    torch.cuda.nvtx.range_push("reshape_and_pad")
     max_size = max(lens)
     padded_x = torch.zeros(
         (len(lens), max_size, vocab_size), device=x.device)
@@ -850,35 +915,15 @@ def _reshape_and_pad(
         padded_x[i, :size, :x.size(-1)] = x[idx:idx + size]
         idx += size
 
+    torch.cuda.nvtx.range_pop()
     return padded_x
 
-
-def _calculate_beta(
-        target_probs: torch.Tensor,
-        draft_probs: torch.Tensor,
-        adjusted_target_lens: List[int]
-):
-    # target_probs:  [seq_idx, max_target_lens, vocab_size]
-    # draft_probs: [seq_idx, max_adjusted_target_lens, vocab_size]
-    seq_beta_list = []
-
-    for seq_idx in range(target_probs.size(0)):
-        beta_list = []
-        for draft_idx in range(adjusted_target_lens[seq_idx]):
-            target_prob = target_probs[seq_idx, draft_idx, :]
-            draft_prob = draft_probs[seq_idx, draft_idx, :]
-            min_prob = torch.min(target_prob, draft_prob)
-            # compute sum of min_prob
-            beta = torch.sum(min_prob).item()
-            beta_list.append(beta)
-        seq_beta_list.append(beta_list)
-
-    return seq_beta_list
 
 def _calculate_beta_vectorized(
         target_probs: torch.Tensor, 
         draft_probs: torch.Tensor, 
         adjusted_target_lens: List[int]):
+    torch.cuda.nvtx.range_push("calculate_beta_vectorized")
     # Ensure adjusted_target_lens is a tensor
     adjusted_target_lens = torch.tensor(adjusted_target_lens, dtype=torch.long, device=target_probs.device)
     
@@ -907,5 +952,6 @@ def _calculate_beta_vectorized(
 
     del adjusted_target_lens, max_len, mask, masked_target_probs, masked_draft_probs, min_probs, beta, inf_tensor
 
+    torch.cuda.nvtx.range_pop()
     return valid_beta
 

@@ -147,7 +147,9 @@ class SpSCompletionOutput(CompletionOutput):
         accept_probs: Optional[List[float]] = None,
         reject_pos: Optional[List[int]] = None,
         beta_list: Optional[List[float]] = None,
-        accept_cnt_list: Optional[List[int]] = None
+        accept_cnt_list: Optional[List[int]] = None,
+        score: Optional[List[float]] = None,
+        draft_size_list: Optional[List[int]] = None
     ) -> None:
         super().__init__(index, text, token_ids, cumulative_logprob, logprobs,
                          finish_reason)
@@ -155,6 +157,14 @@ class SpSCompletionOutput(CompletionOutput):
         self.reject_pos = reject_pos
         self.beta_list = beta_list
         self.accept_cnt_list = accept_cnt_list
+        if len(score) != 0:
+            self.avg_score = sum(score) / len(score)
+        else:
+            self.avg_score = None
+        if len(draft_size_list) !=0:
+            self.avg_draft_size = sum(draft_size_list) / len(draft_size_list)
+        else:
+            self.avg_draft_size = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -195,7 +205,8 @@ class SpSRequestOutput(RequestOutput):
                                          seq.get_output_token_ids(),
                                          seq.get_cumulative_logprob(), logprobs,
                                          finshed_reason, seq.accept_probs,
-                                         seq.reject_pos, seq.beta_list, seq.accept_cnt_list)
+                                         seq.reject_pos, seq.beta_list, seq.accept_cnt_list, 
+                                         seq.draft_size_list, seq.score)
             outputs.append(output)
 
         # Every sequence in the sequence group should have the same prompt.
