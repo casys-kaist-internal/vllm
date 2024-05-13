@@ -175,9 +175,10 @@ class SpSLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-        torch.cuda.cudart().cudaProfilerStart()
+        # TODO(noppanat): comment/uncomment
+        # torch.cuda.cudart().cudaProfilerStart()
         output = self._run_engine(use_tqdm)
-        torch.cuda.cudart().cudaProfilerStop()
+        # torch.cuda.cudart().cudaProfilerStop()
         return output
 
     def _add_request(

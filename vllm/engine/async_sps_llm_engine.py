@@ -457,7 +457,8 @@ class AsyncSpSLLMEngine:
     async def run_engine_loop(self):
         # Initialize the RequestTracker here so it uses the right event loop.
         has_requests_in_progress = False
-        torch.cuda.cudart().cudaProfilerStart()
+        # TODO(noppanat): comment/uncomment
+        # torch.cuda.cudart().cudaProfilerStart()
         while True:
             if not has_requests_in_progress:
                 await self._request_tracker.wait_for_new_requests()

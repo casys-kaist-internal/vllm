@@ -1,4 +1,7 @@
+import datetime
+import os
 from abc import abstractmethod
+from threading import Thread
 from typing import List
 
 import matplotlib.pyplot as plt
@@ -6,6 +9,7 @@ import time
 import os
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import ElasticNet
@@ -15,6 +19,11 @@ from torch.cuda import nvtx
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
 PLOT_HEATMAP = False
+DEFER_EXIT = False
+
+def defer_exit(delay: float):
+    time.sleep(delay)
+    os._exit(0)
 
 # print the polynomial function
 def create_polynomial_equation(model, feature_names):
@@ -147,6 +156,13 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
  
 
     def _train_predictor(self):
+        global DEFER_EXIT
+        if not DEFER_EXIT:
+            print("[debug] (noppanat) time:", str(datetime.datetime.now()), flush=True)
+            torch.cuda.cudart().cudaProfilerStart()
+            Thread(target=defer_exit, args=(10,)).start()
+            DEFER_EXIT = True
+        
         nvtx.range_push("draft_optimizer._train_predictor bin draft history")
         binned_df = self._get_binned_draft_history_df()
         nvtx.range_pop()
