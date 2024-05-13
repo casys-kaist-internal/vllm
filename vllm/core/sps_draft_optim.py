@@ -10,7 +10,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import ElasticNet
 from sklearn.pipeline import Pipeline
-from sklearn.exceptions import NotFittedError
+from torch.cuda import nvtx
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
@@ -66,8 +66,10 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         self._update_drafted_accepted_df(seq)
 
+        nvtx.range_push("draft_optimizer._check_early_stop")
         if self._check_early_stop(seq):
             seq.draft_size = seq.get_draft_len()
+        nvtx.range_pop()
 
     def _drop_draft_history(self):
         # drop the first element to keep the history size
@@ -109,7 +111,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         draft_prob = seq.data.get_draft_probs()[-1][last_draft_token_id].item()
         beta_ema = seq.get_beta_ema()
 
+        nvtx.range_push("draft_optimizer._predict_accept_prob")
         predicted_accept_prob = self._predict_accept_prob(beta_ema, draft_prob)
+        nvtx.range_pop()
 
         seq.cumulative_accept_prob *= predicted_accept_prob
         random_accept_prob = np.random.uniform(0, 1)
@@ -143,9 +147,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
  
 
     def _train_predictor(self):
-        start_time = time.monotonic()
+        nvtx.range_push("draft_optimizer._train_predictor bin draft history")
         binned_df = self._get_binned_draft_history_df()
-        binning_time = time.monotonic()
+        nvtx.range_pop()
 
         X = binned_df[['beta_ema', 'draft_prob']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         y = binned_df['accept_prob']
@@ -177,14 +181,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             return
 
         # Linear regression training
+        nvtx.range_push("draft_optimizer._train_predictor fit predictor")
         self.predictor.fit(X, y)
-        end_time = time.monotonic()
-        elapsed_time_ms = (end_time - start_time) * 1000
-        binning_time_ms = (binning_time - start_time) * 1000
-        print(f"Trained predictor in {elapsed_time_ms:.2f} ms")
-        print(f"Binning time: {binning_time_ms:.2f} ms")
-        print(f"{self.predictor.named_steps['linear'].coef_}")
-        print(f"{self.predictor.named_steps['linear'].intercept_}")
+        nvtx.range_pop()
 
         if PLOT_HEATMAP:
             # Create a matrix for real acceptance probability heatmap

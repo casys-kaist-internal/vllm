@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple, Optional
 import torch
 import torch.distributed
 from tabulate import tabulate
+from torch.cuda import nvtx
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
@@ -238,7 +239,9 @@ class SpSWorker:
             )
 
             if self.sps_config.use_dynamic_draft_size:
+                nvtx.range_push("draft_optimizer.update_draft_size_seq")
                 self.draft_optimizer.update_draft_size_seq(parent_seq)
+                nvtx.range_pop()
                 seq_group_metadata.draft_size = parent_seq.draft_size
             
             # # check early stopping
@@ -257,7 +260,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
-        torch.cuda.nvtx.range_push("cache_op")
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.target_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -267,24 +270,24 @@ class SpSWorker:
         if blocks_to_copy:
             self.target_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         cache_events = self.target_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
-        torch.cuda.nvtx.range_push("wait_cache_events")
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.DRAFT_DECODE
-        torch.cuda.nvtx.range_push("runner.execute_model")
+        nvtx.range_push("runner.execute_model")
         output = self.target_model_runner.execute_model(seq_group_metadata_list,
                                                         self.target_gpu_cache, cache_events)
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
         return output
 
     @torch.inference_mode()
@@ -297,7 +300,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
-        torch.cuda.nvtx.range_push("cache_op")
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -307,24 +310,24 @@ class SpSWorker:
         if blocks_to_copy:
             self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         cache_events = self.draft_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
-        torch.cuda.nvtx.range_push("wait_cache_events")
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
-        torch.cuda.nvtx.range_push("runner.execute_model")
+        nvtx.range_push("runner.execute_model")
         output = self.draft_model_runner.execute_model(seq_group_metadata_list,
                                                        self.draft_gpu_cache, cache_events)
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
         return output
     
     
@@ -338,7 +341,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
-        torch.cuda.nvtx.range_push("cache_op")
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -348,18 +351,18 @@ class SpSWorker:
         if blocks_to_copy:
             self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         cache_events = self.draft_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
-        torch.cuda.nvtx.range_push("wait_cache_events")
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
-        torch.cuda.nvtx.range_pop()
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
@@ -382,12 +385,12 @@ class SpSWorker:
                 break
 
             # Execute the model and process the outputs
-            torch.cuda.nvtx.range_push("runner.execute_model")
+            nvtx.range_push("runner.execute_model")
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
-            torch.cuda.nvtx.range_pop()
-            torch.cuda.nvtx.range_push("process_draft_model_outputs")
+            nvtx.range_pop()
+            nvtx.range_push("process_draft_model_outputs")
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
-            torch.cuda.nvtx.range_pop()
+            nvtx.range_pop()
             cache_events = None
         
         # print("Multi-step draft model execution complete")
