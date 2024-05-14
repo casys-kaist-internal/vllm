@@ -9,7 +9,7 @@ use_dynamic_draft_size=True
 num_prompts=$((request_rate * num_iters))
 
 port=8841
-delay=95    # retrain_period=10000
+delay=90    # retrain_period=10000
 
 download_dir="/home/noppanat/workspace/models"
 log_file="/home/noppanat/workspace/vllm/benchmarks/logs/profile_sps_async.log"
