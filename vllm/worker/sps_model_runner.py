@@ -408,6 +408,7 @@ class SpSModelRunner:
         # all decodes.
         # Prepare input tensors.
         sps_stage = seq_group_metadata_list[0].sps_stage
+        torch.cuda.nvtx.range_push("prepare inputs")
         if sps_stage == SpSStage.PROMPT:
             inputs = self._prepare_prompt(seq_group_metadata_list)
         elif sps_stage == SpSStage.DRAFT_DECODE:
@@ -416,6 +417,7 @@ class SpSModelRunner:
             inputs = self._prepare_target_decode(seq_group_metadata_list)
         else:
             raise ValueError(f"Invalid SpS stage: {sps_stage}")
+        torch.cuda.nvtx.range_pop()
 
         input_tokens, input_positions, input_metadata = inputs
 
@@ -423,10 +425,13 @@ class SpSModelRunner:
         # print("input_tokens: ", input_tokens)
         # print("input_positions: ", input_positions)
 
+        torch.cuda.nvtx.range_push("prepare sample")
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                  input_metadata)
+        torch.cuda.nvtx.range_pop()
 
         # Execute the model.
+        torch.cuda.nvtx.range_push("model.__call__")
         hidden_states = self.model(
             input_ids=input_tokens,
             positions=input_positions,
@@ -434,12 +439,15 @@ class SpSModelRunner:
             input_metadata=input_metadata,
             cache_events=cache_events,
         )
+        torch.cuda.nvtx.range_pop()
 
         # Sample the next token.
+        torch.cuda.nvtx.range_push("model.sample")
         output = self.model.sample(
             hidden_states=hidden_states,
             sampling_metadata=sampling_metadata,
         )
+        torch.cuda.nvtx.range_pop()
         return output
 
     @torch.inference_mode()

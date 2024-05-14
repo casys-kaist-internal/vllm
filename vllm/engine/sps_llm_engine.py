@@ -450,21 +450,29 @@ class SpSLLMEngine:
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         if sps_stage != SpSStage.DRAFT_DECODE:
+            nvtx.range_push("process_sequence_group_outputs")
             for seq_group, outputs in zip(scheduled_seq_groups, output):
                 self._process_sequence_group_outputs(seq_group, outputs, sps_stage)
+            nvtx.range_pop()
 
             # Free the finished sequence groups.
+            nvtx.range_push("free_finished_seq_groups")
             self.scheduler.free_finished_seq_groups()
+            nvtx.range_pop()
 
         # Update the draft target queues.
+        nvtx.range_push("update_draft_target_queues")
         self.scheduler.update_draft_target_queues(sps_stage)
+        nvtx.range_pop()
 
         # Create the outputs.
+        nvtx.range_push("create_request_outputs")
         request_outputs: List[RequestOutput] = []
         for seq_group in (scheduled_seq_groups +
                           scheduler_outputs.ignored_seq_groups):
             request_output = RequestOutput.from_seq_group(seq_group)
             request_outputs.append(request_output)
+        nvtx.range_pop()
 
         if self.log_stats:
             # Log the system stats.
@@ -478,12 +486,15 @@ class SpSLLMEngine:
             - Draft decode * multi-step
             - Target decode 
         """
+        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
+        nvtx.range_pop()
         if scheduler_outputs.is_empty():
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
         if sps_stage == SpSStage.PROMPT:
+            nvtx.range_push("run_workers PROMPT")
             output = self._run_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -491,9 +502,11 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
             if not self.sps_config.use_lazy_draft_kv_cache:
                 # Don't need output for draft model. Execution required for draft KV cache.
+                nvtx.range_push("not use_lazy_draft_kv_cache")
                 self._run_workers(
                     "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -501,10 +514,16 @@ class SpSLLMEngine:
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
+                nvtx.range_pop()
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
-            
+            nvtx.range_push("process_model_outputs PROMPT")
+            processed_outputs = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_pop()
+
+            return processed_outputs, sps_stage
+
         elif sps_stage == SpSStage.DRAFT_DECODE:
+            nvtx.range_push("run_workers DRAFT_DECODE")
             output = self._run_workers(
                 "execute_multi_step_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -512,10 +531,16 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
+            nvtx.range_push("process_model_outputs DRAFT_DECODE")
+            outputs = self._process_model_outputs(output, scheduler_outputs, sps_stage), sps_stage
+            nvtx.range_pop()
+
+            return outputs
 
         elif sps_stage == SpSStage.TARGET_DECODE:
+            nvtx.range_push("run_workers TARGET_DECODE")
             output = self._run_workers(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -523,10 +548,14 @@ class SpSLLMEngine:
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
+            nvtx.range_push("process_model_outputs TARGET_DECODE")
             target_output = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_pop()
 
             if not self.sps_config.use_lazy_draft_kv_cache:
+                nvtx.range_push("not use_lazy_draft_kv_cache")
                 # For seqs that are all accepted, need to run draft model to cache kv for the 
                 # additional bonus token sampled by target model
                 seq_group_metadata_list: List[SequenceGroupMetadata] = []
@@ -565,6 +594,7 @@ class SpSLLMEngine:
                             seq.status = SequenceStatus.RUNNING
                             # Append the bonus token saved in all accept case for target decode 
                             seq.append_bonus_token_id()
+                nvtx.range_pop()
 
             return target_output, sps_stage
 

@@ -3,6 +3,8 @@ import time
 from functools import partial
 from typing import (Any, Dict, Iterable, List, Optional, Set, Tuple, Type,
                     Union)
+
+import torch
 from torch.cuda import nvtx
 
 from vllm.config import ModelConfig
@@ -182,13 +184,16 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
             - Draft decode 
             - Target decode 
         """
+        nvtx.range_push("schedule")
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
+        nvtx.range_pop()
         if scheduler_outputs.is_empty():
             return ignored
 
         sps_stage = seq_group_metadata_list[0].sps_stage
 
         if sps_stage == SpSStage.PROMPT:
+            nvtx.range_push("run_workers_async PROMPT")
             output = await self._run_workers_async(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -196,9 +201,11 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
             if not self.sps_config.use_lazy_draft_kv_cache:
                 # Don't need output for draft model. Execution required for draft KV cache.
+                nvtx.range_push("not use_lazy_draft_kv_cache")
                 await self._run_workers_async(
                     "execute_draft_model",
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -206,10 +213,16 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
+                nvtx.range_pop()
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_push("process_model_outputs PROMPT")
+            processed_outputs = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_pop()
+        
+            return processed_outputs
             
         elif sps_stage == SpSStage.DRAFT_DECODE:
+            nvtx.range_push("run_workers_async DRAFT_DECODE")
             output = await self._run_workers_async(
                 "execute_multi_step_draft_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -217,10 +230,16 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
-            return self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_push("process_model_outputs DRAFT_DECODE")
+            processed_outputs = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_pop()
+
+            return processed_outputs
 
         elif sps_stage == SpSStage.TARGET_DECODE:
+            nvtx.range_push("run_workers_async TARGET_DECODE")
             output = await self._run_workers_async(
                 "execute_target_model",
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -228,10 +247,14 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
             )
+            nvtx.range_pop()
 
+            nvtx.range_push("process_model_outputs TARGET_DECODE")
             target_output = self._process_model_outputs(output, scheduler_outputs, sps_stage)
+            nvtx.range_pop()
 
             if not self.sps_config.use_lazy_draft_kv_cache:
+                nvtx.range_push("not use_lazy_draft_kv_cache")
                 # For seqs that are all accepted, need to run draft model to cache kv for the 
                 # additional bonus token sampled by target model
                 seq_group_metadata_list: List[SequenceGroupMetadata] = []
@@ -270,6 +293,7 @@ class _AsyncSpSLLMEngine(SpSLLMEngine):
                             seq.status = SequenceStatus.RUNNING
                             # Append the bonus token saved in all accept case for target decode 
                             seq.append_bonus_token_id()
+                nvtx.range_pop()
 
             return target_output
 
@@ -413,7 +437,9 @@ class AsyncSpSLLMEngine:
         if self.engine_use_ray:
             request_outputs = await self.engine.step.remote()
         else:
+            nvtx.range_start("step_async")
             request_outputs = await self.engine.step_async()
+            nvtx.range_pop()
 
         # Put the outputs into the corresponding streams.
         for request_output in request_outputs:
@@ -431,11 +457,17 @@ class AsyncSpSLLMEngine:
     async def run_engine_loop(self):
         # Initialize the RequestTracker here so it uses the right event loop.
         has_requests_in_progress = False
+        # TODO(noppanat): comment/uncomment
+        # torch.cuda.cudart().cudaProfilerStart()
         while True:
             if not has_requests_in_progress:
                 await self._request_tracker.wait_for_new_requests()
+            nvtx.range_push("engine_step")
             has_requests_in_progress = await self.engine_step()
-            await asyncio.sleep(0)
+            nvtx.range_pop()
+            # nvtx.range_push("asyncio.sleep")
+            # await asyncio.sleep(0)
+            # nvtx.range_pop()
 
     async def add_request(
         self,

@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple, Optional
 import torch
 import torch.distributed
 from tabulate import tabulate
+from torch.cuda import nvtx
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpSConfig)
@@ -12,7 +13,7 @@ from vllm.core.sps_draft_optim import BetaEMADraftSizeOptimizer
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage,
+from vllm.sequence import (SamplerOutput, Sequence, SequenceGroupMetadata, SpSStage,
                            SequenceData, SequenceStatus)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
@@ -211,6 +212,7 @@ class SpSWorker:
         outputs: SamplerOutput,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ):
+        seq_list: List[Sequence] = []
         # Update the sequence groups with the model outputs.
         for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
             seq_group = seq_group_metadata.seq_group
@@ -236,16 +238,14 @@ class SpSWorker:
                 child_sample.logprobs,
                 child_sample.probs,
             )
-
-            if self.sps_config.use_dynamic_draft_size:
-                self.draft_optimizer.update_draft_size_seq(parent_seq)
-                seq_group_metadata.draft_size = parent_seq.draft_size
             
-            # # check early stopping
-            # if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
-            #     # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
-            #     parent_seq.draft_size = parent_seq.get_draft_len()
-            #     seq_group_metadata.draft_size = parent_seq.draft_size
+            seq_list.append(parent_seq)
+        
+        nvtx.range_push("update_draft_size_seq")
+        self.draft_optimizer.update_draft_size_seq(seq_list)
+        nvtx.range_pop()
+        for seq, seq_group_metadata in zip(seq_list, seq_group_metadata_list):
+            seq_group_metadata.draft_size = seq.draft_size
     
     @torch.inference_mode()
     def execute_target_model(
@@ -257,6 +257,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.target_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -266,19 +267,24 @@ class SpSWorker:
         if blocks_to_copy:
             self.target_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
+        nvtx.range_pop()
 
         cache_events = self.target_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.DRAFT_DECODE
+        nvtx.range_push("runner.execute_model")
         output = self.target_model_runner.execute_model(seq_group_metadata_list,
                                                         self.target_gpu_cache, cache_events)
+        nvtx.range_pop()
         return output
 
     @torch.inference_mode()
@@ -291,6 +297,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -300,19 +307,24 @@ class SpSWorker:
         if blocks_to_copy:
             self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
+        nvtx.range_pop()
 
         cache_events = self.draft_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
+        nvtx.range_push("runner.execute_model")
         output = self.draft_model_runner.execute_model(seq_group_metadata_list,
                                                        self.draft_gpu_cache, cache_events)
+        nvtx.range_pop()
         return output
     
     
@@ -326,6 +338,7 @@ class SpSWorker:
     ) -> SamplerOutput:
         # Issue cache operations.
         issued_cache_op = False
+        nvtx.range_push("cache_op")
         if blocks_to_swap_in:
             self.draft_cache_engine.swap_in(blocks_to_swap_in)
             issued_cache_op = True
@@ -335,15 +348,18 @@ class SpSWorker:
         if blocks_to_copy:
             self.draft_cache_engine.copy(blocks_to_copy)
             issued_cache_op = True
+        nvtx.range_pop()
 
         cache_events = self.draft_cache_events if issued_cache_op else None
 
         # If there is no input, we don't need to execute the model.
+        nvtx.range_push("wait_cache_events")
         if not seq_group_metadata_list:
             if cache_events is not None:
                 for event in cache_events:
                     event.wait()
             return {}
+        nvtx.range_pop()
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
@@ -366,8 +382,12 @@ class SpSWorker:
                 break
 
             # Execute the model and process the outputs
+            nvtx.range_push("runner.execute_model")
             outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
+            nvtx.range_pop()
+            nvtx.range_push("process_draft_model_outputs")
             self._process_draft_model_outputs(outputs, seq_group_metadata_list)
+            nvtx.range_pop()
             cache_events = None
         
         # print("Multi-step draft model execution complete")

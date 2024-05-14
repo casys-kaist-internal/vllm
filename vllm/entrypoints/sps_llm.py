@@ -175,7 +175,11 @@ class SpSLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-        return self._run_engine(use_tqdm)
+        # TODO(noppanat): comment/uncomment
+        # torch.cuda.cudart().cudaProfilerStart()
+        output = self._run_engine(use_tqdm)
+        # torch.cuda.cudart().cudaProfilerStop()
+        return output
 
     def _add_request(
         self,
@@ -195,7 +199,9 @@ class SpSLLM:
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
-            step_outputs, sps_stage = self.llm_engine.step()
+            nvtx.range_push("step")
+            step_outputs, _ = self.llm_engine.step()
+            nvtx.range_pop()
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
