@@ -151,7 +151,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         if not DEFER_EXIT:
             print("[debug] (noppanat) time:", str(datetime.datetime.now()), flush=True)
             torch.cuda.cudart().cudaProfilerStart()
-            Thread(target=defer_exit, args=(10,)).start()
+            # Thread(target=defer_exit, args=(10,)).start()
             DEFER_EXIT = True
 
         nvtx.range_push("bin draft history")
