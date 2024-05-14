@@ -5,7 +5,7 @@ draft_size=7
 batch_size=16
 num_iters=-1
 
-delay=80    # retrain_period=10000
+delay=70    # retrain_period=10000
 
 ./nsys_profile \
     --delay=$delay \

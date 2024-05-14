@@ -41,11 +41,11 @@ def create_polynomial_equation(model, feature_names):
 
 class DraftSizeOptimizer:
     @abstractmethod
-    def update_draft_sizes(self, seq_group_list: List[SequenceGroup]):
+    def update_draft_size_seq_group(self, seq_group_list: List[SequenceGroup]):
         raise NotImplementedError()
 
     @abstractmethod
-    def update_draft_size_seq(self, seq: Sequence):
+    def update_draft_size_seq(self, seq_list: List[Sequence]):
         raise NotImplementedError()
 
 
@@ -60,25 +60,48 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
 
-    def update_draft_sizes(self, seq_group_list: List[SequenceGroup]):
-        for seq_group in seq_group_list:
-            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            self.update_draft_size_seq(seq)
+    def update_draft_size_seq_group(self, seq_group_list: List[SequenceGroup]):
+        # Get sequences from the sequence groups
+        seq_list = [
+            seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+            for seq_group in seq_group_list
+        ]
+        self.update_draft_size_seq(seq_list)
 
-    def update_draft_size_seq(self, seq: Sequence):
+    def update_draft_size_seq(self, seq_list: List[Sequence]):
+        # Extract features to predict the acceptance probability
+        X = [self._get_seq_features(seq) for seq in seq_list]
+
+        # Predict
+        nvtx.range_push("predict")
+        accept_probs = np.clip(self.predictor.predict(X), 0, 1)
+        nvtx.range_pop()
+
+        # Update the draft sizes
+        random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
+        for seq, accept_prob, random_accept_prob in zip(seq_list, accept_probs, random_accept_probs):
+            seq.cumulative_accept_prob *= accept_prob
+            if seq.cumulative_accept_prob < random_accept_prob:
+                seq.draft_size = seq.get_draft_len()
+                seq.cumulative_accept_prob = 1
+
+    def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
         self.retrain_index += 1
         if self.retrain_index >= self.retrain_period:
             self.retrain_index = 0
+            nvtx.range_push("retrain predictor")
             self._train_predictor()
+            nvtx.range_pop()
             self._drop_draft_history()
 
         self._update_drafted_accepted_df(seq)
 
-        nvtx.range_push("draft_optimizer._check_early_stop")
-        if self._check_early_stop(seq):
-            seq.draft_size = seq.get_draft_len()
-        nvtx.range_pop()
+        last_draft_token_id = seq.data.get_last_draft_token_id()
+        draft_prob = seq.data.get_draft_probs()[-1][last_draft_token_id].item()
+        beta_ema = seq.get_beta_ema()
+
+        return [beta_ema, draft_prob]
 
     def _drop_draft_history(self):
         # drop the first element to keep the history size
@@ -113,24 +136,6 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         return Pipeline([("poly", poly_features), ("linear", predictor)])
 
-    def _check_early_stop(self, seq: Sequence) -> bool:
-        # Check if the sequence should be stopped early
-        # Get probability of last draft token
-        last_draft_token_id = seq.data.get_last_draft_token_id()
-        draft_prob = seq.data.get_draft_probs()[-1][last_draft_token_id].item()
-        beta_ema = seq.get_beta_ema()
-
-        nvtx.range_push("draft_optimizer._predict_accept_prob")
-        predicted_accept_prob = self._predict_accept_prob(beta_ema, draft_prob)
-        nvtx.range_pop()
-
-        seq.cumulative_accept_prob *= predicted_accept_prob
-        random_accept_prob = np.random.uniform(0, 1)
-        if seq.cumulative_accept_prob < random_accept_prob:
-            seq.cumulative_accept_prob = 1
-            return True
-        return False
-
     def _update_drafted_accepted_df(self, seq: Sequence):
         beta_emas, draft_probs, accept_probs = seq.get_new_draft_history()
         assert len(beta_emas) == len(draft_probs) == len(accept_probs)
@@ -141,18 +146,6 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.draft_history["draft_prob"].extend(draft_probs)
         self.draft_history["accept_prob"].extend(accept_probs)
 
-    def _predict_accept_prob(self, beta_ema: float, draft_prob: float) -> float:
-        # Prepare the input data with appropriate feature names
-        X = [[beta_ema, draft_prob]]
-
-        # Predict the acceptance probability
-        nvtx.range_push("predict")
-        accept_prob = self.predictor.predict(X)
-        nvtx.range_pop()
-
-        # Clip the result to ensure it's within [0, 1]
-        return np.clip(accept_prob[0], 0, 1)
-
     def _train_predictor(self):
         global DEFER_EXIT
         if not DEFER_EXIT:
@@ -161,7 +154,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             Thread(target=defer_exit, args=(10,)).start()
             DEFER_EXIT = True
 
-        nvtx.range_push("draft_optimizer._train_predictor bin draft history")
+        nvtx.range_push("bin draft history")
         binned_df = self._get_binned_draft_history_df()
         nvtx.range_pop()
 
@@ -196,7 +189,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             return
 
         # Linear regression training
-        nvtx.range_push("draft_optimizer._train_predictor fit predictor")
+        nvtx.range_push("fit predictor")
         self.predictor.fit(X, y)
         nvtx.range_pop()
 

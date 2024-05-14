@@ -13,7 +13,7 @@ from vllm.core.sps_draft_optim import BetaEMADraftSizeOptimizer
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import ParallelState
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (SamplerOutput, SequenceGroupMetadata, SpSStage,
+from vllm.sequence import (SamplerOutput, Sequence, SequenceGroupMetadata, SpSStage,
                            SequenceData, SequenceStatus)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.sps_model_runner import SpSModelRunner
@@ -212,6 +212,7 @@ class SpSWorker:
         outputs: SamplerOutput,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ):
+        seq_list: List[Sequence] = []
         # Update the sequence groups with the model outputs.
         for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
             seq_group = seq_group_metadata.seq_group
@@ -237,18 +238,14 @@ class SpSWorker:
                 child_sample.logprobs,
                 child_sample.probs,
             )
-
-            if self.sps_config.use_dynamic_draft_size:
-                nvtx.range_push("draft_optimizer.update_draft_size_seq")
-                self.draft_optimizer.update_draft_size_seq(parent_seq)
-                nvtx.range_pop()
-                seq_group_metadata.draft_size = parent_seq.draft_size
             
-            # # check early stopping
-            # if self.sps_config.use_dynamic_draft_size and parent_seq.check_early_stop():
-            #     # print(f"Early stopping {parent_seq.draft_size} {parent_seq.get_draft_len()}")
-            #     parent_seq.draft_size = parent_seq.get_draft_len()
-            #     seq_group_metadata.draft_size = parent_seq.draft_size
+            seq_list.append(parent_seq)
+        
+        nvtx.range_push("update_draft_size_seq")
+        self.draft_optimizer.update_draft_size_seq(seq_list)
+        nvtx.range_pop()
+        for seq, seq_group_metadata in zip(seq_list, seq_group_metadata_list):
+            seq_group_metadata.draft_size = seq.draft_size
     
     @torch.inference_mode()
     def execute_target_model(
