@@ -95,7 +95,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             degree=self.predictor_degree, include_bias=True
         )
         # fit with dummy
-        dummy_df = pd.DataFrame([[0, 0]], columns=["beta_ema", "draft_prob"])
+        dummy_df = [[0, 0]]
         poly_features.fit(dummy_df) 
 
         # predictor = ElasticNet(alpha=0.1, l1_ratio=0.5, fit_intercept=True)
@@ -143,17 +143,15 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
     def _predict_accept_prob(self, beta_ema: float, draft_prob: float) -> float:
         # Prepare the input data with appropriate feature names
-        X = pd.DataFrame([[beta_ema, draft_prob]], columns=["beta_ema", "draft_prob"])
-        
-        # Apply polynomial feature transformation with the proper feature names
-        X_poly = self.predictor.named_steps['poly'].transform(X)
-        
-        # Predict acceptance probability using the linear model
-        accept_prob = self.predictor.named_steps['linear'].predict(X_poly)
-        
+        X = [[beta_ema, draft_prob]]
+
+        # Predict the acceptance probability
+        nvtx.range_push("predict")
+        accept_prob = self.predictor.predict(X)
+        nvtx.range_pop()
+
         # Clip the result to ensure it's within [0, 1]
         return np.clip(accept_prob[0], 0, 1)
- 
 
     def _train_predictor(self):
         global DEFER_EXIT
@@ -162,13 +160,17 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             torch.cuda.cudart().cudaProfilerStart()
             Thread(target=defer_exit, args=(10,)).start()
             DEFER_EXIT = True
-        
+
         nvtx.range_push("draft_optimizer._train_predictor bin draft history")
         binned_df = self._get_binned_draft_history_df()
         nvtx.range_pop()
 
-        X = binned_df[['beta_ema', 'draft_prob']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        y = binned_df['accept_prob']
+        X = (
+            binned_df[["beta_ema", "draft_prob"]]
+            .apply(lambda x: pd.to_numeric(x, errors="coerce"))
+            .to_numpy()
+        )
+        y = binned_df["accept_prob"].to_numpy()
 
         # Check if the input data is empty
         if X.shape[0] == 0 or y.shape[0] == 0:
@@ -185,12 +187,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             draft_values = np.linspace(0, 1, self.num_bins)
 
             # Generate pairs as a DataFrame
-            X_predict = pd.DataFrame(
-                [[beta, draft] for beta in beta_values for draft in draft_values],
-                columns=["beta_ema", "draft_prob"]
-            )
+            X_predict = [[beta, draft] for beta in beta_values for draft in draft_values]
             y_initial_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
-        
+
         # Check if the input data is empty
         if X.shape[0] == 0 or y.shape[0] == 0:
             print("No data available for training the predictor. Skipping this training step.")
@@ -228,7 +227,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             axs[2].set_xlabel('Draft Probability')
 
             # Retrieve the final coefficients and intercept
-            feature_names = self.predictor.named_steps['poly'].get_feature_names_out(['beta_ema', 'draft_prob'])
+            feature_names = self.predictor.named_steps['poly'].get_feature_names_out()
             linear_model =  self.predictor.named_steps['linear']
 
             polynomial_function_string = create_polynomial_equation(linear_model, feature_names)
