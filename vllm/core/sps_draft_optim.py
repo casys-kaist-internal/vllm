@@ -18,8 +18,7 @@ from torch.cuda import nvtx
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
-RETRAIN = False
-PLOT_HEATMAP = False
+PLOT_HEATMAP = True
 DEFER_EXIT = False
 
 def defer_exit(delay: float):
@@ -54,9 +53,10 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.history_size = 1000000
         self.num_bins = 20
         self.predictor_degree = 3
-        self.agg_type = "mean"
+        self.agg_type = "median"
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
+        self.retrain = False
 
     # I think we should put this back to SpSConfig because SpSScheduler might need this. 
     def get_tile_size(self):
@@ -114,7 +114,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
     def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
         self.retrain_index += 1
-        if RETRAIN and self.retrain_index >= self.retrain_period:
+        if self.retrain and self.retrain_index >= self.retrain_period:
             self.retrain_index = 0
             nvtx.range_push("retrain predictor")
             self._train_predictor()
@@ -161,7 +161,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         predictor.intercept_ = 0.09655343164046182
 
         return Pipeline([("poly", poly_features), ("linear", predictor)])
-
+    
     def _update_drafted_accepted_df(self, seq: Sequence):
         beta_emas, draft_probs, accept_probs = seq.get_new_draft_history()
         assert len(beta_emas) == len(draft_probs) == len(accept_probs)
@@ -301,6 +301,51 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         return binned_df
 
-    def reset(self):
-        self.predictor = self._init_predictor()
+    def initialize(self, path):
+        if os.path.exists(path):
+            # Read the CSV file
+            data = pd.read_csv(path)
+
+            # Assuming the CSV has columns 'coef' and 'intercept'
+            coef = data['coef'].values
+            intercept = data['intercept'].values[0]
+
+            # Initialize the predictor
+            pipeline = self._init_predictor()
+            predictor = pipeline.named_steps['linear']
+            
+            # Set the loaded coefficients and intercept
+            predictor.coef_ = coef
+            predictor.intercept_ = intercept
+
+            # Update the pipeline with the loaded predictor
+            pipeline.named_steps['linear'] = predictor
+
+            # Assign the pipeline to self.predictor
+            self.predictor = pipeline
+
+            print("Predictor loaded successfully.")
+        else:
+            print(f"The file at {path} does not exist.")
+            self.predictor = self._init_predictor()
+            self.retrain = True
+
         self._init_draft_history()
+
+    def save_predictor(self, path):
+        # Extract the coefficients and intercept from the predictor
+        predictor = self.predictor.named_steps['linear']
+        coef = predictor.coef_
+        intercept = predictor.intercept_
+
+        # Create a DataFrame to save the coefficients and intercept
+        data = pd.DataFrame({'coef': coef, 'intercept': [intercept]})
+
+        # If path does not exist, create the directory
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        # Save the DataFrame to a CSV file
+        data.to_csv(path, index=False)
+
+        print(f"Predictor saved to {path}.")
+        self.retrain = False

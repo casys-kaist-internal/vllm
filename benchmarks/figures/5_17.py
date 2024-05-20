@@ -19,11 +19,12 @@ from datasets import load_dataset
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
 OUTPUT_DIR = '/mnt/sda/results'
-MAX_NUM_SEQUENCE = 1000
+PREDICTOR_PATH = 'predictor'
+MAX_NUM_SEQUENCE = 100
 
 # Test cases
 STATIC = False
-STATIC_TILE = False
+STATIC_TILE = True
 DYNAMIC = True
 DYNAMIC_TILE = True
 
@@ -201,8 +202,15 @@ def benchmark(args):
 
     warmup(llm)
 
-    if isinstance(llm, SpSLLM):
-        llm.llm_engine.workers[0].draft_optimizer.reset()
+    cleaned_target_model = args.target_model.split("/")[-1]
+    cleaned_draft_model = args.draft_model.split("/")[-1]
+    cleaned_temperature = str(args.temperature).replace(".", "_")
+    predictor_path = f"{PREDICTOR_PATH}/{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}.csv"
+    llm.llm_engine.workers[0].draft_optimizer.initialize(predictor_path)
+
+    if llm.llm_engine.workers[0].draft_optimizer.retrain:
+        pretrain(llm, requests, args)
+        llm.llm_engine.workers[0].draft_optimizer.save_predictor(predictor_path)
 
     throughputs = {f"static_{i}": [] for i in range(8)}
     throughputs.update({"static_tile": [], "dynamic": [], "dynamic_tile": []})
@@ -228,6 +236,23 @@ def benchmark(args):
 
     save_results_to_csv(throughputs, args)
 
+def pretrain(llm, requests, args):
+    print("Pretraining the predictor...")
+    for i in range(0, len(requests), args.batch_size):
+        sampled_requests = requests[i:i + args.batch_size]
+        for prompt, _, output_len in sampled_requests:
+            sampling_params = SamplingParams(
+                n=1,
+                temperature=args.temperature,
+                top_p=1.0,
+                use_beam_search=False,
+                ignore_eos=True,
+                max_tokens=512,  # currently fixed to 512 but can be changed to output_len
+            )
+            llm._add_request(prompt=prompt, prompt_token_ids=None,
+                             sampling_params=sampling_params)
+
+        llm._run_engine(use_tqdm=False)
 
 def benchmark_static_draft(llm, sampled_requests, throughputs, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
