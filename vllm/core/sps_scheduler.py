@@ -355,11 +355,8 @@ class SpSScheduler:
             # target model should run the last non-draft token and all the draft tokens
             num_batched_tokens += (seqs[0].get_draft_len() + 1)
             num_tokens.append((seqs[0].get_draft_len() + 1))
-        
-        print("num_batched_tokens: ", num_batched_tokens)
-        print("num_tokens: ", num_tokens)
 
-        if self.sps_config.get_tile_size_constraint() < num_batched_tokens:
+        if self.sps_config.get_tile_size() < num_batched_tokens:
             raise AssertionError("Tile size constraint is violated.")
 
         scheduler_outputs = SpSSchedulerOutputs(

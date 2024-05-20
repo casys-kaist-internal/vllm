@@ -231,7 +231,7 @@ def benchmark(args):
 
 def benchmark_static_draft(llm, sampled_requests, throughputs, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
-    llm.llm_engine.sps_config.use_tile_size_constraint = False
+    llm.llm_engine.sps_config.use_tile_constraint = "none"
 
     for draft_size in range(8):
         llm.llm_engine.sps_config.draft_size = draft_size
@@ -241,7 +241,7 @@ def benchmark_static_draft(llm, sampled_requests, throughputs, args):
 
 def benchmark_static_tile(llm, sampled_requests, throughputs, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
-    llm.llm_engine.sps_config.use_tile_size_constraint = True
+    llm.llm_engine.sps_config.use_tile_constraint = "cut-128"
     llm.llm_engine.sps_config.draft_size = 7
 
     benchmark_requests(llm, sampled_requests, throughputs["static_tile"], args)
@@ -249,14 +249,14 @@ def benchmark_static_tile(llm, sampled_requests, throughputs, args):
 
 def benchmark_dynamic_draft(llm, sampled_requests, throughputs, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = True
-    llm.llm_engine.sps_config.use_tile_size_constraint = False
+    llm.llm_engine.sps_config.use_tile_constraint = "none"
 
     benchmark_requests(llm, sampled_requests, throughputs["dynamic"], args)
 
 
 def benchmark_dynamic_tile(llm, sampled_requests, throughputs, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = True
-    llm.llm_engine.sps_config.use_tile_size_constraint = True
+    llm.llm_engine.sps_config.use_tile_constraint = "cut-128"
 
     benchmark_requests(llm, sampled_requests,
                        throughputs["dynamic_tile"], args)

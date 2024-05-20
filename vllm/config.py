@@ -483,16 +483,15 @@ class SpSConfig:
         self.use_tile_constraint = use_tile_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
-
-
-
         # Profiling draft and target latencies 
         self.draft_latencies: Dict[int, float] = {}
         self.target_latencies: Dict[int, float] = {}
         self.profile_finish = False
 
-    def get_tile_constraint_policy(self) -> int:
-        if self.use_tile_constraint == "cut-128":
+    def get_tile_size(self):
+        if self.use_tile_constraint == "none":
+            return 100000
+        elif self.use_tile_constraint == "cut-128":
             return 128
         else:
-            return 10000 # dummy value
+            raise NotImplementedError(f"Unsupported tile constraint: {self.use_tile_constraint}")

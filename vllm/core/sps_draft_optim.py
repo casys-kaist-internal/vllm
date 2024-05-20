@@ -18,8 +18,8 @@ from torch.cuda import nvtx
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
-RETRAIN = True
-PLOT_HEATMAP = True
+RETRAIN = False
+PLOT_HEATMAP = False
 DEFER_EXIT = False
 
 def defer_exit(delay: float):
@@ -58,6 +58,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
 
+    # I think we should put this back to SpSConfig because SpSScheduler might need this. 
     def get_tile_size(self):
         if self.sps_config.use_tile_constraint == "none":
             return 100000
@@ -98,16 +99,17 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             return
         else:
             num_tokens_to_cut = num_tokens_to_generate + num_tokens_to_target - self.get_tile_size()
-            # Sort running_seq_list by seq.cumulative_accept_prob
             running_seq_list.sort(key=lambda x: x.cumulative_accept_prob)
             for seq in running_seq_list:
-                if seq.cumulative_accept_prob == 1:
-                    continue 
-                if num_tokens_to_cut == 0:
-                    break
+                if seq.get_draft_len() == seq.draft_size:
+                    continue
+                
                 num_tokens_to_cut -= 1
                 seq.draft_size = seq.get_draft_len()
                 seq.cumulative_accept_prob = 1
+                
+                if num_tokens_to_cut == 0:
+                    break
 
     def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
@@ -143,7 +145,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         )
         # fit with dummy
         dummy_df = [[0, 0]]
-        poly_features.fit(dummy_df) 
+        poly_features.fit(dummy_df)
 
         # predictor = ElasticNet(alpha=0.1, l1_ratio=0.5, fit_intercept=True)
         predictor = LinearRegression(fit_intercept=True)
@@ -154,9 +156,9 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         # predictor.intercept_ = -0.015180676837696971
 
         predictor.coef_ = np.array(
-            [0, 0.240050765,1.42375935,-3.22546415,-0.03299826,-0.78081028,1.66473911,-0.04958285,-0.6562083,0.41092696]
+            [ 0., 0.93413575, 1.22473454, -0.32001846, -0.71799723, -1.63476777, -0.24324052, 0.4377291, -0.07319985, 1.27301201] 
         )
-        predictor.intercept_ = -0.21273702585116017
+        predictor.intercept_ = 0.09655343164046182
 
         return Pipeline([("poly", poly_features), ("linear", predictor)])
 
