@@ -473,20 +473,25 @@ class SpSConfig:
                  use_tile_constraint: str, 
                  use_target_attention: bool,
                  use_lazy_draft_kv_cache: bool,
-                 target_draft_latency_ratio: float,
+                 predictor_degree: int,
+                 predictor_agg_type: str
                 ) -> None:
         self.draft_size = draft_size
-        self.target_draft_latency_ratio = target_draft_latency_ratio
         self.start_max_draft_size = 7
 
         self.use_dynamic_draft_size = use_dynamic_draft_size
         self.use_tile_constraint = use_tile_constraint
         self.use_target_attention = use_target_attention
         self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
+
         # Profiling draft and target latencies 
         self.draft_latencies: Dict[int, float] = {}
         self.target_latencies: Dict[int, float] = {}
         self.profile_finish = False
+
+        # Predictor 
+        self.predictor_degree = predictor_degree
+        self.predictor_agg_type = predictor_agg_type
 
     def get_tile_size(self):
         if self.use_tile_constraint == "none":

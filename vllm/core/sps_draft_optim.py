@@ -52,8 +52,6 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.retrain_period = 100000
         self.history_size = 1000000
         self.num_bins = 20
-        self.predictor_degree = 3
-        self.agg_type = "median"
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
         self.retrain = False
@@ -80,7 +78,11 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         # Early exit policy
         num_tokens_to_generate = 0
-        random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
+        if self.sps_config.use_dynamic_draft_size:
+            random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
+        else:
+            random_accept_probs = np.zeros(len(accept_probs))
+
         for seq, accept_prob, random_accept_prob in zip(running_seq_list, accept_probs, random_accept_probs):
             seq.cumulative_accept_prob *= accept_prob
             if seq.cumulative_accept_prob < random_accept_prob: # draft load imbalance & fill 
@@ -98,18 +100,25 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             # Maybe fill 
             return
         else:
-            num_tokens_to_cut = num_tokens_to_generate + num_tokens_to_target - self.get_tile_size()
-            running_seq_list.sort(key=lambda x: x.cumulative_accept_prob)
-            for seq in running_seq_list:
-                if seq.get_draft_len() == seq.draft_size:
-                    continue
-                
-                num_tokens_to_cut -= 1
-                seq.draft_size = seq.get_draft_len()
-                seq.cumulative_accept_prob = 1
-                
-                if num_tokens_to_cut == 0:
-                    break
+            if self.sps_config.use_dynamic_draft_size:
+                num_tokens_to_cut = num_tokens_to_generate + num_tokens_to_target - self.get_tile_size()
+                running_seq_list.sort(key=lambda x: x.cumulative_accept_prob)
+                for seq in running_seq_list:
+                    if seq.get_draft_len() == seq.draft_size:
+                        continue
+                    
+                    num_tokens_to_cut -= 1
+                    seq.draft_size = seq.get_draft_len()
+                    seq.cumulative_accept_prob = 1
+                    
+                    if num_tokens_to_cut == 0:
+                        break
+            else:
+                for seq in running_seq_list:
+                    if seq.get_draft_len() == seq.draft_size:
+                        continue
+                    seq.draft_size = seq.get_draft_len()
+                    seq.cumulative_accept_prob = 1
 
     def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
@@ -141,7 +150,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
     def _init_predictor(self) -> Pipeline:
         poly_features = PolynomialFeatures(
-            degree=self.predictor_degree, include_bias=True
+            degree=self.sps_config.predictor_degree, include_bias=True
         )
         # fit with dummy
         dummy_df = [[0, 0]]
@@ -250,8 +259,8 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             linear_model =  self.predictor.named_steps['linear']
 
             # Print the coef_ and intercept_ of the linear model
-            print("Coefficients: ", linear_model.coef_)
-            print("Intercept: ", linear_model.intercept_)
+            # print("Coefficients: ", linear_model.coef_)
+            # print("Intercept: ", linear_model.intercept_)
 
             polynomial_function_string = create_polynomial_equation(linear_model, feature_names)
 
@@ -263,9 +272,13 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             fig.suptitle('Before vs. Real vs. After Acceptance Probability Heatmaps')
 
             # Create the directory for saving the plots if it doesn't exist
-            os.makedirs('heatmap', exist_ok=True)
-            current_time = time.strftime("%Y%m%d-%H%M%S")
-            plt.savefig(f'heatmap/accept_prob_{current_time}.png')
+            # os.makedirs('heatmap', exist_ok=True)
+            # current_time = time.strftime("%Y%m%d-%H%M%S")
+            # If path does not exist, create the directory
+            png_path = self.path.replace('.csv', '.png')
+            os.makedirs(os.path.dirname(png_path), exist_ok=True)
+            plt.savefig(png_path)
+            print(f"Plot saved to {png_path}.")
 
     def _get_binned_draft_history_df(self) -> pd.DataFrame:
         draft_accepted_df = pd.DataFrame(self.draft_history)
@@ -293,7 +306,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         binned_df = (
             draft_accepted_df.groupby(["beta_ema", "draft_prob"])
             .agg(accept_prob=pd.NamedAgg(
-                    column="accept_prob", aggfunc=self.agg_type
+                    column="accept_prob", aggfunc=self.sps_config.predictor_agg_type
                 ))
             .dropna()
         )
@@ -302,6 +315,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         return binned_df
 
     def initialize(self, path):
+        self.path = path
         if os.path.exists(path):
             # Read the CSV file
             data = pd.read_csv(path)
@@ -332,20 +346,24 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
         self._init_draft_history()
 
-    def save_predictor(self, path):
+    def save_predictor(self):
+        # Retrain last time before saving
+        self._train_predictor()
         # Extract the coefficients and intercept from the predictor
         predictor = self.predictor.named_steps['linear']
         coef = predictor.coef_
         intercept = predictor.intercept_
 
         # Create a DataFrame to save the coefficients and intercept
-        data = pd.DataFrame({'coef': coef, 'intercept': [intercept]})
+        data = pd.DataFrame({'coef': coef})
+        data['intercept'] = intercept  # Broadcast intercept to match the length of coef
+
 
         # If path does not exist, create the directory
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
 
         # Save the DataFrame to a CSV file
-        data.to_csv(path, index=False)
+        data.to_csv(self.path, index=False)
 
-        print(f"Predictor saved to {path}.")
+        print(f"Predictor saved to {self.path}.")
         self.retrain = False

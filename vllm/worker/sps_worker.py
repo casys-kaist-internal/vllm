@@ -222,10 +222,9 @@ class SpSWorker:
             parent_seq = seq_group_metadata.seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
             seq_list.append(parent_seq)
         
-        if self.sps_config.use_dynamic_draft_size:
-            self.draft_optimizer.update_draft_size_seq(running_seq_list, seq_list)
-            nvtx.range_push("update_draft_size_seq")
-            nvtx.range_pop()
+        nvtx.range_push("update_draft_size_seq")
+        self.draft_optimizer.update_draft_size_seq(running_seq_list, seq_list)
+        nvtx.range_pop()
 
         for seq, seq_group_metadata in zip(seq_list, seq_group_metadata_list):
             seq_group_metadata.draft_size = seq.draft_size

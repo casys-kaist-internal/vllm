@@ -17,23 +17,19 @@ from datasets import load_dataset
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 # current date 
-current_time = time.strftime("%Y%m%d")
-
-# Get NVIDIA GPU name 
-gpu_name = torch.cuda.get_device_name(0)
+current_time = time.strftime("%Y%m%d-%H%M%S")
 
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
-OUTPUT_DIR = f'/mnt/sda/results/{gpu_name}/{current_time}'
-PREDICTOR_PATH = 'predictor'
-MAX_NUM_SEQUENCE = 1000
-MAX_NUM_ITERATION = 100
+OUTPUT_DIR = f'/mnt/sda/results/{current_time}'
+PREDICTOR_PATH = 'predictor_10000'
+MAX_NUM_SEQUENCE = 10000
 
 # Test cases
-STATIC = True
-STATIC_TILE = True
-DYNAMIC = True
-DYNAMIC_TILE = True
+STATIC = False
+STATIC_TILE = False
+DYNAMIC = False
+DYNAMIC_TILE = False
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -232,9 +228,6 @@ def benchmark(args):
     # Adjust the requests to be multiples of the batch size
     adjusted_max_num_sequence = (
         min(MAX_NUM_SEQUENCE, len(requests)) // args.batch_size) * args.batch_size
-
-    if adjusted_max_num_sequence > args.batch_size * MAX_NUM_ITERATION:
-        adjusted_max_num_sequence = args.batch_size * MAX_NUM_ITERATION
 
     for i in tqdm(range(0, adjusted_max_num_sequence, args.batch_size)):
         sampled_requests = requests[i:i + args.batch_size]

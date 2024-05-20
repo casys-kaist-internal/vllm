@@ -253,7 +253,8 @@ class SpSEngineArgs:
     use_tile_constraint: str = "none"
     use_target_attention: bool = False
     use_lazy_draft_kv_cache: bool = True
-    target_draft_latency_ratio: float = 0.2
+    predictor_degree: int = 3
+    predictor_agg_type: str = "median"
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -499,7 +500,8 @@ class SpSEngineArgs:
                                self.use_tile_constraint,
                                self.use_target_attention,
                                self.use_lazy_draft_kv_cache,
-                               self.target_draft_latency_ratio)
+                               self.predictor_degree,
+                               self.predictor_agg_type)
 
         # If the model is Pythia, the target vocab and draft vocab is actually the same content
         # with different length with 'None' token padded. So, we skip assertion
