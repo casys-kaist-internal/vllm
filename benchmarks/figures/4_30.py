@@ -13,7 +13,7 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/home/noppanat/workspace/models'
+download_dir = '/mnt/sda/models'
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -151,7 +151,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open('/home/noppanat/workspace/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open('/mnt/sda/datasets/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     # Filter out the conversations with less than 2 turns.
@@ -187,6 +187,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
     return filtered_dataset
 
+
 def load_apps(tokenizer: PreTrainedTokenizerBase):
     dataset = load_dataset('codeparrot/apps')['train']
 
@@ -217,6 +218,7 @@ def load_apps(tokenizer: PreTrainedTokenizerBase):
     # random.shuffle(filtered_dataset)
 
     return filtered_dataset
+
 
 def load_all_datasets(tokenizer: PreTrainedTokenizerBase):
     gsm8k = load_gsm8k(tokenizer)
@@ -312,16 +314,17 @@ def main(args: argparse.Namespace):
     if isinstance(llm, SpSLLM):
         llm.llm_engine.workers[0].draft_optimizer.reset()
 
-    # Profile 
+    # Profile
     llm._run_profile()
 
     # latencies = []
     throughputs = []
     # output_lens = []
-        
+
     for i in range(1, 51):
         # sampled_requests = random.sample(requests, args.batch_size)
-        sampled_requests = requests[args.batch_size *i:args.batch_size * (i + 1)]
+        sampled_requests = requests[args.batch_size *
+                                    i:args.batch_size * (i + 1)]
         # sampled_requests = requests[args.index:args.index + 1]
 
         # print(sampled_requests)
@@ -354,11 +357,11 @@ def main(args: argparse.Namespace):
                 prompt_token_ids=None,
                 sampling_params=sampling_params,
             )
-        
+
         torch.cuda.synchronize()
         start_time = time.monotonic()
         outputs = llm._run_engine(use_tqdm=True)
-        
+
         torch.cuda.synchronize()
         end_time = time.monotonic()
 
@@ -370,13 +373,14 @@ def main(args: argparse.Namespace):
             avg_draft_size = output.outputs[0].avg_draft_size
             print(f"{avg_draft_size:2f}, {avg_score:.2f}")
             output_tokens += len(output.outputs[0].token_ids)
-            total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
-        # # write down output to csv file 
+            total_tokens += (sampled_requests[idx]
+                             [1] + len(output.outputs[0].token_ids))
+        # # write down output to csv file
         # with open('output.csv', 'a') as f:
         #     for idx, output in enumerate(outputs):
         #         output_tokens += len(output.outputs[0].token_ids)
         #         total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
-        #         # write the output in one line without breaking new line 
+        #         # write the output in one line without breaking new line
         #         clean_text = output.outputs[0].text.replace('\n', ' ')
         #         f.write(f"{idx}, {sampled_requests[idx][0]}, {clean_text}\n")
             # print(f"{idx}, {sampled_requests[idx][0]}, {output.outputs[0].text}")
@@ -386,7 +390,8 @@ def main(args: argparse.Namespace):
             # print("-" * 80)
             # print(f"{idx} Output: {output.outputs[0].text}")
         throughputs.append(total_tokens / (end_time - start_time))
-        print(f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
+        print(
+            f"throughput, {total_tokens / (end_time - start_time):.3f}, {output_tokens / (end_time - start_time):.3f}")
         # print(f"latency: {end_time - start_time:.3f}")
         # print(f"Generation latency: {generation_latency:.3f} seconds")
         # print(f"Output length: {output_len}")
@@ -416,13 +421,13 @@ if __name__ == '__main__':
                                  "alpaca", "mt-bench", "sharegpt", "apps", "all"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str,
-                        # default='EleutherAI/pythia-6.9b') 
+                        # default='EleutherAI/pythia-6.9b')
                         # default='EleutherAI/pythia-12b')
                         default='facebook/opt-6.7b')
-                        # default='bigscience/bloom-7b1')
-                        # default='daryl149/llama-2-7b-chat-hf')
-                        # default='facebook/opt-6.7b')
-    parser.add_argument('--draft-model', type=str, 
+    # default='bigscience/bloom-7b1')
+    # default='daryl149/llama-2-7b-chat-hf')
+    # default='facebook/opt-6.7b')
+    parser.add_argument('--draft-model', type=str,
                         # default='EleutherAI/pythia-14m')
                         # default='bigscience/bloomz-560m')
                         # default='Felladrin/Llama-68M-Chat-v1')
@@ -434,7 +439,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--use-target-attention',
                         action='store_true')
-    parser.add_argument('--target-draft-latency-ratio', 
+    parser.add_argument('--target-draft-latency-ratio',
                         '-c',
                         type=float, default=0.2)
     parser.add_argument('--frequency-penalty', type=float, default=0.0)

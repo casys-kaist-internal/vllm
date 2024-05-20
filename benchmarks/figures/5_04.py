@@ -13,7 +13,7 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/home/noppanat/workspace/models'
+download_dir = '/mnt/sda/models'
 MAX_NUM_SEQUENCE = 8000
 
 

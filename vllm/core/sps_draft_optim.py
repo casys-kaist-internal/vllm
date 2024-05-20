@@ -18,7 +18,8 @@ from torch.cuda import nvtx
 
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
-PLOT_HEATMAP = False
+RETRAIN = True
+PLOT_HEATMAP = True
 DEFER_EXIT = False
 
 def defer_exit(delay: float):
@@ -41,54 +42,77 @@ def create_polynomial_equation(model, feature_names):
 
 class DraftSizeOptimizer:
     @abstractmethod
-    def update_draft_size_seq_group(self, seq_group_list: List[SequenceGroup]):
-        raise NotImplementedError()
-
-    @abstractmethod
     def update_draft_size_seq(self, seq_list: List[Sequence]):
         raise NotImplementedError()
 
 
 class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
-    def __init__(self):
+    def __init__(self, sps_config):
+        self.sps_config = sps_config
         self.retrain_index = 0
-        self.retrain_period = 10000
+        self.retrain_period = 100000
         self.history_size = 1000000
         self.num_bins = 20
         self.predictor_degree = 3
-        self.agg_type = "median"
+        self.agg_type = "mean"
         self.predictor = self._init_predictor()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
 
-    def update_draft_size_seq_group(self, seq_group_list: List[SequenceGroup]):
-        # Get sequences from the sequence groups
-        seq_list = [
-            seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            for seq_group in seq_group_list
-        ]
-        self.update_draft_size_seq(seq_list)
+    def get_tile_size(self):
+        if self.sps_config.use_tile_constraint == "none":
+            return 100000
+        elif self.sps_config.use_tile_constraint == "cut-128":
+            return 128
+        else:
+            raise NotImplementedError(f"Unsupported tile constraint: {self.sps_config.use_tile_constraint}")
 
-    def update_draft_size_seq(self, seq_list: List[Sequence]):
+    def update_draft_size_seq(self, 
+                              running_seq_list: List[Sequence],
+                              seq_list: List[Sequence]):
         # Extract features to predict the acceptance probability
-        X = [self._get_seq_features(seq) for seq in seq_list]
+        X = [self._get_seq_features(seq) for seq in running_seq_list]
 
         # Predict
         nvtx.range_push("predict")
         accept_probs = np.clip(self.predictor.predict(X), 0, 1)
         nvtx.range_pop()
 
-        # Update the draft sizes
+        # Early exit policy
+        num_tokens_to_generate = 0
         random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
-        for seq, accept_prob, random_accept_prob in zip(seq_list, accept_probs, random_accept_probs):
+        for seq, accept_prob, random_accept_prob in zip(running_seq_list, accept_probs, random_accept_probs):
             seq.cumulative_accept_prob *= accept_prob
-            if seq.cumulative_accept_prob < random_accept_prob:
+            if seq.cumulative_accept_prob < random_accept_prob: # draft load imbalance & fill 
+                seq.draft_size = seq.get_draft_len()
+                seq.cumulative_accept_prob = 1
+            else:
+                num_tokens_to_generate += 1
+
+        # Tile constraint policy
+        num_tokens_to_target = 0
+        for seq in seq_list:
+            num_tokens_to_target += (seq.get_draft_len() + 1)
+
+        if num_tokens_to_generate + num_tokens_to_target <= self.get_tile_size():
+            # Maybe fill 
+            return
+        else:
+            num_tokens_to_cut = num_tokens_to_generate + num_tokens_to_target - self.get_tile_size()
+            # Sort running_seq_list by seq.cumulative_accept_prob
+            running_seq_list.sort(key=lambda x: x.cumulative_accept_prob)
+            for seq in running_seq_list:
+                if seq.cumulative_accept_prob == 1:
+                    continue 
+                if num_tokens_to_cut == 0:
+                    break
+                num_tokens_to_cut -= 1
                 seq.draft_size = seq.get_draft_len()
                 seq.cumulative_accept_prob = 1
 
     def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
         self.retrain_index += 1
-        if self.retrain_index >= self.retrain_period:
+        if RETRAIN and self.retrain_index >= self.retrain_period:
             self.retrain_index = 0
             nvtx.range_push("retrain predictor")
             self._train_predictor()
@@ -147,12 +171,12 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.draft_history["accept_prob"].extend(accept_probs)
 
     def _train_predictor(self):
-        global DEFER_EXIT
-        if not DEFER_EXIT:
-            print("[debug] (noppanat) time:", str(datetime.datetime.now()), flush=True)
-            torch.cuda.cudart().cudaProfilerStart()
-            Thread(target=defer_exit, args=(10,)).start()
-            DEFER_EXIT = True
+        # global DEFER_EXIT
+        # if not DEFER_EXIT:
+        #     print("[debug] (noppanat) time:", str(datetime.datetime.now()), flush=True)
+        #     torch.cuda.cudart().cudaProfilerStart()
+        #     Thread(target=defer_exit, args=(10,)).start()
+        #     DEFER_EXIT = True
 
         nvtx.range_push("bin draft history")
         binned_df = self._get_binned_draft_history_df()
@@ -222,6 +246,10 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             # Retrieve the final coefficients and intercept
             feature_names = self.predictor.named_steps['poly'].get_feature_names_out()
             linear_model =  self.predictor.named_steps['linear']
+
+            # Print the coef_ and intercept_ of the linear model
+            print("Coefficients: ", linear_model.coef_)
+            print("Intercept: ", linear_model.intercept_)
 
             polynomial_function_string = create_polynomial_equation(linear_model, feature_names)
 

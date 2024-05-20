@@ -463,7 +463,7 @@ class Sequence:
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
         self.beta_list.extend(beta_list)
-        self.score.append(accept_cnt / self.draft_size)
+        # self.score.append(accept_cnt / self.draft_size)
         self.draft_size_list.append(self.draft_size)
 
         return free_block_cnt

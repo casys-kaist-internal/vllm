@@ -392,10 +392,6 @@ class SpSLLMEngine:
                                        child_sample.logprobs)
 
             elif sps_stage == SpSStage.DRAFT_DECODE:
-                # Append the draft token to the parent sequence.
-                # parent.append_draft_token_id(child_sample.output_token,
-                #                              child_sample.logprobs,
-                #                              child_sample.probs)
                 pass
 
             elif sps_stage == SpSStage.TARGET_DECODE:

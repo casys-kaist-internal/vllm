@@ -13,7 +13,14 @@ from transformers import (AutoTokenizer, PreTrainedTokenizerBase)
 from vllm import LLM, SpSLLM, SamplingParams
 from datasets import load_dataset
 
-download_dir = '/data/models'
+download_dir = '/mnt/sda/download'
+
+# Test cases
+MAX_NUM_SEQUENCE = 8000
+STATIC = False
+STATIC_TILE = False
+DYNAMIC = False
+DYNAMIC_TILE = False
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -113,7 +120,8 @@ def load_alpaca(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('philschmid/mt-bench', cache_dir=download_dir)['train']
+    dataset = load_dataset('philschmid/mt-bench',
+                           cache_dir=download_dir)['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
@@ -187,6 +195,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
     return filtered_dataset
 
+
 def load_apps(tokenizer: PreTrainedTokenizerBase):
     dataset = load_dataset('codeparrot/apps', cache_dir=download_dir)['train']
 
@@ -217,6 +226,7 @@ def load_apps(tokenizer: PreTrainedTokenizerBase):
     # random.shuffle(filtered_dataset)
 
     return filtered_dataset
+
 
 def load_all_datasets(tokenizer: PreTrainedTokenizerBase):
     gsm8k = load_gsm8k(tokenizer)
@@ -257,37 +267,23 @@ def main(args: argparse.Namespace):
 
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
-    if args.engine == "base":
-        llm = LLM(
-            model=args.target_model,
-            tokenizer=args.tokenizer,
-            quantization=args.quantization,
-            tensor_parallel_size=args.tensor_parallel_size,
-            seed=args.seed,
-            trust_remote_code=args.trust_remote_code,
-            dtype=args.dtype,
-            download_dir=download_dir
-        )
-    elif args.engine == "sps":
-        llm = SpSLLM(
-            target_model=args.target_model,
-            draft_model=args.draft_model,
-            draft_size=args.draft_size,
-            tile_size=args.tile_size,
-            use_dynamic_draft_size=args.dynamic_draft,
-            use_tile_size_constraint=args.use_tile_size,
-            use_lazy_draft_kv_cache=True,
-            use_target_attention=args.use_target_attention,
-            tokenizer=args.tokenizer,
-            quantization=args.quantization,
-            tensor_parallel_size=args.tensor_parallel_size,
-            seed=args.seed,
-            trust_remote_code=args.trust_remote_code,
-            dtype=args.dtype,
-            download_dir=download_dir
-        )
-    else:
-        raise ValueError(f"Unknown engine: {args.engine}")
+    llm = SpSLLM(
+        target_model=args.target_model,
+        draft_model=args.draft_model,
+        draft_size=args.draft_size,
+        tile_size=args.tile_size,
+        use_dynamic_draft_size=args.dynamic_draft,
+        use_tile_size_constraint=args.use_tile_size,
+        use_lazy_draft_kv_cache=True,
+        use_target_attention=args.use_target_attention,
+        tokenizer=args.tokenizer,
+        quantization=args.quantization,
+        tensor_parallel_size=args.tensor_parallel_size,
+        seed=args.seed,
+        trust_remote_code=args.trust_remote_code,
+        dtype=args.dtype,
+        download_dir=download_dir
+    )
 
     if args.dataset == "gsm8k":
         requests = load_gsm8k(tokenizer)
@@ -306,158 +302,171 @@ def main(args: argparse.Namespace):
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
+    # Limit the number of requests to 10,000.
+    if len(requests) > 10000:
+        requests = requests[:10000]
+
     # Warmup
     warmup(llm)
+
     # TODO(noppanat): Workaround for now. Need to reset the draft optimizer.
     if isinstance(llm, SpSLLM):
         llm.llm_engine.workers[0].draft_optimizer.reset()
 
-    # Profile 
-    llm._run_profile()
-    
-    # latencies = []
-    throughputs = []
-        
-    for i in range(1, 10):
-        throughputs = {}
-        sampled_requests = requests[args.batch_size *i:args.batch_size * (i + 1)]
-        ##########################################################
-        # STATIC DRAFT FROM 0 to 7 
-        ##########################################################
-        llm.llm_engine.sps_config.use_oracle_draft_size = False
-        llm.llm_engine.sps_config.use_dynamic_draft_size = False
-        accept_cnts = [] 
+    # Profile
+    # llm._run_profile()
 
-        for draft_size in range(1, 8):
-            llm.llm_engine.sps_config.draft_size = draft_size
-            for prompt, _, output_len in sampled_requests:
-                # print(prompt)
+    throughputs = {
+        "static_0": [],
+        "static_1": [],
+        "static_2": [],
+        "static_3": [],
+        "static_4": [],
+        "static_5": [],
+        "static_6": [],
+        "static_7": [],
+        "static_tile": [],
+        "dynamic": [],
+        "dynamic_tile": [],
+    }
 
-                if args.random_temp:
-                    sampling_params = SamplingParams(
-                        n=1,
-                        temperature=random.uniform(0.0, 1.0),
-                        frequency_penalty=args.frequency_penalty,
-                        top_p=1.0,
-                        use_beam_search=False,
-                        ignore_eos=True,
-                        max_tokens=output_len,
-                    )
-                else:
+    for i in range(0, min(len(requests), MAX_NUM_SEQUENCE), args.batch_size):
+        sampled_requests = requests[i: min(
+            i + args.batch_size, MAX_NUM_SEQUENCE)]
+
+        ##########################################################
+        # STATIC DRAFT FROM 0 to 7
+        ##########################################################
+        if STATIC:
+            llm.llm_engine.sps_config.use_dynamic_draft_size = False
+            llm.llm_engine.sps_config.use_tile_size_constraint = False
+
+            for draft_size in range(0, 8):
+                llm.llm_engine.sps_config.draft_size = draft_size
+                for prompt, _, output_len in sampled_requests:
                     sampling_params = SamplingParams(
                         n=1,
                         temperature=args.temperature,
-                        frequency_penalty=args.frequency_penalty,
                         top_p=1.0,
                         use_beam_search=False,
                         ignore_eos=True,
                         max_tokens=512,
                     )
-                # FIXME(woosuk): Do not use internal method.
-                llm._add_request(
-                    prompt=prompt,
-                    prompt_token_ids=None,
-                    sampling_params=sampling_params,
-                )
-            
-            torch.cuda.synchronize()
-            start_time = time.monotonic()
-            outputs = llm._run_engine(use_tqdm=False)
-            
-            torch.cuda.synchronize()
-            end_time = time.monotonic()
+                    llm._add_request(
+                        prompt=prompt,
+                        prompt_token_ids=None,
+                        sampling_params=sampling_params,
+                    )
 
-            # print(outputs)
-            total_tokens = 0
-            output_tokens = 0
-            for idx, output in enumerate(outputs):
-                if draft_size == 7:
-                    accept_cnt_list = output.outputs[0].accept_cnt_list
-                    accept_cnts.append(accept_cnt_list)
-                # print(f"{avg_draft_size:2f}, {avg_score:.2f}")
-                output_tokens += len(output.outputs[0].token_ids)
-                total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
-                print("-" * 80)
-                print(f"{idx} Prompt: {sampled_requests[idx][0]}")
-                print("-" * 80)
-                print(f"draft_{draft_size}_{idx} Output: {output.outputs[0].text}")
-            throughputs["draft_" + str(draft_size)] = total_tokens / (end_time - start_time)
+                torch.cuda.synchronize()
+                start_time = time.monotonic()
+                outputs = llm._run_engine(use_tqdm=False)
 
-        ##########################################################
-        # ORACLE 
-        ##########################################################
-        llm.llm_engine.sps_config.use_oracle_draft_size = True
-        llm.llm_engine.sps_config.use_dynamic_draft_size = False
-        
-        for i, (prompt, _, output_len) in enumerate(sampled_requests):
-            # print(prompt)
+                torch.cuda.synchronize()
+                end_time = time.monotonic()
 
-            if args.random_temp:
-                sampling_params = SamplingParams(
-                    n=1,
-                    temperature=random.uniform(0.0, 1.0),
-                    frequency_penalty=args.frequency_penalty,
-                    top_p=1.0,
-                    use_beam_search=False,
-                    ignore_eos=True,
-                    max_tokens=output_len,
-                )
-            else:
-                sampling_params = SamplingParams(
-                    n=1,
-                    temperature=args.temperature,
-                    frequency_penalty=args.frequency_penalty,
-                    top_p=1.0,
-                    use_beam_search=False,
-                    ignore_eos=True,
-                    max_tokens=512,
-                )
-            # FIXME(woosuk): Do not use internal method.
-            llm._add_request(
-                prompt=prompt,
-                prompt_token_ids=None,
-                sampling_params=sampling_params,
-                oracle_draft_list=accept_cnts[i]
-            )
-        
-        torch.cuda.synchronize()
-        start_time = time.monotonic()
-        outputs = llm._run_engine(use_tqdm=False)
-        
-        torch.cuda.synchronize()
-        end_time = time.monotonic()
+                total_tokens = 0
+                output_tokens = 0
+                for idx, output in enumerate(outputs):
+                    output_tokens += len(output.outputs[0].token_ids)
+                    total_tokens += (sampled_requests[idx]
+                                     [1] + len(output.outputs[0].token_ids))
 
-        total_tokens = 0
-        output_tokens = 0
-        for idx, output in enumerate(outputs):
-            output_tokens += len(output.outputs[0].token_ids)
-            total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
-            print("-" * 80)
-            print(f"oracle {idx} Prompt: {sampled_requests[idx][0]}")
-            print("-" * 80)
-            print(f"oracle {idx} Output: {output.outputs[0].text}")
-        throughputs["oracle"] = total_tokens / (end_time - start_time)
+                throughputs["static_" + str(draft_size)
+                            ].append(total_tokens / (end_time - start_time))
+
+        ############################################################
+        # STATIC TILE (Maximum static draft to fill tile constraint)
+        ############################################################
+        if STATIC_TILE:
+            llm.llm_engine.sps_config.use_dynamic_draft_size = False
+            llm.llm_engine.sps_config.use_tile_size_constraint = True
+
+            for draft_size in range(0, 8):
+                llm.llm_engine.sps_config.draft_size = draft_size
+                for prompt, _, output_len in sampled_requests:
+                    sampling_params = SamplingParams(
+                        n=1,
+                        temperature=args.temperature,
+                        top_p=1.0,
+                        use_beam_search=False,
+                        ignore_eos=True,
+                        max_tokens=512,
+                    )
+                    llm._add_request(
+                        prompt=prompt,
+                        prompt_token_ids=None,
+                        sampling_params=sampling_params,
+                    )
+
+                torch.cuda.synchronize()
+                start_time = time.monotonic()
+                outputs = llm._run_engine(use_tqdm=False)
+
+                torch.cuda.synchronize()
+                end_time = time.monotonic()
+
+                total_tokens = 0
+                output_tokens = 0
+                for idx, output in enumerate(outputs):
+                    output_tokens += len(output.outputs[0].token_ids)
+                    total_tokens += (sampled_requests[idx]
+                                     [1] + len(output.outputs[0].token_ids))
+                throughputs["static_tile"].append(
+                    total_tokens / (end_time - start_time))
 
         ##########################################################
         # DYNAMIC DRAFT
         ##########################################################
-        llm.llm_engine.sps_config.use_oracle_draft_size = False
-        llm.llm_engine.sps_config.use_dynamic_draft_size = True
+        if DYNAMIC:
+            llm.llm_engine.sps_config.use_dynamic_draft_size = True
+            llm.llm_engine.sps_config.use_tile_size_constraint = False
 
-        for i, (prompt, _, output_len) in enumerate(sampled_requests):
-            # print(prompt)
-
-            if args.random_temp:
+            for i, (prompt, _, output_len) in enumerate(sampled_requests):
                 sampling_params = SamplingParams(
                     n=1,
-                    temperature=random.uniform(0.0, 1.0),
-                    frequency_penalty=args.frequency_penalty,
+                    temperature=args.temperature,
                     top_p=1.0,
                     use_beam_search=False,
                     ignore_eos=True,
-                    max_tokens=output_len,
+                    max_tokens=512,
                 )
-            else:
+
+                llm._add_request(
+                    prompt=prompt,
+                    prompt_token_ids=None,
+                    sampling_params=sampling_params
+                )
+
+            torch.cuda.synchronize()
+            start_time = time.monotonic()
+            outputs = llm._run_engine(use_tqdm=False)
+
+            torch.cuda.synchronize()
+            end_time = time.monotonic()
+
+            total_tokens = 0
+            output_tokens = 0
+            for idx, output in enumerate(outputs):
+                output_tokens += len(output.outputs[0].token_ids)
+                total_tokens += (sampled_requests[idx]
+                                 [1] + len(output.outputs[0].token_ids))
+                # print("-" * 80)
+                # print(f"dynamic {idx} Prompt: {sampled_requests[idx][0]}")
+                # print("-" * 80)
+                # print(f"dynamic {idx} Output: {output.outputs[0].text}")
+
+            throughputs["dynamic"].append(
+                total_tokens / (end_time - start_time))
+
+        ##########################################################
+        # DYNAMIC Tile
+        ##########################################################
+        if DYNAMIC_TILE:
+            llm.llm_engine.sps_config.use_dynamic_draft_size = True
+            llm.llm_engine.sps_config.use_tile_size_constraint = True
+
+            for i, (prompt, _, output_len) in enumerate(sampled_requests):
                 sampling_params = SamplingParams(
                     n=1,
                     temperature=args.temperature,
@@ -467,59 +476,84 @@ def main(args: argparse.Namespace):
                     ignore_eos=True,
                     max_tokens=512,
                 )
-            # FIXME(woosuk): Do not use internal method.
-            llm._add_request(
-                prompt=prompt,
-                prompt_token_ids=None,
-                sampling_params=sampling_params
-            )
-        
-        torch.cuda.synchronize()
-        start_time = time.monotonic()
-        outputs = llm._run_engine(use_tqdm=False)
-        
-        torch.cuda.synchronize()
-        end_time = time.monotonic()
 
-        total_tokens = 0
-        output_tokens = 0
-        for idx, output in enumerate(outputs):
-            output_tokens += len(output.outputs[0].token_ids)
-            total_tokens += (sampled_requests[idx][1] + len(output.outputs[0].token_ids))
-            print("-" * 80)
-            print(f"dynamic {idx} Prompt: {sampled_requests[idx][0]}")
-            print("-" * 80)
-            print(f"dynamic {idx} Output: {output.outputs[0].text}")
+                llm._add_request(
+                    prompt=prompt,
+                    prompt_token_ids=None,
+                    sampling_params=sampling_params
+                )
 
-        throughputs["dynamic"] = total_tokens / (end_time - start_time)
+            torch.cuda.synchronize()
+            start_time = time.monotonic()
+            outputs = llm._run_engine(use_tqdm=False)
 
-        # write down the results in csv format 
-        output_str = ""
-        for key, value in throughputs.items():
-            output_str += f"{key}, {value:.6f}, "
+            torch.cuda.synchronize()
+            end_time = time.monotonic()
 
-        print(output_str)
+            total_tokens = 0
+            output_tokens = 0
+            for idx, output in enumerate(outputs):
+                output_tokens += len(output.outputs[0].token_ids)
+                total_tokens += (sampled_requests[idx]
+                                 [1] + len(output.outputs[0].token_ids))
+                # print("-" * 80)
+                # print(f"dynamic {idx} Prompt: {sampled_requests[idx][0]}")
+                # print("-" * 80)
+                # print(f"dynamic {idx} Output: {output.outputs[0].text}")
+
+            throughputs["dynamic_tile"].append(
+                total_tokens / (end_time - start_time))
+
+    # write down the results in csv format
+    keys = list(throughputs.keys())
+    header = ", ".join(keys)
+
+    # Find the maximum length of the lists in throughputs to determine the number of rows
+    max_length = max(len(value) for value in throughputs.values())
+
+    # Initialize a list to collect rows
+    rows = []
+
+    for i in range(max_length):
+        row = []
+        for key in keys:
+            value_list = throughputs[key]
+            # Add value if it exists, otherwise add an empty string
+            if i < len(value_list):
+                row.append(f"{value_list[i]:.3f}")
+            else:
+                row.append("")
+        rows.append(", ".join(row))
+
+    # Combine header and rows into CSV format
+    csv_output = header + "\n" + "\n".join(rows)
+
+    cleaned_target_model = args.target_model.split("/")[-1]
+    cleaned_draft_model = args.draft_model.split("/")[-1]
+    cleaned_temperature = str(args.temperature).replace(".", "_")
+
+    result_file_name = f"results_{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}.csv"
+    # Write the CSV output to a file
+    with open(f"/mnt/sda/results/{result_file_name}", "w") as f:
+        f.write(csv_output)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
-    parser.add_argument("--index", type=int, default=1)
-    parser.add_argument("--engine", type=str, choices=["base", "sps"],
-                        default="sps")
-    parser.add_argument("--dataset", type=str, default="all",
+    parser.add_argument("--dataset", type=str, default="humaneval",
                         choices=["gsm8k", "humaneval",
                                  "alpaca", "mt-bench", "sharegpt", "apps", "all"],
                         help="Dataset to use.")
     parser.add_argument('--target-model', type=str,
-                        # default='EleutherAI/pythia-6.9b') 
+                        # default='EleutherAI/pythia-6.9b')
                         # default='EleutherAI/pythia-12b')
                         default='facebook/opt-6.7b')
-                        # default='bigscience/bloom-7b1')
-                        # default='daryl149/llama-2-7b-chat-hf')
-                        # default='facebook/opt-6.7b')
-    parser.add_argument('--draft-model', type=str, 
+    # default='bigscience/bloom-7b1')
+    # default='daryl149/llama-2-7b-chat-hf')
+    # default='facebook/opt-6.7b')
+    parser.add_argument('--draft-model', type=str,
                         # default='EleutherAI/pythia-14m')
                         # default='bigscience/bloomz-560m')
                         # default='Felladrin/Llama-68M-Chat-v1')
@@ -531,10 +565,6 @@ if __name__ == '__main__':
     parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--use-target-attention',
                         action='store_true')
-    parser.add_argument('--target-draft-latency-ratio', 
-                        '-c',
-                        type=float, default=0.2)
-    parser.add_argument('--frequency-penalty', type=float, default=0.0)
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',
@@ -545,7 +575,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature',
                         '-t',
                         type=float,
-                        default=0.0,
+                        default=0.75,
                         help='Sampling temperature.')
     parser.add_argument('--random-temp', action='store_true')
     parser.add_argument('--n',

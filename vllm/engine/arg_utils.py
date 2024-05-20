@@ -249,9 +249,8 @@ class SpSEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 7
-    tile_size: int = 64
     use_dynamic_draft_size: bool = False
-    use_tile_size_constraint: bool = False
+    use_tile_constraint: str = "none"
     use_target_attention: bool = False
     use_lazy_draft_kv_cache: bool = True
     target_draft_latency_ratio: float = 0.2
@@ -305,17 +304,13 @@ class SpSEngineArgs:
                             type=int,
                             default=SpSEngineArgs.draft_size,
                             help='number of auto-regressive draft model run')
-        parser.add_argument('--tile-size',
-                            type=int,
-                            default=SpSEngineArgs.tile_size,
-                            help='tile size threshold')
         parser.add_argument('--use-dynamic-draft-size',
                             type=bool,
                             default=SpSEngineArgs.use_dynamic_draft_size,
                             help='whether to use dynamic draft size')
-        parser.add_argument('--use-tile-size-constraint',
-                            type=bool,
-                            default=SpSEngineArgs.use_tile_size_constraint,
+        parser.add_argument('--use-tile-constraint',
+                            type=str,
+                            default=SpSEngineArgs.use_tile_constraint,
                             help='whether to use tile size constraint')
         parser.add_argument('--use-target-attention',
                             type=bool,
@@ -500,9 +495,8 @@ class SpSEngineArgs:
                                            target_model_config.max_model_len,
                                            self.max_paddings)
         sps_config = SpSConfig(self.draft_size, 
-                               self.tile_size,
                                self.use_dynamic_draft_size,
-                               self.use_tile_size_constraint,
+                               self.use_tile_constraint,
                                self.use_target_attention,
                                self.use_lazy_draft_kv_cache,
                                self.target_draft_latency_ratio)
