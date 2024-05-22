@@ -50,7 +50,7 @@ class SpSWorker:
                                                   scheduler_config, sps_config)
         self.draft_model_runner = SpSModelRunner(draft_model_config, parallel_config,
                                                  scheduler_config, sps_config)
-        self.draft_optimizer = BetaEMADraftSizeOptimizer()
+        self.draft_optimizer = BetaEMADraftSizeOptimizer(sps_config)
 
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
@@ -166,31 +166,6 @@ class SpSWorker:
         # the model initialization and profiling.
         set_random_seed(self.target_model_config.seed)
         return num_gpu_blocks, num_cpu_blocks
-    
-    @torch.inference_mode()
-    def profile_target_draft_latency_ratio(self) -> float:
-        # Execute a forward pass with dummy inputs to profile the latency
-        # of the target model and the draft model.
-        target_latency = []
-        draft_latency = []
-
-        for batch_size in range(1, 256):
-            seqs: List[SequenceGroupMetadata] = []
-            for group_id in range(batch_size):
-                seq_len = 1
-                seq_data = SequenceData([0] * seq_len)
-                seq = SequenceGroupMetadata(
-                    request_id=str(group_id),
-                    is_prompt=False,
-                    seq_data={group_id: seq_data},
-                    sampling_params=SamplingParams(),
-                    block_tables=None,
-                    sps_stage=SpSStage.TARGET_DECODE,
-                )
-                seqs.append(seq)
-            self.target_model_runner.profile_run(seqs)
-
-            
 
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
         self.cache_config = cache_config
@@ -210,11 +185,12 @@ class SpSWorker:
     def _process_draft_model_outputs(
         self,
         outputs: SamplerOutput,
+        running_seq_group_metadata_list: List[SequenceGroupMetadata],
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ):
-        seq_list: List[Sequence] = []
+        running_seq_list: List[Sequence] = []
         # Update the sequence groups with the model outputs.
-        for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
+        for seq_group_metadata, output in zip(running_seq_group_metadata_list, outputs):
             seq_group = seq_group_metadata.seq_group
             assert seq_group is not None    # seq_group must be set.
             # We assume that SpS engine does not use beam search.
@@ -236,14 +212,20 @@ class SpSWorker:
             parent_seq.append_draft_token_id(
                 child_sample.output_token,
                 child_sample.logprobs,
-                child_sample.probs,
+                child_sample.probs
             )
             
+            running_seq_list.append(parent_seq)
+
+        seq_list: List[Sequence] = []
+        for seq_group_metadata in seq_group_metadata_list:
+            parent_seq = seq_group_metadata.seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
             seq_list.append(parent_seq)
         
         nvtx.range_push("update_draft_size_seq")
-        self.draft_optimizer.update_draft_size_seq(seq_list)
+        self.draft_optimizer.update_draft_size_seq(running_seq_list, seq_list)
         nvtx.range_pop()
+
         for seq, seq_group_metadata in zip(seq_list, seq_group_metadata_list):
             seq_group_metadata.draft_size = seq.draft_size
     
@@ -363,11 +345,14 @@ class SpSWorker:
 
         assert not seq_group_metadata_list[0].sps_stage == SpSStage.TARGET_DECODE
 
+        # At least one token inputed to the target model (bonus token)
+        outputs = None 
+
         # Run this loop until seq_group_metadata_list is empty
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
             # Note: It's possible for the initial assigned draft size to be 0.
-            seq_group_metadata_list = [
+            running_seq_group_metadata_list = [
                 seq_group_metadata
                 for seq_group_metadata in seq_group_metadata_list 
                 if seq_group_metadata.draft_size > (
@@ -378,18 +363,18 @@ class SpSWorker:
             ]
 
             # Break the loop if seq_group_metadata_list is empty
-            if not seq_group_metadata_list:
+            if not running_seq_group_metadata_list:
                 break
 
             # Execute the model and process the outputs
             nvtx.range_push("runner.execute_model")
-            outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
+            outputs = self.draft_model_runner.execute_model(running_seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             nvtx.range_pop()
             nvtx.range_push("process_draft_model_outputs")
-            self._process_draft_model_outputs(outputs, seq_group_metadata_list)
+            self._process_draft_model_outputs(outputs, running_seq_group_metadata_list, seq_group_metadata_list)
             nvtx.range_pop()
             cache_events = None
-        
+
         # print("Multi-step draft model execution complete")
 
         return outputs

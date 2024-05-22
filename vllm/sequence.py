@@ -237,6 +237,7 @@ class Sequence:
         self.new_accept_probs: List[float] = []
         self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
         self.cumulative_accept_prob = 1
+        self.exit_threshold = 0.5
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
@@ -463,7 +464,7 @@ class Sequence:
         self.accept_cnt_list.append(accept_cnt)
         self.accept_probs.extend(accept_probs)
         self.beta_list.extend(beta_list)
-        self.score.append(accept_cnt / self.draft_size)
+        # self.score.append(accept_cnt / self.draft_size)
         self.draft_size_list.append(self.draft_size)
 
         return free_block_cnt

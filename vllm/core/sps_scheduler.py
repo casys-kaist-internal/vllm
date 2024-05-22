@@ -272,7 +272,7 @@ class SpSScheduler:
             #         find_optimal_draft_size_without_tile_constraint(self.need_to_run_draft, self.sps_config)
             
             # Sort by draft size 
-            self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
+            # self.need_to_run_draft = sorted(self.need_to_run_draft, key=lambda x: (x.get_seqs(status=SequenceStatus.RUNNING)[0].draft_size - x.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()), reverse=False)
 
             # NOTE(woosuk): Preemption happens only when there is no available slot
             # to keep all the sequence groups in the RUNNING state.
@@ -281,7 +281,7 @@ class SpSScheduler:
             # self.running = self.policy.sort_by_priority(now, self.running)
 
             # FIXME(sangjin): How to handle case of draft preemption? Should we not
-            # allow draft preemption at all?              
+            # allow draft preemption at all?
             # Reserve new token slots for the running sequence groups.
             need_to_run_draft: List[SequenceGroup] = []
             while self.need_to_run_draft:
@@ -347,15 +347,16 @@ class SpSScheduler:
                 need_to_run_target.append(seq_group)
         self.need_to_run_target = need_to_run_target
 
+        num_tokens = []
         num_batched_tokens = 0
         for seq_group in self.need_to_run_target:
             seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
             assert len(seqs) == 1, "SpS does not support beam search"
             # target model should run the last non-draft token and all the draft tokens
             num_batched_tokens += (seqs[0].get_draft_len() + 1)
+            num_tokens.append((seqs[0].get_draft_len() + 1))
 
-        # print("num_batched_tokens: ", num_batched_tokens)
-        if self.sps_config.get_tile_size_constraint() < num_batched_tokens:
+        if self.sps_config.get_tile_size() < num_batched_tokens:
             raise AssertionError("Tile size constraint is violated.")
 
         scheduler_outputs = SpSSchedulerOutputs(
