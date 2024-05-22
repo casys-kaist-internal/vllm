@@ -53,6 +53,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self.history_size = 1000000
         self.num_bins = 20
         self.predictor = self._init_predictor()
+        self.lookup_table = self._init_lookup_table()
         self.draft_history = {"beta_ema": [], "draft_prob": [], "accept_prob": []}
         self.retrain = False
 
@@ -72,24 +73,39 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         X = [self._get_seq_features(seq) for seq in running_seq_list]
 
         # Predict
-        nvtx.range_push("predict")
-        accept_probs = np.clip(self.predictor.predict(X), 0, 1)
+        nvtx.range_push(f"predict {X[0][0]} {X[0][1]}")
+        if self.sps_config.use_lookup_table:
+            accept_probs = np.clip(self._lookup_predict(X), 0, 1)
+        else:
+            accept_probs = np.clip(self.predictor.predict(X), 0, 1)
         nvtx.range_pop()
 
+        nvtx.range_push(f"early_exit_policy {accept_probs}")
         # Early exit policy
         num_tokens_to_generate = 0
-        if self.sps_config.use_dynamic_draft_size:
-            random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
-        else:
-            random_accept_probs = np.zeros(len(accept_probs))
+        # if self.sps_config.use_dynamic_draft_size:
+        #     random_accept_probs = np.random.uniform(0, 1, len(accept_probs)) 
+        # else:
+        #     random_accept_probs = np.zeros(len(accept_probs))
 
-        for seq, accept_prob, random_accept_prob in zip(running_seq_list, accept_probs, random_accept_probs):
-            seq.cumulative_accept_prob *= accept_prob
-            if seq.cumulative_accept_prob < random_accept_prob: # draft load imbalance & fill 
-                seq.draft_size = seq.get_draft_len()
-                seq.cumulative_accept_prob = 1
-            else:
-                num_tokens_to_generate += 1
+        # for seq, accept_prob, random_accept_prob in zip(running_seq_list, accept_probs, random_accept_probs):
+        #     seq.cumulative_accept_prob *= accept_prob
+        #     if seq.cumulative_accept_prob < random_accept_prob: # draft load imbalance & fill 
+        #         seq.draft_size = seq.get_draft_len()
+        #         seq.cumulative_accept_prob = 1
+        #     else:
+        #         num_tokens_to_generate += 1
+        if self.sps_config.use_dynamic_draft_size:
+            num_tokens_to_generate = 0
+            for seq, accept_prob in zip(running_seq_list, accept_probs):
+                if accept_prob < seq.exit_threshold:
+                    seq.draft_size = seq.get_draft_len()
+                else:
+                    num_tokens_to_generate += 1
+
+        else:
+            num_tokens_to_generate = len(running_seq_list)
+        nvtx.range_pop()
 
         # Tile constraint policy
         num_tokens_to_target = 0
@@ -100,6 +116,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             # Maybe fill 
             return
         else:
+            nvtx.range_push("tile_constraint_policy")
             if self.sps_config.use_dynamic_draft_size:
                 num_tokens_to_cut = num_tokens_to_generate + num_tokens_to_target - self.get_tile_size()
                 running_seq_list.sort(key=lambda x: x.cumulative_accept_prob)
@@ -109,7 +126,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
                     
                     num_tokens_to_cut -= 1
                     seq.draft_size = seq.get_draft_len()
-                    seq.cumulative_accept_prob = 1
+                    # seq.cumulative_accept_prob = 1
                     
                     if num_tokens_to_cut == 0:
                         break
@@ -118,7 +135,8 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
                     if seq.get_draft_len() == seq.draft_size:
                         continue
                     seq.draft_size = seq.get_draft_len()
-                    seq.cumulative_accept_prob = 1
+                    # seq.cumulative_accept_prob = 1
+            nvtx.range_pop()
 
     def _get_seq_features(self, seq: Sequence) -> List[float]:
         # indicator for retraining the predictor
@@ -135,7 +153,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         last_draft_token_id = seq.data.get_last_draft_token_id()
         draft_prob = seq.data.get_draft_probs()[-1][last_draft_token_id].item()
         beta_ema = seq.get_beta_ema()
-
+    
         return [beta_ema, draft_prob]
 
     def _drop_draft_history(self):
@@ -170,6 +188,18 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         predictor.intercept_ = 0.09655343164046182
 
         return Pipeline([("poly", poly_features), ("linear", predictor)])
+    
+    def _init_lookup_table(self):
+        # Initialize an empty lookup table with the specified number of bins
+        lookup_table = np.zeros((self.num_bins, self.num_bins))
+        return lookup_table
+    
+    def _lookup_predict(self, X):
+        # Predict using the lookup table
+        beta_indices = (X[:, 0] * (self.num_bins - 1)).astype(int)
+        draft_indices = (X[:, 1] * (self.num_bins - 1)).astype(int)
+        accept_probs = self.lookup_table[beta_indices, draft_indices]
+        return accept_probs
     
     def _update_drafted_accepted_df(self, seq: Sequence):
         beta_emas, draft_probs, accept_probs = seq.get_new_draft_history()
@@ -216,60 +246,79 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
             # Generate pairs as a DataFrame
             X_predict = [[beta, draft] for beta in beta_values for draft in draft_values]
-            y_initial_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
 
         # Check if the input data is empty
         if X.shape[0] == 0 or y.shape[0] == 0:
             print("No data available for training the predictor. Skipping this training step.")
             return
+        
+        if self.sps_config.use_lookup_table:
+            # Fill the lookup table based on the specified aggregation type
+            self.lookup_table.fill(0)  # Reset the lookup table
+            beta_indices = (X[:, 0] * (self.num_bins - 1)).astype(int)
+            draft_indices = (X[:, 1] * (self.num_bins - 1)).astype(int)
 
-        # Linear regression training
-        nvtx.range_push("fit predictor")
-        self.predictor.fit(X, y)
-        nvtx.range_pop()
+            if self.sps_config.predictor_agg_type == "mean":
+                np.add.at(self.lookup_table, (beta_indices, draft_indices), y)
+                counts = np.zeros_like(self.lookup_table)
+                np.add.at(counts, (beta_indices, draft_indices), 1)
+                self.lookup_table = np.divide(self.lookup_table, counts, where=counts != 0)
+            elif self.sps_config.predictor_agg_type == "median":
+                for i in range(self.num_bins):
+                    for j in range(self.num_bins):
+                        mask = (beta_indices == i) & (draft_indices == j)
+                        if mask.any():
+                            self.lookup_table[i, j] = np.median(y[mask])
+            print("Lookup table updated successfully.")
+        else:
+            # Linear regression training
+            nvtx.range_push("fit predictor")
+            self.predictor.fit(X, y)
+            nvtx.range_pop()
 
         if PLOT_HEATMAP:
+            if self.use_lookup_table:
+                y_predict = self.lookup_table
+            else:
+                beta_values = np.linspace(0, 1, self.num_bins)
+                draft_values = np.linspace(0, 1, self.num_bins)
+                X_predict = [[beta, draft] for beta in beta_values for draft in draft_values]
+                y_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
+
             # Create a matrix for real acceptance probability heatmap
             pivot_df = binned_df.pivot(index="beta_ema", columns="draft_prob", values="accept_prob")
 
-            # Predict the "after" state
-            y_predict = self.predictor.predict(X_predict).reshape(self.num_bins, self.num_bins)
-
-            # Create the four subplots: Before, Real Data, After, Token Distribution
-            fig, axs = plt.subplots(1, 3, figsize=(24, 6), sharey=True)
-
-            # Plot "Before" (Initial Model Prediction)
-            axs[0].imshow(y_initial_predict, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
-            axs[0].set_title('Before (Initial Model Prediction)')
-            axs[0].set_xlabel('Draft Probability')
-            axs[0].set_ylabel('Beta EMA')
+            # Create the 2 subplots: Real, Predict
+            fig, axs = plt.subplots(1, 2, figsize=(24, 6), sharey=True)
 
             # Plot "Real Data" (Acceptance Probability Heatmap)
-            axs[1].imshow(pivot_df, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
-            axs[1].set_title('Real Acceptance Probability Heatmap')
-            axs[1].set_xlabel('Draft Probability')
+            axs[0].imshow(pivot_df, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
+            axs[0].set_title('Real Acceptance Probability Heatmap')
+            axs[0].set_xlabel('Draft Probability')
 
             # Plot "After" (Final Model Prediction)
-            axs[2].imshow(y_predict, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
-            axs[2].set_title('After (Final Model Prediction)')
-            axs[2].set_xlabel('Draft Probability')
+            axs[1].imshow(y_predict, cmap='Accent', interpolation='nearest', origin='lower', extent=grid_extent)
+            if self.use_lookup_table:
+                axs[1].set_title('After (Lookup Table)')
+            else:
+                axs[1].set_title('After (Final Model Prediction)')
+            axs[1].set_xlabel('Draft Probability')
 
-            # Retrieve the final coefficients and intercept
-            feature_names = self.predictor.named_steps['poly'].get_feature_names_out()
-            linear_model =  self.predictor.named_steps['linear']
+            if not self.use_lookup_table:
+                # Retrieve the final coefficients and intercept
+                feature_names = self.predictor.named_steps['poly'].get_feature_names_out()
+                linear_model =  self.predictor.named_steps['linear']
 
-            # Print the coef_ and intercept_ of the linear model
-            # print("Coefficients: ", linear_model.coef_)
-            # print("Intercept: ", linear_model.intercept_)
+                # Print the coef_ and intercept_ of the linear model
+                # print("Coefficients: ", linear_model.coef_)
+                # print("Intercept: ", linear_model.intercept_)
 
-            polynomial_function_string = create_polynomial_equation(linear_model, feature_names)
-
-            # Add the coefficients and intercept as a text annotation
-            fig.text(0.5, 0.01, polynomial_function_string, ha='center', va='bottom', fontsize=10)
+                polynomial_function_string = create_polynomial_equation(linear_model, feature_names)
+                fig.text(0.5, 0.01, polynomial_function_string, ha='center', va='bottom', fontsize=10)
 
             # Adjust the layout and add a colorbar
-            fig.colorbar(axs[1].images[0], ax=axs, orientation='vertical', pad=0.03)
-            fig.suptitle('Before vs. Real vs. After Acceptance Probability Heatmaps')
+            fig.colorbar(axs[0].images[0], ax=axs, orientation='vertical', pad=0.03)
+            fig.suptitle('Real vs. After Acceptance Probability Heatmaps')
 
             # Create the directory for saving the plots if it doesn't exist
             # os.makedirs('heatmap', exist_ok=True)
@@ -316,29 +365,38 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
 
     def initialize(self, path):
         self.path = path
+        # if use_lookup_table then path should have lookup_table.csv
+        if self.sps_config.use_lookup_table:
+            assert path.endswith("lookup_table.csv"), "Lookup table path should end with 'lookup_table.csv'"
+
         if os.path.exists(path):
-            # Read the CSV file
-            data = pd.read_csv(path)
+            if self.sps_config.use_lookup_table:
+                # Load the lookup table
+                self.lookup_table = pd.read_csv(path, index_col=0).values
+                print("Lookup table loaded successfully.")
+            else:
+                # Read the CSV file
+                data = pd.read_csv(path)
 
-            # Assuming the CSV has columns 'coef' and 'intercept'
-            coef = data['coef'].values
-            intercept = data['intercept'].values[0]
+                # Assuming the CSV has columns 'coef' and 'intercept'
+                coef = data['coef'].values
+                intercept = data['intercept'].values[0]
 
-            # Initialize the predictor
-            pipeline = self._init_predictor()
-            predictor = pipeline.named_steps['linear']
-            
-            # Set the loaded coefficients and intercept
-            predictor.coef_ = coef
-            predictor.intercept_ = intercept
+                # Initialize the predictor
+                pipeline = self._init_predictor()
+                predictor = pipeline.named_steps['linear']
+                
+                # Set the loaded coefficients and intercept
+                predictor.coef_ = coef
+                predictor.intercept_ = intercept
 
-            # Update the pipeline with the loaded predictor
-            pipeline.named_steps['linear'] = predictor
+                # Update the pipeline with the loaded predictor
+                pipeline.named_steps['linear'] = predictor
 
-            # Assign the pipeline to self.predictor
-            self.predictor = pipeline
+                # Assign the pipeline to self.predictor
+                self.predictor = pipeline
 
-            print("Predictor loaded successfully.")
+                print("Predictor loaded successfully.")
         else:
             print(f"The file at {path} does not exist.")
             self.predictor = self._init_predictor()
@@ -347,23 +405,34 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         self._init_draft_history()
 
     def save_predictor(self):
-        # Retrain last time before saving
-        self._train_predictor()
-        # Extract the coefficients and intercept from the predictor
-        predictor = self.predictor.named_steps['linear']
-        coef = predictor.coef_
-        intercept = predictor.intercept_
+        if self.sps_config.use_lookup_table:
+            # Save the lookup table
+            lookup_df = pd.DataFrame(self.lookup_table)
+            
+            # If path does not exist, create the directory
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            
+            # Save the lookup table to a CSV file
+            lookup_df.to_csv(self.path, index=False)
+            print(f"Lookup table saved to {self.path}.")
+        else:
+            # Retrain last time before saving
+            self._train_predictor()
+            
+            # Extract the coefficients and intercept from the predictor
+            predictor = self.predictor.named_steps['linear']
+            coef = predictor.coef_
+            intercept = predictor.intercept_
 
-        # Create a DataFrame to save the coefficients and intercept
-        data = pd.DataFrame({'coef': coef})
-        data['intercept'] = intercept  # Broadcast intercept to match the length of coef
+            # Create a DataFrame to save the coefficients and intercept
+            data = pd.DataFrame({'coef': coef})
+            data['intercept'] = intercept  # Broadcast intercept to match the length of coef
 
+            # If path does not exist, create the directory
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
 
-        # If path does not exist, create the directory
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            # Save the DataFrame to a CSV file
+            data.to_csv(self.path, index=False)
 
-        # Save the DataFrame to a CSV file
-        data.to_csv(self.path, index=False)
-
-        print(f"Predictor saved to {self.path}.")
-        self.retrain = False
+            print(f"Predictor saved to {self.path}.")
+            self.retrain = False

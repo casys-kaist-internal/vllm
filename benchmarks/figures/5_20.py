@@ -244,7 +244,7 @@ def benchmark(args):
         if DYNAMIC_TILE:
             benchmark_dynamic_tile(llm, sampled_requests, throughputs, args)
 
-    save_results_to_csv(throughputs, args)
+    # save_results_to_csv(throughputs, args)
 
 def pretrain(llm, requests, args):
     print("Pretraining the predictor...")

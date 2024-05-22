@@ -12,28 +12,32 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from vllm import SpSLLM, SamplingParams
 from datasets import load_dataset
+from torch.cuda import nvtx
 
 # Change to the desired GPU ID
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 # current date 
-current_time = time.strftime("%Y%m%d")
+# current_time = time.strftime("%Y%m%d")
+
+# folder indicator
+folder_indicator = '5_22'
 
 # Get NVIDIA GPU name 
 gpu_name = torch.cuda.get_device_name(0)
 
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
-OUTPUT_DIR = f'/mnt/sda/results/{gpu_name}/{current_time}'
-PREDICTOR_PATH = 'predictor'
+OUTPUT_DIR = f'/mnt/sda/results/{gpu_name}/{folder_indicator}'
+PREDICTOR_PATH = 'predictor_10000'
 MAX_NUM_SEQUENCE = 1000
-MAX_NUM_ITERATION = 100
+MAX_NUM_ITERATION = 5
 
 # Test cases
 STATIC = True
-STATIC_TILE = True
+STATIC_TILE = False
 DYNAMIC = True
-DYNAMIC_TILE = True
+DYNAMIC_TILE = False
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
@@ -130,29 +134,38 @@ def warmup(llm):
         top_p=1.0,
         use_beam_search=False,
         ignore_eos=True,
-        max_tokens=48,
+        max_tokens=256,
     )
+
+    llm.llm_engine.sps_config.use_dynamic_draft_size = True
+    llm.llm_engine.sps_config.use_tile_constraint = "none"
+
     llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                  sampling_params=dummy_sampling_params, use_tqdm=False)
 
 
-def save_results_to_csv(throughputs, args):
+def save_results_to_csv(throughputs_mean, throughputs_std, args):
     print("Saving results to CSV...")
     # Calculate the mean throughput for each configuration
     mean_throughputs = {}
-    for key in throughputs.keys():
-        mean_throughputs[key] = np.mean(throughputs[key])
+    for key in throughputs_mean.keys():
+        mean_throughputs[key] = np.mean(throughputs_mean[key])
+
+    std_throughputs = {}
+    for key in throughputs_std.keys():
+        std_throughputs[key] = np.mean(throughputs_std[key])
 
     # print the results with pprint 
     pprint(mean_throughputs)
+    pprint(std_throughputs)
 
-    keys = list(throughputs.keys())
+    keys = list(throughputs_mean.keys())
     header = ", ".join(keys)
 
-    max_length = max(len(value) for value in throughputs.values())
+    max_length = max(len(value) for value in throughputs_mean.values())
     rows = [
-        ", ".join(f"{throughputs[key][i]:.3f}" if i < len(
-            throughputs[key]) else "" for key in keys)
+        ", ".join(f"{throughputs_mean[key][i]:.3f}" if i < len(
+            throughputs_mean[key]) else "" for key in keys)
         for i in range(max_length)
     ]
 
@@ -177,6 +190,14 @@ def save_results_to_csv(throughputs, args):
     with open(os.path.join(OUTPUT_DIR, mean_result_file_name), "w") as f:
         f.write(csv_output)
 
+    std_result_file_name = f"std_results_{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}_{args.batch_size}.csv"
+    header = ", ".join(keys)
+    std_row = ", ".join(f"{std_throughputs[key]:.3f}" for key in keys)
+    csv_output = header + "\n" + std_row
+
+    with open(os.path.join(OUTPUT_DIR, std_result_file_name), "w") as f:    
+        f.write(csv_output)
+
 def benchmark(args):
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
@@ -188,6 +209,8 @@ def benchmark(args):
         use_dynamic_draft_size=args.use_dynamic_draft,
         use_tile_constraint=args.use_tile_constraint,
         use_lazy_draft_kv_cache=True,
+        predictor_degree=args.predictor_degree,
+        predictor_agg_type=args.predictor_agg_type,
         use_target_attention=args.use_target_attention,
         tokenizer=args.tokenizer,
         quantization=args.quantization,
@@ -220,14 +243,19 @@ def benchmark(args):
     cleaned_draft_model = args.draft_model.split("/")[-1]
     cleaned_temperature = str(args.temperature).replace(".", "_")
     predictor_path = f"{PREDICTOR_PATH}/predictor_degree{args.predictor_degree}_{args.predictor_agg_type}_{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}.csv"
+    # predictor_path = f"{PREDICTOR_PATH}/predictor_degree2_median_opt-6.7b_opt-125m_0_0_apps.csv"
     llm.llm_engine.workers[0].draft_optimizer.initialize(predictor_path)
 
     if llm.llm_engine.workers[0].draft_optimizer.retrain:
         pretrain(llm, requests, args)
         llm.llm_engine.workers[0].draft_optimizer.save_predictor()
 
-    throughputs = {f"static_{i}": [] for i in range(8)}
-    throughputs.update({"static_tile": [], "dynamic": [], "dynamic_tile": []})
+    throughputs_mean = {f"static_{i}": [] for i in range(8)}
+    throughputs_mean.update({"static_tile": [], "dynamic": [], "dynamic_tile": []})
+
+    throughputs_std = {f"static_{i}": [] for i in range(8)}
+    throughputs_std.update({"static_tile": [], "dynamic": [], "dynamic_tile": []})
+
 
     # Adjust the requests to be multiples of the batch size
     adjusted_max_num_sequence = (
@@ -240,18 +268,26 @@ def benchmark(args):
         sampled_requests = requests[i:i + args.batch_size]
 
         if STATIC:
-            benchmark_static_draft(llm, sampled_requests, throughputs, args)
+            nvtx.range_push("static_draft")
+            benchmark_static_draft(llm, sampled_requests, throughputs_mean, throughputs_std, args)
+            nvtx.range_pop()
 
         if STATIC_TILE:
-            benchmark_static_tile(llm, sampled_requests, throughputs, args)
+            nvtx.range_push("static_tile")
+            benchmark_static_tile(llm, sampled_requests, throughputs_mean, throughputs_std, args)
+            nvtx.range_pop()
 
         if DYNAMIC:
-            benchmark_dynamic_draft(llm, sampled_requests, throughputs, args)
+            nvtx.range_push("dynamic")
+            benchmark_dynamic_draft(llm, sampled_requests, throughputs_mean, throughputs_std, args)
+            nvtx.range_pop()
 
         if DYNAMIC_TILE:
-            benchmark_dynamic_tile(llm, sampled_requests, throughputs, args)
+            nvtx.range_push("dynamic_tile")
+            benchmark_dynamic_tile(llm, sampled_requests, throughputs_mean, throughputs_std, args)
+            nvtx.range_pop()
 
-    save_results_to_csv(throughputs, args)
+    save_results_to_csv(throughputs_mean, throughputs_std, args)
 
 def pretrain(llm, requests, args):
     print("Pretraining the predictor...")
@@ -275,61 +311,74 @@ def pretrain(llm, requests, args):
 
         llm._run_engine(use_tqdm=False)
 
-def benchmark_static_draft(llm, sampled_requests, throughputs, args):
+def benchmark_static_draft(llm, sampled_requests, throughputs_mean, throughputs_std, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
     llm.llm_engine.sps_config.use_tile_constraint = "none"
 
-    for draft_size in range(8):
+    for draft_size in range(4,8):
         llm.llm_engine.sps_config.draft_size = draft_size
         benchmark_requests(llm, sampled_requests,
-                           throughputs[f"static_{draft_size}"], args)
+                           throughputs_mean[f"static_{draft_size}"], throughputs_std[f"static_{draft_size}"], args)
 
 
-def benchmark_static_tile(llm, sampled_requests, throughputs, args):
+def benchmark_static_tile(llm, sampled_requests, throughputs_mean, throughputs_std, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
     llm.llm_engine.sps_config.use_tile_constraint = "cut-128"
     llm.llm_engine.sps_config.draft_size = 7
 
-    benchmark_requests(llm, sampled_requests, throughputs["static_tile"], args)
+    benchmark_requests(llm, sampled_requests, throughputs_mean["static_tile"], throughputs_std["static_tile"], args)
 
 
-def benchmark_dynamic_draft(llm, sampled_requests, throughputs, args):
+def benchmark_dynamic_draft(llm, sampled_requests, throughputs_mean, throughputs_std, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = True
     llm.llm_engine.sps_config.use_tile_constraint = "none"
 
-    benchmark_requests(llm, sampled_requests, throughputs["dynamic"], args)
+    benchmark_requests(llm, sampled_requests, throughputs_mean["dynamic"], throughputs_std["dynamic"], args)
 
-
-def benchmark_dynamic_tile(llm, sampled_requests, throughputs, args):
+def benchmark_dynamic_tile(llm, sampled_requests, throughputs_mean, throughputs_std, args):
     llm.llm_engine.sps_config.use_dynamic_draft_size = True
     llm.llm_engine.sps_config.use_tile_constraint = "cut-128"
 
     benchmark_requests(llm, sampled_requests,
-                       throughputs["dynamic_tile"], args)
+                       throughputs_mean["dynamic_tile"], throughputs_std["dynamic_tile"], args)
 
+def benchmark_requests(llm: SpSLLM, sampled_requests, throughput_mean_list, throughput_std_list, args):
+    # Run 5 times and take the average throughput
+    result = []
+    for _ in range(5):
+        for prompt, _, output_len in sampled_requests:
+            sampling_params = SamplingParams(
+                n=1,
+                temperature=args.temperature,
+                top_p=1.0,
+                use_beam_search=False,
+                ignore_eos=True,
+                max_tokens=256,  # currently fixed to 512 but can be changed to output_len
+            )
+            llm._add_request(prompt=prompt, prompt_token_ids=None,
+                            sampling_params=sampling_params)
 
-def benchmark_requests(llm: SpSLLM, sampled_requests, throughput_list, args):
-    for prompt, _, output_len in sampled_requests:
-        sampling_params = SamplingParams(
-            n=1,
-            temperature=args.temperature,
-            top_p=1.0,
-            use_beam_search=False,
-            ignore_eos=True,
-            max_tokens=512,  # currently fixed to 512 but can be changed to output_len
-        )
-        llm._add_request(prompt=prompt, prompt_token_ids=None,
-                         sampling_params=sampling_params)
+        torch.cuda.synchronize()
+        start_time = time.monotonic()
+        outputs = llm._run_engine(use_tqdm=False)
+        torch.cuda.synchronize()
+        end_time = time.monotonic()
 
-    torch.cuda.synchronize()
-    start_time = time.monotonic()
-    outputs = llm._run_engine(use_tqdm=False)
-    torch.cuda.synchronize()
-    end_time = time.monotonic()
+        # Print output text
+        # print("--" * 50, len(outputs[0].outputs[0].token_ids))
+        # print(outputs[0].outputs[0].text)
+        # print("*" * 40)
+        # print(outputs[0].outputs[0].token_ids)
 
-    total_tokens = sum(len(output.outputs[0].token_ids) +
-                       sampled_requests[idx][1] for idx, output in enumerate(outputs))
-    throughput_list.append(total_tokens / (end_time - start_time))
+        total_tokens = sum(len(output.outputs[0].token_ids) +
+                        sampled_requests[idx][1] for idx, output in enumerate(outputs))
+        result.append(total_tokens / (end_time - start_time))
+                      
+                              
+    # print std_dev
+    print(np.mean(result), np.std(result), result)
+    throughput_mean_list.append(np.mean(result))
+    throughput_std_list.append(np.std(result))
 
 
 def main(args: argparse.Namespace):

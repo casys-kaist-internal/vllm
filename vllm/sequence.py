@@ -237,6 +237,7 @@ class Sequence:
         self.new_accept_probs: List[float] = []
         self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
         self.cumulative_accept_prob = 1
+        self.exit_threshold = 0.5
 
         self.bonus_token_id = None
         self.bonus_logprobs = None
