@@ -89,6 +89,7 @@ class SpSScheduler:
         # NOTE(sangjin): We dont consider self.running queue. We split the running queue into draft and target
         self.need_to_run_draft: List[SequenceGroup] = []
         self.need_to_run_target: List[SequenceGroup] = []
+        self.num_batched_tokens = []
 
     @property
     def running(self) -> List[SequenceGroup]:
@@ -290,6 +291,8 @@ class SpSScheduler:
 
                 if self.sps_config.use_dynamic_draft_size:
                     seq.draft_size = 7
+                    seq.cumulative_accept_prob = 1
+                    seq.predicton_probs = []
                     
                 if seq.draft_size > 0:
                     # Simplify preemption logic
@@ -353,10 +356,16 @@ class SpSScheduler:
             seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
             assert len(seqs) == 1, "SpS does not support beam search"
             # target model should run the last non-draft token and all the draft tokens
+            # drop the draft_token_ids that is higher than draft_size
+            if seqs[0].get_draft_len() > seqs[0].draft_size:
+                seqs[0].drop_draft_tokens(seqs[0].draft_size)
+
             num_batched_tokens += (seqs[0].get_draft_len() + 1)
             num_tokens.append((seqs[0].get_draft_len() + 1))
+        self.num_batched_tokens.append(num_tokens)
 
-        if self.sps_config.get_tile_size() < num_batched_tokens:
+        # print("num_batched_tokens: ", num_batched_tokens)
+        if not self.sps_config.check_tile_size_constraint(num_batched_tokens):
             raise AssertionError("Tile size constraint is violated.")
 
         scheduler_outputs = SpSSchedulerOutputs(
