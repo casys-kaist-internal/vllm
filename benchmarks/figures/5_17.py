@@ -4,6 +4,7 @@ import json
 import time
 import random
 from typing import List, Optional, Tuple
+from pathlib import Path
 from pprint import pprint
 
 import numpy as np
@@ -21,43 +22,43 @@ from torch.cuda import nvtx
 # current_time = time.strftime("%Y%m%d")
 
 # folder indicator
-folder_indicator = '5_22'
+folder_indicator = '5_17'
 
 # Get NVIDIA GPU name 
 gpu_name = torch.cuda.get_device_name(0)
 
 # Constants
-DOWNLOAD_DIR = '/mnt/sda/download'
-OUTPUT_DIR = f'/mnt/sda/results/{gpu_name}/{folder_indicator}'
+DATASET_DIR = '/home/noppanat/workspace/datasets'
+MODEL_DIR = '/home/noppanat/workspace/models'
+OUTPUT_DIR = Path(__file__).parent / {folder_indicator}
 PREDICTOR_PATH = 'predictor_10000'
 MAX_NUM_SEQUENCE = 1000
 MAX_NUM_ITERATION = 5
 
 # Test cases
-STATIC = True
+STATIC = False
 STATIC_TILE = False
 DYNAMIC = True
 DYNAMIC_TILE = False
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('gsm8k', 'main', cache_dir=DOWNLOAD_DIR)['train']
+    dataset = load_dataset('gsm8k', 'main')['train']
     return process_dataset(dataset, 'question', 'answer', tokenizer)
 
 
 def load_humaneval(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('openai_humaneval', cache_dir=DOWNLOAD_DIR)['test']
+    dataset = load_dataset('openai_humaneval')['test']
     return process_dataset(dataset, 'prompt', 'canonical_solution', tokenizer)
 
 
 def load_alpaca(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('tatsu-lab/alpaca', cache_dir=DOWNLOAD_DIR)['train']
+    dataset = load_dataset('tatsu-lab/alpaca')['train']
     return process_dataset(dataset, 'instruction', 'output', tokenizer, input_key='input')
 
 
 def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('philschmid/mt-bench',
-                           cache_dir=DOWNLOAD_DIR)['train']
+    dataset = load_dataset('philschmid/mt-bench')['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
@@ -72,7 +73,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open(f'{DOWNLOAD_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open(f'{DATASET_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     dataset = [data for data in dataset if len(data["conversations"]) >= 2]
@@ -88,7 +89,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_apps(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
+    dataset = load_dataset('codeparrot/apps')['train']
     return process_dataset(dataset, 'question', 'solutions', tokenizer)
 
 
@@ -218,7 +219,7 @@ def benchmark(args):
         seed=args.seed,
         trust_remote_code=args.trust_remote_code,
         dtype=args.dtype,
-        download_dir=DOWNLOAD_DIR
+        download_dir=MODEL_DIR
     )
 
     if args.dataset == "all":

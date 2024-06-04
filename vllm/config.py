@@ -492,7 +492,8 @@ class SpSConfig:
         # Predictor 
         self.predictor_degree = predictor_degree
         self.predictor_agg_type = predictor_agg_type
-        self.use_lookup_table = False
+        self.use_lookup_table = True
+        self.use_async_training = True
 
     def get_tile_size(self):
         if self.use_tile_constraint == "none":

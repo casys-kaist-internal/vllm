@@ -325,6 +325,14 @@ class SpSEngineArgs:
                             '-c',
                             type=float,
                             default=0.2)
+        parser.add_argument('--predictor-degree',
+                            type=int,
+                            default=SpSEngineArgs.predictor_degree,
+                            help='degree of acceptance probability predictor')
+        parser.add_argument('--predictor-agg-type',
+                            type=str,
+                            default=SpSEngineArgs.predictor_agg_type,
+                            help='aggregation type of acceptance probability predictor')
         parser.add_argument(
             '--tokenizer',
             type=str,
