@@ -1,22 +1,18 @@
 """Sequence and its related classes."""
 import copy
 import enum
-from typing import Dict, List, Optional, Tuple, Union
-
+from typing import Dict, List, Optional, Union
 import torch
+
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
-
-import numpy as np
-import scipy.stats
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score       # type: ignore
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
 
 
-class SpSStage(enum.Enum):
-    """The stage of the speculative sampling process"""
+class SpecDecodeStage(enum.Enum):
+    """The stages of the speculative decoding process."""
     PROMPT = enum.auto()
     DRAFT_DECODE = enum.auto()
     TARGET_DECODE = enum.auto()
@@ -31,9 +27,6 @@ class SequenceStatus(enum.Enum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
-
-    # SpS related status
-    SPS_ALL_ACCEPT = enum.auto()
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -82,11 +75,11 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
-        # number of tokens that cached with draft KV
-        self.draft_cache_cnt = 0
+
         self.draft_token_ids: List[int] = []
         self.draft_logprobs: List[float] = []
         self.draft_probs: List[torch.Tensor] = []
+        self.draft_kv_cache_cnt = 0  # the numer of tokens that are cached with draft KV cache
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -109,64 +102,33 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
-    # SpS related methods start
-    def get_last_nth_token_id(self, idx) -> int:
+    def get_last_token_ids(self, count: int) -> List[int]:
         if not self.output_token_ids:
-            return self.prompt_token_ids[idx]
-        return self.output_token_ids[idx]
+            return self.prompt_token_ids[-count:]
+        return self.output_token_ids[-count:]
 
-    def get_last_draft_token_id(self) -> int:
-        if not self.draft_token_ids:
-            return self.get_last_token_id()
-        return self.draft_token_ids[-1]
-
-    def get_uncached_draft_token_ids(self) -> List[int]:
-        all_tokens_including_draft = self.get_token_ids() + self.get_draft_token_ids()
-        uncached_draft_token_ids = all_tokens_including_draft[self.draft_cache_cnt:]
-
-        # NOTE: draft_cache_cnt is updated here
-        self.draft_cache_cnt += len(uncached_draft_token_ids)
-
-        return uncached_draft_token_ids
-
-    def get_uncached_draft_len(self) -> int:
-        all_tokens_including_draft_cnt = len(self.get_token_ids()) + len(self.get_draft_token_ids())
-        uncached_draft_len = all_tokens_including_draft_cnt - self.draft_cache_cnt
-
-        return uncached_draft_len
-
-    def get_draft_cache_cnt(self) -> int:
-        return self.draft_cache_cnt
-
-    def append_draft_token_id(self, token_id: int, logprobs: float, probs: torch.Tensor) -> None:
+    # Spec Decode
+    def append_draft_token_id(self, token_id: int, logprobs: float,
+                              probs: torch.Tensor) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_logprobs.append(logprobs)
         self.draft_probs.append(probs)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
         for i in range(accept_cnt):
-            self.append_token_id(
-                self.draft_token_ids[i], self.draft_logprobs[i])
-        
-        self.draft_cache_cnt = self.get_len() - 1
+            self.append_token_id(self.draft_token_ids[i],
+                                 self.draft_logprobs[i])
 
         self.draft_token_ids.clear()
         self.draft_logprobs.clear()
         self.draft_probs.clear()
+        self.draft_kv_cache_cnt = self.get_len()
 
     def get_draft_len(self) -> int:
         return len(self.draft_token_ids)
 
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
-    
-    def drop_draft_tokens(self, draft_size) -> None:
-        if draft_size == len(self.draft_token_ids):
-            return 
-        
-        self.draft_token_ids = self.draft_token_ids[:draft_size]
-        self.draft_logprobs = self.draft_logprobs[:draft_size]
-        self.draft_probs = self.draft_probs[:draft_size]
 
     def get_draft_probs(self) -> List[torch.Tensor]:
         return self.draft_probs
@@ -178,20 +140,27 @@ class SequenceData:
 
         return result
 
-    def get_last_draft_token_id(self) -> int:
-        if len(self.draft_token_ids) == 0:
-            return self.get_last_token_id()
+    def get_uncached_draft_token_ids(self) -> List[int]:
+        all_tokens_including_draft = self.get_token_ids(
+        ) + self.get_draft_token_ids()
+        uncached_draft_token_ids = all_tokens_including_draft[
+            self.draft_kv_cache_cnt:]
 
-        return self.draft_token_ids[-1]
-    # SpS related methods end
+        return uncached_draft_token_ids
+
+    def get_uncached_draft_len(self) -> int:
+        all_tokens_including_draft_len = len(self.get_token_ids()) + len(
+            self.get_draft_token_ids())
+        uncached_draft_len = all_tokens_including_draft_len - self.draft_kv_cache_cnt
+
+        return uncached_draft_len
 
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob}), "
-                f"draft_token_ids={self.draft_token_ids}, "
-                f"draft_cumulative_logprobs={self.draft_logprobs}")
+                f"cumulative_logprob={self.cumulative_logprob}, "
+                f"draft_token_ids={self.draft_token_ids})")
 
 
 class Sequence:
@@ -211,13 +180,11 @@ class Sequence:
         prompt: str,
         prompt_token_ids: List[int],
         block_size: int,
-        temperature: float,
         draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
         self.block_size = block_size
-        self.temperature = temperature
 
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: SampleLogprobs = []
@@ -236,31 +203,8 @@ class Sequence:
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
 
-        # SpS related params
-        self.accept_cnt_list: List[int] = []
-        self.reject_pos: List[int] = []
-        self.accept_probs: List[float] = []
-        self.beta_list: List[float] = []
-        self.last_ema = None  # This will store the last calculated EMA value
-        self.new_beta_emas: List[float] = []
-        self.new_draft_probs: List[float] = []
-        self.new_accept_probs: List[float] = []
-        self.last_calculated_index = -1  # Tracks the last index for which EMA was calculated
-        self.cumulative_accept_prob = 1
-        self.exit_threshold = 0.5
-
-        self.bonus_token_id = None
-        self.bonus_logprobs = None
-
-        self.correlation_x = []
-        self.correlation_y = []
-        self.correlation_z = []
-
-        # Can change every iteration if use_dynamic_draft_size is True
+        # Spec Decode
         self.draft_size = draft_size
-        self.score = []
-        self.draft_size_list = []
-        self.predicton_probs = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -310,6 +254,9 @@ class Sequence:
     def get_last_token_id(self) -> int:
         return self.data.get_last_token_id()
 
+    def get_last_token_ids(self, count: int) -> List[int]:
+        return self.data.get_last_token_ids(count)
+
     def get_output_token_ids(self) -> List[int]:
         return self.data.output_token_ids
 
@@ -343,26 +290,35 @@ class Sequence:
         new_seq.seq_id = new_seq_id
         return new_seq
 
-    # SpS related methods start
-    def save_bonus_token_id(
-        self,
-        token_id: int,
-        logprobs: Dict[int, float],
-    ) -> None:
+    # Spec Decode
+    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
+                              probs: torch.Tensor) -> None:
         assert token_id in logprobs
-        assert self.bonus_token_id is None and self.bonus_logprobs is None
-        
-        self.bonus_token_id = token_id
-        self.bonus_logprobs = logprobs
+        self._append_tokens_to_blocks([token_id])
+        self.output_logprobs.append(logprobs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
 
-    def append_bonus_token_id(self) -> None:
-        assert self.bonus_token_id is not None and self.bonus_logprobs is not None
+    def accept_draft_tokens(self, accept_cnt: int) -> int:
+        assert self.draft_size == self.get_draft_len()
+        reject_cnt = self.draft_size - accept_cnt
 
-        self.append_token_id(self.bonus_token_id,
-                             self.bonus_logprobs)
-        
-        self.bonus_token_id = None
-        self.bonus_logprobs = None
+        self.data.accept_draft_tokens(accept_cnt)
+        self.output_logprobs = self.output_logprobs[:-reject_cnt]
+        free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
+
+        return free_block_cnt
+
+    def get_num_additional_blocks(self, size: int) -> int:
+        last_block = self.logical_token_blocks[-1]
+        num_empty_slots = last_block.get_num_empty_slots()
+
+        if size <= num_empty_slots:
+            return 0
+
+        remaining_slots = size - num_empty_slots
+        num_blocks = (remaining_slots + self.block_size - 1) // self.block_size
+
+        return num_blocks
 
     def _remove_tokens_from_blocks(self, remove_cnt: int) -> None:
         assert len(self.logical_token_blocks) > 0
@@ -378,134 +334,8 @@ class Sequence:
 
         return free_block_cnt
 
-    def get_draft_token_ids(self) -> List[int]:
-        return self.data.get_draft_token_ids()
-
-    def get_draft_probs(self) -> List[torch.Tensor]:
-        return self.data.get_draft_probs()
-
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
-    
-    def drop_draft_tokens(self, draft_size) -> None:
-        return self.data.drop_draft_tokens(draft_size)
-    
-    # Calculates the Exponential Moving Average (EMA) of beta values
-    def get_beta_ema(self) -> float:
-        # Ensure there is at least one beta to calculate EMA
-        if len(self.beta_list) < 3:
-            return 0.5  # Return a default initial beta value if list is empty
-
-        # Define the span for EMA calculation
-        decay = 0.5
-
-        # Initialize EMA; if no previous EMAs, start with the first beta value
-        if self.last_ema is None:
-            self.last_ema = self.beta_list[0]
-
-         # Update EMA only for new beta values added since last calculation
-        for beta in self.beta_list[self.last_calculated_index+1:]:
-            self.last_ema = decay * beta + (1 - decay) * self.last_ema
-
-        # Update the last calculated index
-        self.last_calculated_index = len(self.beta_list) - 1
-
-        return self.last_ema
-    
-    def get_new_draft_history(self) -> Tuple[List[float], List[float], List[float]]:
-        out = self.new_beta_emas, self.new_draft_probs, self.new_accept_probs
-        self.new_beta_emas = []
-        self.new_draft_probs = []
-        self.new_accept_probs = []
-
-        if len(self.beta_list) >= 30:
-            return out
-        else:
-            return [], [], []
-        
-    def append_draft_token_id(
-        self,
-        token_id: int,
-        logprobs: Dict[int, float],
-        probs: torch.Tensor
-    ) -> None:
-        assert token_id in logprobs
-        self._append_tokens_to_blocks([token_id])
-        self.output_logprobs.append(logprobs)
-        self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
-
-    def accept_draft_tokens(self,
-                            accept_cnt: int,
-                            accept_probs: List[float],
-                            beta_list: List[float]) -> int:
-        # assert accept_cnt <= self.draft_size
-        assert self.draft_size == self.get_draft_len()
-        reject_cnt = self.draft_size - accept_cnt
-        # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
-        # print("accept_cnt", accept_cnt, "draft_size", self.draft_size, "accept_probs", accept_probs)
-        # print(new_draft_probs)
-        # print(accept_probs[:accept_cnt+1])
-        # Update the stats for calculating the dynamic draft size.
-        new_draft_probs = self.data.get_draft_prob_for_tokens()
-
-        if accept_cnt != self.draft_size:
-            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt+1))
-            self.new_draft_probs.extend(new_draft_probs[:accept_cnt+1])
-            self.new_accept_probs.extend(accept_probs[:accept_cnt+1])
-        else:
-            self.new_beta_emas.extend([self.get_beta_ema()] * (accept_cnt))
-            self.new_draft_probs.extend(new_draft_probs[:accept_cnt])
-            self.new_accept_probs.extend(accept_probs[:accept_cnt])
-
-        self.data.accept_draft_tokens(accept_cnt)
-        self.output_logprobs = self.output_logprobs[:-reject_cnt]
-        # print(accept_cnt, self.draft_size)
-        # We overprovisioned the blocks when scheduling considering the draft size + bonus token 
-        # Need to free the blocks that are not used
-        # If all tokens are accepted (reject_cnt equals 0), we don't need to free any blocks
-        free_block_cnt = self._remove_tokens_from_blocks(reject_cnt)
-        # self.correlation_x.append(accept_cnt)
-        # ema = self.get_beta_ema()
-        # self.correlation_y.append(self.draft_size)
-        # print(self.custom_score(np.array(self.correlation_x), np.array(self.correlation_y)))
-
-        if accept_cnt != self.draft_size:
-            accept_probs = accept_probs[:accept_cnt+1]
-            beta_list = beta_list[:accept_cnt+1]
-
-        # print("!", self.get_beta_ema(), accept_cnt)
-
-        self.accept_cnt_list.append(accept_cnt)
-        self.accept_probs.extend(accept_probs)
-        self.beta_list.extend(beta_list)
-        # self.score.append(accept_cnt / self.draft_size)
-        self.draft_size_list.append(self.draft_size)
-
-        # if accept_cnt == self.draft_size:
-        #     self.exit_threshold -= 0.01
-        # else:
-        #     self.exit_threshold += 0.01
-
-        return free_block_cnt
-
-    def get_last_nth_token_id(self, idx) -> int:
-        return self.data.get_last_nth_token_id(idx)
-
-    def get_num_additional_blocks(self, size: int) -> int:
-        last_block = self.logical_token_blocks[-1]
-        num_empty_slots = last_block.get_num_empty_slots()
-
-        if size <= num_empty_slots:
-            return 0
-
-        num_blocks = 1
-        remaining_slots = size - num_empty_slots
-        num_blocks += (remaining_slots + self.block_size -
-                       1) // self.block_size
-
-        return num_blocks
-
-    # SpS related methods end
 
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "
@@ -637,18 +467,16 @@ class SequenceGroupMetadata:
         seq_data: Dict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
-        sps_stage: Optional[SpSStage] = None,
+        spec_decode_stage: Optional[SpecDecodeStage] = None,
         draft_size: Optional[int] = 0,
-        seq_group: Optional[SequenceGroup] = None,
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
         self.seq_data = seq_data
         self.sampling_params = sampling_params
         self.block_tables = block_tables
-        self.sps_stage = sps_stage
+        self.spec_decode_stage = spec_decode_stage
         self.draft_size = draft_size
-        self.seq_group = seq_group
 
 
 class SequenceOutput:
@@ -667,23 +495,10 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
-        probs: Optional[torch.Tensor] = None,
-        total_cnt: Optional[int] = 0,
-        accept_cnt: Optional[int] = 0,
-        accept_probs: Optional[List[float]] = None,
-        beta_list: Optional[List[float]] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
-
-        # SpS related start
-        self.probs = probs
-        self.total_cnt = total_cnt
-        self.accept_cnt = accept_cnt
-        self.accept_probs = accept_probs
-        self.beta_list = beta_list
-        # SpS related end
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "

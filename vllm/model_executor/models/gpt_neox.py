@@ -33,7 +33,8 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -46,7 +47,6 @@ class GPTNeoXAttention(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -54,27 +54,27 @@ class GPTNeoXAttention(nn.Module):
         self.total_num_heads = config.num_attention_heads
         self.hidden_size = config.hidden_size
         self.head_size = self.hidden_size // self.total_num_heads
+        self.bias = getattr(config, "attention_bias", True)
 
         tensor_model_parallel_world_size = (
-            parallel_state.get_tensor_model_parallel_world_size())
+            get_tensor_model_parallel_world_size())
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = (self.total_num_heads //
                           tensor_model_parallel_world_size)
 
         self.query_key_value = QKVParallelLinear(
-            parallel_state,
             config.hidden_size,
             self.head_size,
             self.total_num_heads,
+            bias=self.bias,
             linear_method=linear_method,
         )
         self.dense = RowParallelLinear(
-            parallel_state,
             config.hidden_size,
             config.hidden_size,
+            bias=self.bias,
             linear_method=linear_method,
         )
-
         scaling = self.head_size**-0.5
         rotary_dim = int(self.head_size * config.rotary_pct)
         assert rotary_dim % 2 == 0
@@ -95,14 +95,12 @@ class GPTNeoXAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         q, k = self.rotary_emb(position_ids, q, k)
         k_cache, v_cache = kv_cache
-        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata,
-                                cache_event)
+        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
         output, _ = self.dense(attn_output)
         return output
 
@@ -111,19 +109,16 @@ class GPTNeoXMLP(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.dense_h_to_4h = ColumnParallelLinear(
-            parallel_state,
             config.hidden_size,
             config.intermediate_size,
             linear_method=linear_method,
         )
         self.dense_4h_to_h = RowParallelLinear(
-            parallel_state,
             config.intermediate_size,
             config.hidden_size,
             linear_method=linear_method,
@@ -143,7 +138,6 @@ class GPTNeoXLayer(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -153,9 +147,8 @@ class GPTNeoXLayer(nn.Module):
                                             eps=config.layer_norm_eps)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size,
                                                      eps=config.layer_norm_eps)
-        self.attention = GPTNeoXAttention(
-            parallel_state, config, linear_method)
-        self.mlp = GPTNeoXMLP(parallel_state, config, linear_method)
+        self.attention = GPTNeoXAttention(config, linear_method)
+        self.mlp = GPTNeoXMLP(config, linear_method)
 
     def forward(
         self,
@@ -163,7 +156,6 @@ class GPTNeoXLayer(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         attn_input = self.input_layernorm(hidden_states)
         attn_output = self.attention(
@@ -171,7 +163,6 @@ class GPTNeoXLayer(nn.Module):
             hidden_states=attn_input,
             kv_cache=kv_cache,
             input_metadata=input_metadata,
-            cache_event=cache_event,
         )
 
         if self.use_parallel_residual:
@@ -195,7 +186,6 @@ class GPTNeoXModel(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPTNeoXConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -203,12 +193,11 @@ class GPTNeoXModel(nn.Module):
         self.config = config
 
         self.embed_in = VocabParallelEmbedding(
-            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            GPTNeoXLayer(parallel_state, config, linear_method)
+            GPTNeoXLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size,
@@ -220,18 +209,15 @@ class GPTNeoXModel(nn.Module):
         position_ids: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.embed_in(input_ids)
         for i in range(len(self.layers)):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.layers[i]
             hidden_states = layer(
                 position_ids,
                 hidden_states,
                 kv_caches[i],
                 input_metadata,
-                cache_event,
             )
         hidden_states = self.final_layer_norm(hidden_states)
         return hidden_states
@@ -241,20 +227,18 @@ class GPTNeoXForCausalLM(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.gpt_neox = GPTNeoXModel(parallel_state, config, linear_method)
+        self.gpt_neox = GPTNeoXModel(config, linear_method)
         self.embed_out = ParallelLMHead(
-            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -262,17 +246,16 @@ class GPTNeoXForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.gpt_neox(input_ids, positions, kv_caches,
-                                      input_metadata, cache_events)
+                                      input_metadata)
         return hidden_states
 
     def sample(
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(self.embed_out.weight, hidden_states,
                                    sampling_metadata)
         return next_tokens

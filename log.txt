@@ -1,5 +1,0 @@
-Original kernel running time	: 1.559 ms
-Target kernel running time  	: 0.332 ms
-TC kernel running time      	: 0.390 ms
-Speedup                     	: 4.693
-Speedup TC                  	: 4.000

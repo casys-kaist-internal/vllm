@@ -4,7 +4,10 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
 from vllm.model_executor.parallel_utils.utils import divide
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_all_reduce)
@@ -43,23 +46,22 @@ class VocabParallelEmbedding(torch.nn.Module):
     """
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  num_embeddings: int,
                  embedding_dim: int,
                  params_dtype: Optional[torch.dtype] = None):
         super().__init__()
-        self.parallel_state = parallel_state
+
         # Keep the input dimensions.
         self.num_embeddings = num_embeddings
         self.num_embeddings_padded = pad_vocab_size(num_embeddings)
         self.embedding_dim = embedding_dim
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
-        self.tp_size = self.parallel_state.get_tensor_model_parallel_world_size()
+        self.tp_size = get_tensor_model_parallel_world_size()
         # Divide the weight matrix along the vocaburaly dimension.
         self.vocab_start_index, self.vocab_end_index = (
             vocab_range_from_global_vocab_size(
-                self.num_embeddings_padded, self.parallel_state.get_tensor_model_parallel_rank(),
+                self.num_embeddings_padded, get_tensor_model_parallel_rank(),
                 self.tp_size))
         self.num_embeddings_per_partition = (self.vocab_end_index -
                                              self.vocab_start_index)
@@ -96,8 +98,7 @@ class VocabParallelEmbedding(torch.nn.Module):
         if self.tp_size > 1:
             output_parallel[input_mask, :] = 0.0
         # Reduce across all the model parallel GPUs.
-        output = tensor_model_parallel_all_reduce(
-            self.parallel_state, output_parallel)
+        output = tensor_model_parallel_all_reduce(output_parallel)
         return output
 
 
@@ -116,13 +117,11 @@ class ParallelLMHead(VocabParallelEmbedding):
     """
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  num_embeddings: int,
                  embedding_dim: int,
                  bias: bool = False,
                  params_dtype: Optional[torch.dtype] = None):
-        super().__init__(parallel_state, num_embeddings, embedding_dim, params_dtype)
-        self.parallel_state = parallel_state
+        super().__init__(num_embeddings, embedding_dim, params_dtype)
         if bias:
             self.bias = Parameter(
                 torch.empty(self.num_embeddings_per_partition,

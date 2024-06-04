@@ -5,12 +5,8 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.tokenizers import *
-from torch.cuda import nvtx
 
 logger = init_logger(__name__)
-
-# A fast LLaMA tokenizer with the pre-processed `tokenizer.json` file.
-_FAST_LLAMA_TOKENIZER = "hf-internal-testing/llama-tokenizer"
 
 
 def get_tokenizer(
@@ -28,13 +24,6 @@ def get_tokenizer(
                 "Cannot use the fast tokenizer in slow tokenizer mode.")
         kwargs["use_fast"] = False
 
-    if ("llama" in tokenizer_name.lower() and kwargs.get("use_fast", True)
-            and tokenizer_name != _FAST_LLAMA_TOKENIZER):
-        logger.info(
-            "For some LLaMA V1 models, initializing the fast tokenizer may "
-            "take a long time. To reduce the initialization time, consider "
-            f"using '{_FAST_LLAMA_TOKENIZER}' instead of the original "
-            "tokenizer.")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
@@ -42,13 +31,6 @@ def get_tokenizer(
             trust_remote_code=trust_remote_code,
             tokenizer_revision=tokenizer_revision,
             **kwargs)
-    except TypeError as e:
-        # The LLaMA tokenizer causes a protobuf error in some environments.
-        err_msg = (
-            "Failed to load the tokenizer. If you are using a LLaMA V1 model "
-            f"consider using '{_FAST_LLAMA_TOKENIZER}' instead of the "
-            "original tokenizer.")
-        raise RuntimeError(err_msg) from e
     except ValueError as e:
         # If the error pertains to the tokenizer class not existing or not
         # currently being imported, suggest using the --trust-remote-code flag.
@@ -129,14 +111,14 @@ def detokenize_incrementally(
     decode_offset: int = 0,
     skip_special_tokens: bool = False,
     spaces_between_special_tokens: bool = True,
-) -> Tuple[List[str], str, int, int, int]:
+) -> Tuple[List[str], str, int, int]:
     new_token_id = all_input_ids[-1]
     # This is the first iteration for this sequence
     if prev_tokens is None:
         new_tokens = tokenizer.convert_ids_to_tokens(
             all_input_ids, skip_special_tokens=skip_special_tokens)
-        # SJCHOI added
-        new_tokens = ['NULL' if item is None else item for item in new_tokens]
+        new_tokens = ['NULL' if item is None else item
+                      for item in new_tokens]  # SJCHOI added
         output_tokens = new_tokens
         decode_offset = len(all_input_ids)
         # 5 is an arbitrary value that should work for all
@@ -149,12 +131,12 @@ def detokenize_incrementally(
         else:
             read_offset = max(len(output_tokens) - 1, 0)
     else:
-        # print(decode_offset, all_input_ids, all_input_ids[decode_offset:])
         # Put new_token_id in a list so skip_special_tokens is respected
         new_tokens = tokenizer.convert_ids_to_tokens(
-            all_input_ids[decode_offset:], skip_special_tokens=skip_special_tokens)
-        # SJCHOI added
-        new_tokens = ['NULL' if item is None else item for item in new_tokens]
+            all_input_ids[decode_offset:],
+            skip_special_tokens=skip_special_tokens)
+        new_tokens = ['NULL' if item is None else item
+                      for item in new_tokens]  # SJCHOI added
         output_tokens = prev_tokens + new_tokens
         decode_offset += len(all_input_ids[decode_offset:])
 
@@ -186,6 +168,7 @@ def detokenize_incrementally(
         # If it's in the middle, it's probably a real invalid id generated
         # by the model
         new_text = new_text[len(prefix_text):]
-        return new_tokens, new_text, read_offset, len(output_tokens), decode_offset
+        return new_tokens, new_text, read_offset, len(
+            output_tokens), decode_offset
     else:
         return new_tokens, "", prefix_offset, read_offset, decode_offset

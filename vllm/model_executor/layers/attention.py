@@ -1,5 +1,5 @@
 """Multi-head attention."""
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -10,9 +10,9 @@ from xformers.ops.fmha.attn_bias import (BlockDiagonalCausalMask,
 from vllm._C import ops
 from vllm._C import cache_ops
 from vllm.model_executor.input_metadata import InputMetadata
-from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.utils import is_hip
 
-_SUPPORTED_HEAD_SIZES = [32, 64, 80, 96, 112, 128, 256]
+_SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
 
@@ -24,13 +24,10 @@ class PagedAttention(nn.Module):
     can either contain prompt tokens or generation tokens.
     The class does the following:
 
-    1. Wait for the cache operations (e.g., swap, copy) to finish. The cache
-        operations are issued by the cache engine before executing the forward
-        pass of the model, and they are executed asynchronously.
-    2. Reshape and store the input key and value tensors in the KV cache.
-    3. Perform (multi-head/multi-query/grouped-query) attention using either
+    1. Reshape and store the input key and value tensors in the KV cache.
+    2. Perform (multi-head/multi-query/grouped-query) attention using either
         xformers or the PagedAttention custom op.
-    4. Return the output tensor.
+    3. Return the output tensor.
     """
 
     def __init__(
@@ -54,9 +51,6 @@ class PagedAttention(nn.Module):
 
         assert self.num_heads % self.num_kv_heads == 0
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
-        self.head_mapping = torch.repeat_interleave(
-            torch.arange(self.num_kv_heads, dtype=torch.int32, device="cuda"),
-            self.num_queries_per_kv)
 
         if self.head_size not in _SUPPORTED_HEAD_SIZES:
             raise ValueError(f"head_size ({self.head_size}) is not supported. "
@@ -70,20 +64,18 @@ class PagedAttention(nn.Module):
         key_cache: Optional[torch.Tensor],
         value_cache: Optional[torch.Tensor],
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         """PagedAttention forward pass.
 
         Args:
             query: shape = [batch_size, seq_len, num_heads * head_size]
             key: shape = [batch_size, seq_len, num_kv_heads * head_size]
-            value: shape = [batch_size, num_kv_heads * head_size]
+            value: shape = [batch_size, seq_len, num_kv_heads * head_size]
             key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
                 block_size, x]
             value_cache: shape = [num_blocks, num_kv_heads, head_size,
                 block_size]
             input_metadata: metadata for the inputs.
-            cache_event: event to wait for the cache operations to finish.
         Returns:
             shape = [batch_size, seq_len, num_heads * head_size]
         """
@@ -92,10 +84,6 @@ class PagedAttention(nn.Module):
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
-        slot_mapping = input_metadata.slot_mapping.flatten()
-
-        if cache_event is not None:
-            cache_event.wait()
 
         # Reshape the keys and values and store them in the cache.
         # If key_cache and value_cache are not provided, the new key and value
@@ -107,7 +95,7 @@ class PagedAttention(nn.Module):
                 value,
                 key_cache,
                 value_cache,
-                slot_mapping,
+                input_metadata.slot_mapping.flatten(),
             )
 
         if input_metadata.is_prompt:
@@ -141,7 +129,8 @@ class PagedAttention(nn.Module):
                     input_metadata.attn_bias = attn_bias
                 else:
                     input_metadata.attn_bias = _make_alibi_bias(
-                        self.alibi_slopes, batch_size, seq_len, query.dtype)
+                        self.alibi_slopes, self.num_kv_heads, batch_size,
+                        seq_len, query.dtype)
 
             # TODO(woosuk): Too many view operations. Let's try to reduce them
             # in the future for code readability.
@@ -161,19 +150,26 @@ class PagedAttention(nn.Module):
                 attn_bias=input_metadata.attn_bias,
                 p=0.0,
                 scale=self.scale,
+                op=xops.fmha.MemoryEfficientAttentionFlashAttentionOp[0] if
+                (is_hip()) else None,
             )
             output = out.view_as(query)
         else:
             # Decoding run.
-            output = _paged_attention(
-                query,
-                key_cache,
-                value_cache,
-                input_metadata,
-                self.head_mapping,
-                self.scale,
-                self.alibi_slopes,
-            )
+            if key_cache is not None and value_cache is not None:
+                output = _paged_attention(
+                    query,
+                    key_cache,
+                    value_cache,
+                    input_metadata,
+                    self.num_kv_heads,
+                    self.scale,
+                    self.alibi_slopes,
+                )
+            else:
+                # This happens during the initial memory profiling run for
+                # CUDA graphs.
+                output = torch.zeros_like(query)
 
         # Reshape the output tensor.
         return output.view(batch_size, seq_len, hidden_size)
@@ -181,31 +177,34 @@ class PagedAttention(nn.Module):
 
 def _make_alibi_bias(
     alibi_slopes: torch.Tensor,
+    num_kv_heads: int,
     batch_size: int,
     seq_len: int,
     dtype: torch.dtype,
 ) -> LowerTriangularMaskWithTensorBias:
-    bias = torch.arange(seq_len, dtype=dtype)
+    bias = torch.arange(seq_len, dtype=dtype, device="cuda")
     # NOTE(zhuohan): HF uses
     #     `bias = bias[None, :].repeat(prompt_len, 1)`
     # here. We find that both biases give the same results, but
     # the bias below more accurately follows the original ALiBi
     # paper.
     bias = bias[None, :] - bias[:, None]
-    bias = bias.to(alibi_slopes.device)
 
     # When using custom attention bias, xformers requires the bias to
     # be sliced from a tensor whose length is a multiple of 8.
     padded_len = (seq_len + 7) // 8 * 8
+    num_heads = alibi_slopes.shape[0]
     bias = torch.empty(
         batch_size,
-        alibi_slopes.shape[0],
+        num_heads,
         seq_len,
         padded_len,
         device=alibi_slopes.device,
         dtype=dtype,
     )[:, :, :, :seq_len].copy_(bias)
     bias.mul_(alibi_slopes[:, None, None])
+    if num_heads != num_kv_heads:
+        bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
     attn_bias = LowerTriangularMaskWithTensorBias(bias)
     return attn_bias
 
@@ -215,7 +214,7 @@ def _paged_attention(
     key_cache: torch.Tensor,
     value_cache: torch.Tensor,
     input_metadata: InputMetadata,
-    head_mapping: torch.Tensor,
+    num_kv_heads: int,
     scale: float,
     alibi_slopes: Optional[torch.Tensor],
 ) -> torch.Tensor:
@@ -235,129 +234,49 @@ def _paged_attention(
     # For context len > 8192, use V2 kernel to avoid shared memory shortage.
     use_v1 = input_metadata.max_context_len <= 8192 and (
         max_num_partitions == 1 or num_seqs * num_heads > 512)
-
-    use_v1 = False
-    # if max_num_partitions > 1:
-    #     print("context length: ", input_metadata.context_lens)
-    #     print("max_num_partitions", max_num_partitions)
-    #     print("query", query)
-    # Print all parameters that go into the paged_attention_v1 and paged_attention_v2 kernels for debugging
-    # print("________________________________________")
-    # print("query.shape: ", query.shape)
-    # print("key_cache.shape: ", key_cache.shape)
-    # print("value_cache.shape: ", value_cache.shape)
-    # print("num_seqs: ", num_seqs)
-    # print("num_heads: ", num_heads)
-    # print("head_size: ", head_size)
-    # print("block_size: ", block_size)
-    # print("max_num_partitions: ", max_num_partitions)
-    # print("alibi_slopes: ", alibi_slopes)
-    # print("use_v1: ", use_v1)
-    # print("input_metadata.is_target_decode: ", input_metadata.is_target_decode)
-    # print("input_metadata.block_tables: ", input_metadata.block_tables)
-    # if input_metadata.use_target_attention:
-    #     print("query.shape: ", query.shape)
-    #     print("key_cache.shape: ", key_cache.shape)
-    #     print("value_cache.shape: ", value_cache.shape)
-    #     print("input_metadata.block_tables: ", input_metadata.block_tables)
-    #     print("input_metadata.context_lens: ", input_metadata.context_lens)
-    #     print("input_metadata.query_lens: ", input_metadata.query_lens)
-    #     print("head_mapping: ", head_mapping)
-    #     print("alibi_slopes: ", alibi_slopes)
-    #     # Print min and max value in query
-    #     print("min query: ", torch.min(query))
-    #     print("max query: ", torch.max(query))
-        # print("scale: ", scale)
-        # if torch.isnan(query).any():
-        #     raise RuntimeError("NaN detected in PagedAttention query.")
-
-
-    # print("input_metadata.max_context_len: ", input_metadata.max_context_len)
-    # print("head_mapping: ", head_mapping)
     if use_v1:
-        if input_metadata.use_target_attention:
-            # Run PagedAttention V1.
-            ops.paged_attention_v1_target(
-                output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                input_metadata.block_tables,
-                input_metadata.context_lens,
-                input_metadata.query_lens,
-                block_size,
-                input_metadata.max_context_len,
-                alibi_slopes,
-            )
-        else:
-            ops.paged_attention_v1(
-                output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                input_metadata.block_tables,
-                input_metadata.context_lens,
-                block_size,
-                input_metadata.max_context_len,
-                alibi_slopes,
-            )
+        # Run PagedAttention V1.
+        ops.paged_attention_v1(
+            output,
+            query,
+            key_cache,
+            value_cache,
+            num_kv_heads,
+            scale,
+            input_metadata.block_tables,
+            input_metadata.context_lens,
+            block_size,
+            input_metadata.max_context_len,
+            alibi_slopes,
+        )
     else:
+        # Run PagedAttention V2.
         assert _PARTITION_SIZE % block_size == 0
-        tmp_output = torch.zeros(
+        tmp_output = torch.empty(
             size=(num_seqs, num_heads, max_num_partitions, head_size),
             dtype=output.dtype,
             device=output.device,
         )
-        exp_sums = torch.zeros(
+        exp_sums = torch.empty(
             size=(num_seqs, num_heads, max_num_partitions),
             dtype=torch.float32,
             device=output.device,
         )
-        max_logits = torch.zeros_like(exp_sums)
-        if input_metadata.use_target_attention:
-            # Run PagedAttention V2.
-            ops.paged_attention_v2_target(
-                output,
-                exp_sums,
-                max_logits,
-                tmp_output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                input_metadata.block_tables,
-                input_metadata.context_lens,
-                input_metadata.query_lens,
-                block_size,
-                input_metadata.max_context_len,
-                alibi_slopes,
-            )
-        else:
-            ops.paged_attention_v2(
-                output,
-                exp_sums,
-                max_logits,
-                tmp_output,
-                query,
-                key_cache,
-                value_cache,
-                head_mapping,
-                scale,
-                input_metadata.block_tables,
-                input_metadata.context_lens,
-                block_size,
-                input_metadata.max_context_len,
-                alibi_slopes,
-            )
-    # if torch.isnan(tmp_output).any():
-    #     raise RuntimeError("NaN detected in PagedAttention tmp_output.")
-    
-    # if torch.isnan(output).any():
-    #     raise RuntimeError("NaN detected in PagedAttention output.")
-
+        max_logits = torch.empty_like(exp_sums)
+        ops.paged_attention_v2(
+            output,
+            exp_sums,
+            max_logits,
+            tmp_output,
+            query,
+            key_cache,
+            value_cache,
+            num_kv_heads,
+            scale,
+            input_metadata.block_tables,
+            input_metadata.context_lens,
+            block_size,
+            input_metadata.max_context_len,
+            alibi_slopes,
+        )
     return output

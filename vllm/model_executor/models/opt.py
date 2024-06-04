@@ -19,7 +19,6 @@
 """Inference-only OPT model compatible with HuggingFace weights."""
 from typing import List, Optional, Tuple
 
-import time
 import torch
 from torch import nn
 from transformers import OPTConfig
@@ -35,7 +34,8 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -61,7 +61,6 @@ class OPTAttention(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         embed_dim: int,
         num_heads: int,
         bias: bool = True,
@@ -70,7 +69,7 @@ class OPTAttention(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         tensor_model_parallel_world_size = (
-            parallel_state.get_tensor_model_parallel_world_size())
+            get_tensor_model_parallel_world_size())
         total_num_heads = num_heads
         assert num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
@@ -78,7 +77,6 @@ class OPTAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
 
         self.qkv_proj = QKVParallelLinear(
-            parallel_state,
             embed_dim,
             self.head_dim,
             total_num_heads,
@@ -86,7 +84,6 @@ class OPTAttention(nn.Module):
             linear_method=linear_method,
         )
         self.out_proj = RowParallelLinear(
-            parallel_state,
             embed_dim,
             embed_dim,
             bias=bias,
@@ -101,13 +98,12 @@ class OPTAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         key_cache, value_cache = kv_cache
         attn_output = self.attn(q, k, v, key_cache, value_cache,
-                                input_metadata, cache_event)
+                                input_metadata)
         output, _ = self.out_proj(attn_output)
         return output
 
@@ -116,7 +112,6 @@ class OPTDecoderLayer(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -124,7 +119,6 @@ class OPTDecoderLayer(nn.Module):
         self.config = config
         self.embed_dim = config.hidden_size
         self.self_attn = OPTAttention(
-            parallel_state=parallel_state,
             embed_dim=self.embed_dim,
             num_heads=config.num_attention_heads,
             bias=config.enable_bias,
@@ -136,7 +130,6 @@ class OPTDecoderLayer(nn.Module):
             self.embed_dim,
             elementwise_affine=config.layer_norm_elementwise_affine)
         self.fc1 = ColumnParallelLinear(
-            parallel_state,
             self.embed_dim,
             config.ffn_dim,
             bias=config.enable_bias,
@@ -146,7 +139,6 @@ class OPTDecoderLayer(nn.Module):
         self.activation_fn = get_act_fn(config.activation_function,
                                         quant_config, config.ffn_dim)
         self.fc2 = RowParallelLinear(
-            parallel_state,
             config.ffn_dim,
             self.embed_dim,
             bias=config.enable_bias,
@@ -161,19 +153,15 @@ class OPTDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         # Self Attention
         residual = hidden_states
         # 125m, 1.7B, ..., 175B applies layer norm BEFORE attention
         if self.do_layer_norm_before:
             hidden_states = self.self_attn_layer_norm(hidden_states)
-
         hidden_states = self.self_attn(hidden_states=hidden_states,
                                        kv_cache=kv_cache,
-                                       input_metadata=input_metadata,
-                                       cache_event=cache_event)
-
+                                       input_metadata=input_metadata)
         hidden_states = residual + hidden_states
         # 350m applies layer norm AFTER attention
         if not self.do_layer_norm_before:
@@ -184,16 +172,13 @@ class OPTDecoderLayer(nn.Module):
         # 125m, 1.7B, ..., 175B applies layer norm BEFORE attention
         if self.do_layer_norm_before:
             hidden_states = self.final_layer_norm(hidden_states)
-
         hidden_states, _ = self.fc1(hidden_states)
         hidden_states = self.activation_fn(hidden_states)
         hidden_states, _ = self.fc2(hidden_states)
         hidden_states = residual + hidden_states
-
         # 350m applies layer norm AFTER attention
         if not self.do_layer_norm_before:
             hidden_states = self.final_layer_norm(hidden_states)
-
         return hidden_states
 
 
@@ -201,7 +186,6 @@ class OPTDecoder(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -212,7 +196,6 @@ class OPTDecoder(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = VocabParallelEmbedding(
-            parallel_state,
             config.vocab_size,
             config.word_embed_proj_dim,
         )
@@ -249,7 +232,7 @@ class OPTDecoder(nn.Module):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList([
-            OPTDecoderLayer(parallel_state, config, linear_method)
+            OPTDecoderLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -259,7 +242,6 @@ class OPTDecoder(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         inputs_embeds = self.embed_tokens(input_ids)
         pos_embeds = self.embed_positions(positions)
@@ -268,10 +250,8 @@ class OPTDecoder(nn.Module):
         hidden_states = inputs_embeds + pos_embeds
 
         for i in range(len(self.layers)):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.layers[i]
-            hidden_states = layer(hidden_states, kv_caches[i], input_metadata,
-                                  cache_event)
+            hidden_states = layer(hidden_states, kv_caches[i], input_metadata)
 
         if self.final_layer_norm is not None:
             hidden_states = self.final_layer_norm(hidden_states)
@@ -284,12 +264,11 @@ class OPTModel(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: OPTConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
-        self.decoder = OPTDecoder(parallel_state, config, linear_method)
+        self.decoder = OPTDecoder(config, linear_method)
 
     def forward(
         self,
@@ -297,26 +276,23 @@ class OPTModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
-        return self.decoder(input_ids, positions, kv_caches, input_metadata,
-                            cache_events)
+        return self.decoder(input_ids, positions, kv_caches, input_metadata)
 
 
 class OPTForCausalLM(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
-        config: OPTConfig,
+        config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = OPTModel(parallel_state, config, linear_method)
+        self.model = OPTModel(config, linear_method)
         self.lm_head_weight = self.model.decoder.embed_tokens.weight
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -324,17 +300,16 @@ class OPTForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, kv_caches,
-                                   input_metadata, cache_events)
+                                   input_metadata)
         return hidden_states
 
     def sample(
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(self.lm_head_weight, hidden_states,
                                    sampling_metadata)
         return next_tokens
@@ -361,11 +336,18 @@ class OPTForCausalLM(nn.Module):
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:
                     continue
-                param = params_dict[name.replace(weight_name, param_name)]
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)

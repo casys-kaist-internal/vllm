@@ -33,7 +33,8 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -46,7 +47,6 @@ class GPT2Attention(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -54,14 +54,13 @@ class GPT2Attention(nn.Module):
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
         tensor_model_parallel_world_size = (
-            parallel_state.get_tensor_model_parallel_world_size())
+            get_tensor_model_parallel_world_size())
         assert total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
         self.head_dim = self.hidden_size // total_num_heads
         self.scale = self.head_dim**-0.5
 
         self.c_attn = QKVParallelLinear(
-            parallel_state,
             self.hidden_size,
             self.head_dim,
             total_num_heads,
@@ -69,7 +68,6 @@ class GPT2Attention(nn.Module):
             linear_method=linear_method,
         )
         self.c_proj = RowParallelLinear(
-            parallel_state,
             self.hidden_size,
             self.hidden_size,
             bias=True,
@@ -84,13 +82,12 @@ class GPT2Attention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.c_attn(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         key_cache, value_cache = kv_cache
         attn_output = self.attn(q, k, v, key_cache, value_cache,
-                                input_metadata, cache_event)
+                                input_metadata)
         attn_output, _ = self.c_proj(attn_output)
         return attn_output
 
@@ -99,7 +96,6 @@ class GPT2MLP(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         intermediate_size: int,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
@@ -107,14 +103,12 @@ class GPT2MLP(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
         self.c_fc = ColumnParallelLinear(
-            parallel_state,
             hidden_size,
             intermediate_size,
             bias=True,
             linear_method=linear_method,
         )
         self.c_proj = RowParallelLinear(
-            parallel_state,
             intermediate_size,
             hidden_size,
             bias=True,
@@ -135,7 +129,6 @@ class GPT2Block(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -145,16 +138,15 @@ class GPT2Block(nn.Module):
                      hidden_size)
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = GPT2Attention(parallel_state, config, linear_method)
+        self.attn = GPT2Attention(config, linear_method)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = GPT2MLP(parallel_state, inner_dim, config, linear_method)
+        self.mlp = GPT2MLP(inner_dim, config, linear_method)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -162,7 +154,6 @@ class GPT2Block(nn.Module):
             hidden_states=hidden_states,
             kv_cache=kv_cache,
             input_metadata=input_metadata,
-            cache_event=cache_event,
         )
         # residual connection
         hidden_states = attn_output + residual
@@ -179,7 +170,6 @@ class GPT2Model(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -189,11 +179,10 @@ class GPT2Model(nn.Module):
         assert not config.scale_attn_by_inverse_layer_idx
         assert not config.reorder_and_upcast_attn
         self.embed_dim = config.hidden_size
-        self.wte = VocabParallelEmbedding(
-            parallel_state, config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList([
-            GPT2Block(parallel_state, config, linear_method)
+            GPT2Block(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
@@ -204,17 +193,14 @@ class GPT2Model(nn.Module):
         position_ids: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         inputs_embeds = self.wte(input_ids)
         position_embeds = self.wpe(position_ids)
         hidden_states = inputs_embeds + position_embeds
 
         for i in range(len(self.h)):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.h[i]
-            hidden_states = layer(hidden_states, kv_caches[i], input_metadata,
-                                  cache_event)
+            hidden_states = layer(hidden_states, kv_caches[i], input_metadata)
 
         hidden_states = self.ln_f(hidden_states)
         return hidden_states
@@ -224,16 +210,15 @@ class GPT2LMHeadModel(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: GPT2Config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.transformer = GPT2Model(parallel_state, config, linear_method)
+        self.transformer = GPT2Model(config, linear_method)
         self.lm_head_weight = self.transformer.wte.weight
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -241,17 +226,16 @@ class GPT2LMHeadModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.transformer(input_ids, positions, kv_caches,
-                                         input_metadata, cache_events)
+                                         input_metadata)
         return hidden_states
 
     def sample(
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(self.lm_head_weight, hidden_states,
                                    sampling_metadata)
         return next_tokens
@@ -284,7 +268,6 @@ class GPT2LMHeadModel(nn.Module):
                 if not name.endswith(".weight"):
                     continue
                 loaded_weight = loaded_weight.t()
-
             weight_loader = getattr(param, "weight_loader",
                                     default_weight_loader)
             weight_loader(param, loaded_weight)

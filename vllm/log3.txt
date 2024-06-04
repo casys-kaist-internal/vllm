@@ -1,4 +1,0 @@
-Validation success:  True
-Original kernel running time: 11.695 ms
-Target kernel running time: 3.359 ms
-Speedup : 3.481

@@ -78,7 +78,7 @@ class RotaryEmbedding(nn.Module):
         # a slight numerical difference between the HF implementation and ours.
         inv_freq = 1.0 / (base**(torch.arange(
             0, self.rotary_dim, 2, dtype=torch.float, device="cuda") /
-            self.rotary_dim))
+                                 self.rotary_dim))
         return inv_freq
 
     def _compute_cos_sin_cache(self) -> torch.Tensor:
@@ -299,7 +299,7 @@ class YaRNScalingRotaryEmbedding(RotaryEmbedding):
     def _compute_inv_freq(self, scaling_factor: float) -> torch.Tensor:
         pos_freqs = self.base**(torch.arange(
             0, self.rotary_dim, 2, dtype=torch.float, device="cuda") /
-            self.rotary_dim)
+                                self.rotary_dim)
         inv_freq_extrapolation = 1.0 / pos_freqs
         inv_freq_interpolation = 1.0 / (scaling_factor * pos_freqs)
 

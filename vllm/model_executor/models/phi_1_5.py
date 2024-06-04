@@ -52,7 +52,8 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -63,13 +64,10 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class PhiEmbedding(nn.Module):
 
-    def __init__(self,
-                 parallel_state: ParallelState,
-                 config: PretrainedConfig):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
 
         self.wte = VocabParallelEmbedding(
-            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
@@ -81,7 +79,6 @@ class PhiEmbedding(nn.Module):
 class PhiAttention(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
@@ -90,21 +87,19 @@ class PhiAttention(nn.Module):
         self.head_size = self.hidden_size // self.total_num_heads
 
         tensor_model_parallel_world_size = (
-            parallel_state.get_tensor_model_parallel_world_size())
+            get_tensor_model_parallel_world_size())
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = (self.total_num_heads //
                           tensor_model_parallel_world_size)
 
         # pylint: disable=C0103
         self.Wqkv = QKVParallelLinear(
-            parallel_state,
             self.hidden_size,
             self.head_size,
             self.total_num_heads,
             linear_method=linear_method,
         )
         self.qkv_proj = QKVParallelLinear(
-            parallel_state,
             config.hidden_size,
             self.head_size,
             self.total_num_heads,
@@ -112,7 +107,6 @@ class PhiAttention(nn.Module):
             linear_method=linear_method,
         )
         self.out_proj = RowParallelLinear(
-            parallel_state,
             self.hidden_size,
             self.hidden_size,
             linear_method=linear_method,
@@ -141,14 +135,12 @@ class PhiAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.Wqkv(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         q, k = self.rotary_emb(position_ids, q, k)
         k_cache, v_cache = kv_cache
-        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata,
-                                cache_event)
+        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
         output, _ = self.out_proj(attn_output)
         return output
 
@@ -156,7 +148,6 @@ class PhiAttention(nn.Module):
 class PhiMLP(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
@@ -165,13 +156,11 @@ class PhiMLP(nn.Module):
         n_inner = n_inner if n_inner is not None else 4 * config.hidden_size
 
         self.fc1 = ColumnParallelLinear(
-            parallel_state,
             config.hidden_size,
             n_inner,
             linear_method=linear_method,
         )
         self.fc2 = RowParallelLinear(
-            parallel_state,
             n_inner,
             config.hidden_size,
             linear_method=linear_method,
@@ -190,14 +179,13 @@ class PhiMLP(nn.Module):
 class PhiLayer(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.ln = nn.LayerNorm(config.hidden_size,
                                eps=config.layer_norm_epsilon)
-        self.mixer = PhiAttention(parallel_state, config, linear_method)
-        self.mlp = PhiMLP(parallel_state, config, linear_method)
+        self.mixer = PhiAttention(config, linear_method)
+        self.mlp = PhiMLP(config, linear_method)
 
     def forward(
         self,
@@ -205,7 +193,6 @@ class PhiLayer(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.ln(hidden_states)
@@ -214,7 +201,6 @@ class PhiLayer(nn.Module):
             hidden_states=hidden_states,
             kv_cache=kv_cache,
             input_metadata=input_metadata,
-            cache_event=cache_event,
         )
         feed_forward_hidden_states = self.mlp(hidden_states)
         hidden_states = attn_outputs + feed_forward_hidden_states + residual
@@ -224,15 +210,14 @@ class PhiLayer(nn.Module):
 class PhiModel(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.embd = PhiEmbedding(parallel_state, config)
+        self.embd = PhiEmbedding(config)
         self.h = nn.ModuleList([
-            PhiLayer(parallel_state, config, linear_method)
+            PhiLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -242,18 +227,15 @@ class PhiModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.embd(input_ids)
         for i in range(self.config.num_hidden_layers):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.h[i]
             hidden_states = layer(
                 positions,
                 hidden_states,
                 kv_caches[i],
                 input_metadata,
-                cache_event,
             )
         return hidden_states
 
@@ -272,16 +254,15 @@ class PhiCausalLMHead(nn.Module):
 class PhiForCausalLM(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
 
-        self.transformer = PhiModel(parallel_state, config, linear_method)
+        self.transformer = PhiModel(config, linear_method)
         self.lm_head = PhiCausalLMHead(config)
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -289,10 +270,9 @@ class PhiForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.transformer(input_ids, positions, kv_caches,
-                                         input_metadata, cache_events)
+                                         input_metadata)
         hidden_states = self.lm_head.ln(hidden_states)
         return hidden_states
 
@@ -300,7 +280,7 @@ class PhiForCausalLM(nn.Module):
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         head = self.lm_head.linear
         next_tokens = self.sampler(head.weight, hidden_states,
                                    sampling_metadata, head.bias)
@@ -317,6 +297,9 @@ class PhiForCausalLM(nn.Module):
             if "rotary_emb.inv_freq" in name:
                 continue
 
+            # Skip loading extra bias for GPTQ models.
+            if name.endswith(".bias") and name not in params_dict:
+                continue
             # pylint: disable=E1136
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader",

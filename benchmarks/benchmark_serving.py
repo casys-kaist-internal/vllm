@@ -40,15 +40,10 @@ def sample_requests(
     with open(dataset_path) as f:
         dataset = json.load(f)
     # Filter out the conversations with less than 2 turns.
-    dataset = [
-        data for data in dataset
-        if len(data["conversations"]) >= 2
-    ]
+    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
     # Only keep the first two turns of each conversation.
-    dataset = [
-        (data["conversations"][0]["value"], data["conversations"][1]["value"])
-        for data in dataset
-    ]
+    dataset = [(data["conversations"][0]["value"],
+                data["conversations"][1]["value"]) for data in dataset]
 
     # Tokenize the prompts and completions.
     prompts = [prompt for prompt, _ in dataset]
@@ -75,8 +70,7 @@ def sample_requests(
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     # Sample the requests.
-    sampled_requests = filtered_dataset[:num_requests]
-    # sampled_requests = random.sample(filtered_dataset, num_requests)
+    sampled_requests = random.sample(filtered_dataset, num_requests)
     return sampled_requests
 
 
@@ -111,7 +105,7 @@ async def send_request(
     headers = {"User-Agent": "Benchmark Client"}
     if backend == "vllm":
         pload = {
-            "prompt": prompt[:10],
+            "prompt": prompt,
             "n": 1,
             "best_of": best_of,
             "use_beam_search": use_beam_search,
@@ -138,7 +132,8 @@ async def send_request(
     timeout = aiohttp.ClientTimeout(total=3 * 3600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
-            async with session.post(api_url, headers=headers, json=pload) as response:
+            async with session.post(api_url, headers=headers,
+                                    json=pload) as response:
                 chunks = []
                 async for chunk, _ in response.content.iter_chunks():
                     chunks.append(chunk)
@@ -165,9 +160,9 @@ async def benchmark(
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests, request_rate):
         prompt, prompt_len, output_len = request
-        task = asyncio.create_task(send_request(backend, api_url, prompt,
-                                                prompt_len, output_len,
-                                                best_of, use_beam_search))
+        task = asyncio.create_task(
+            send_request(backend, api_url, prompt, prompt_len, output_len,
+                         best_of, use_beam_search))
         tasks.append(task)
     await asyncio.gather(*tasks)
 
@@ -178,58 +173,70 @@ def main(args: argparse.Namespace):
     np.random.seed(args.seed)
 
     api_url = f"http://{args.host}:{args.port}/generate"
-    tokenizer = get_tokenizer(
-        args.tokenizer, trust_remote_code=args.trust_remote_code)
+    tokenizer = get_tokenizer(args.tokenizer,
+                              trust_remote_code=args.trust_remote_code)
     input_requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
 
     benchmark_start_time = time.perf_counter()
-    asyncio.run(benchmark(args.backend, api_url, input_requests, args.best_of,
-                          args.use_beam_search, args.request_rate))
+    asyncio.run(
+        benchmark(args.backend, api_url, input_requests, args.best_of,
+                  args.use_beam_search, args.request_rate))
     benchmark_end_time = time.perf_counter()
     benchmark_time = benchmark_end_time - benchmark_start_time
     print(f"Total time: {benchmark_time:.2f} s")
-    print(f"Throughput: {args.num_prompts / benchmark_time:.4f} requests/s")
+    print(f"Throughput: {args.num_prompts / benchmark_time:.2f} requests/s")
 
     # Compute the latency statistics.
     avg_latency = np.mean([latency for _, _, latency in REQUEST_LATENCY])
-    print(f"Average latency: {avg_latency:.4f} s")
+    print(f"Average latency: {avg_latency:.2f} s")
     avg_per_token_latency = np.mean([
         latency / (prompt_len + output_len)
         for prompt_len, output_len, latency in REQUEST_LATENCY
     ])
-    print(f"Average latency per token: {avg_per_token_latency:.4f} s")
-    avg_per_output_token_latency = np.mean([
-        latency / output_len
-        for _, output_len, latency in REQUEST_LATENCY
-    ])
+    print(f"Average latency per token: {avg_per_token_latency:.2f} s")
+    avg_per_output_token_latency = np.mean(
+        [latency / output_len for _, output_len, latency in REQUEST_LATENCY])
     print("Average latency per output token: "
-          f"{avg_per_output_token_latency:.4f} s")
+          f"{avg_per_output_token_latency:.2f} s")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the online serving throughput.")
-    parser.add_argument("--backend", type=str, default="vllm",
+    parser.add_argument("--backend",
+                        type=str,
+                        default="vllm",
                         choices=["vllm", "tgi"])
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--dataset", type=str, required=True,
+    parser.add_argument("--dataset",
+                        type=str,
+                        required=True,
                         help="Path to the dataset.")
-    parser.add_argument("--tokenizer", type=str, required=True,
+    parser.add_argument("--tokenizer",
+                        type=str,
+                        required=True,
                         help="Name or path of the tokenizer.")
-    parser.add_argument("--best-of", type=int, default=1,
+    parser.add_argument("--best-of",
+                        type=int,
+                        default=1,
                         help="Generates `best_of` sequences per prompt and "
-                             "returns the best one.")
+                        "returns the best one.")
     parser.add_argument("--use-beam-search", action="store_true")
-    parser.add_argument("--num-prompts", type=int, default=1000,
+    parser.add_argument("--num-prompts",
+                        type=int,
+                        default=1000,
                         help="Number of prompts to process.")
-    parser.add_argument("--request-rate", type=float, default=float("inf"),
+    parser.add_argument("--request-rate",
+                        type=float,
+                        default=float("inf"),
                         help="Number of requests per second. If this is inf, "
-                             "then all the requests are sent at time 0. "
-                             "Otherwise, we use Poisson process to synthesize "
-                             "the request arrival times.")
+                        "then all the requests are sent at time 0. "
+                        "Otherwise, we use Poisson process to synthesize "
+                        "the request arrival times.")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument('--trust-remote-code', action='store_true',
+    parser.add_argument('--trust-remote-code',
+                        action='store_true',
                         help='trust remote code from huggingface')
     args = parser.parse_args()
     main(args)

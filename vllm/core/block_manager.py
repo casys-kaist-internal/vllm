@@ -36,9 +36,6 @@ class BlockAllocator:
                                        block_size=block_size)
             self.free_blocks.append(block)
 
-        import random
-        random.shuffle(self.free_blocks)
-
     def allocate(self) -> PhysicalTokenBlock:
         if not self.free_blocks:
             raise ValueError("Out of memory! No free blocks are available.")
@@ -106,7 +103,7 @@ class BlockSpaceManager:
     def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
-        seq = seq_group.get_seqs()[0]
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
         num_required_blocks = len(seq.logical_token_blocks)
         if self.block_sliding_window is not None:
             num_required_blocks = min(num_required_blocks,
@@ -125,7 +122,7 @@ class BlockSpaceManager:
     def allocate(self, seq_group: SequenceGroup) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
-        seq = seq_group.get_seqs()[0]
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
 
         # Allocate new physical token blocks that will store the prompt tokens.
         block_table: BlockTable = []
@@ -140,7 +137,7 @@ class BlockSpaceManager:
             block_table.append(block)
 
         # Assign the block table for each sequence.
-        for seq in seq_group.get_seqs():
+        for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             self.block_tables[seq.seq_id] = block_table.copy()
 
     def can_append_slot(self, seq_group: SequenceGroup) -> bool:
@@ -279,17 +276,6 @@ class BlockSpaceManager:
         block_table = self.block_tables[seq.seq_id]
         self._free_block_table(block_table)
         del self.block_tables[seq.seq_id]
-
-    def free_blocks(self, seq: Sequence, cnt: int) -> None:
-        assert seq.seq_id in self.block_tables
-        block_table = self.block_tables[seq.seq_id]
-
-        for _ in range(cnt):
-            last_block = block_table.pop()
-            if last_block.device == Device.GPU:
-                self.gpu_allocator.free(last_block)
-            else:
-                self.cpu_allocator.free(last_block)
 
     def reset(self) -> None:
         for block_table in self.block_tables.values():

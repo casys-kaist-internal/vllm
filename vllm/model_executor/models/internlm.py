@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
@@ -17,7 +17,8 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -30,7 +31,6 @@ class InternLMMLP(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -38,12 +38,10 @@ class InternLMMLP(nn.Module):
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
-            parallel_state,
             hidden_size, [intermediate_size] * 2,
             bias=False,
             linear_method=linear_method)
-        self.down_proj = RowParallelLinear(parallel_state,
-                                           intermediate_size,
+        self.down_proj = RowParallelLinear(intermediate_size,
                                            hidden_size,
                                            bias=False,
                                            linear_method=linear_method)
@@ -63,18 +61,18 @@ class InternLMAttention(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         hidden_size: int,
         num_heads: int,
         bias: bool,
         rope_theta: float = 10000,
         max_position_embeddings: int = 8192,
         linear_method: Optional[LinearMethodBase] = None,
+        rope_scaling: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         tensor_model_parallel_world_size = (
-            parallel_state.get_tensor_model_parallel_world_size())
+            get_tensor_model_parallel_world_size())
         self.total_num_heads = num_heads
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
         self.num_heads = (self.total_num_heads //
@@ -85,7 +83,6 @@ class InternLMAttention(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
         self.qkv_proj = QKVParallelLinear(
-            parallel_state,
             hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -93,7 +90,6 @@ class InternLMAttention(nn.Module):
             linear_method=linear_method,
         )
         self.o_proj = RowParallelLinear(
-            parallel_state,
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=bias,
@@ -104,6 +100,7 @@ class InternLMAttention(nn.Module):
             rotary_dim=self.head_dim,
             max_position=self.max_position_embeddings,
             base=self.rope_theta,
+            rope_scaling=rope_scaling,
         )
         self.attn = PagedAttention(self.num_heads, self.head_dim, self.scaling)
 
@@ -113,14 +110,12 @@ class InternLMAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         k_cache, v_cache = kv_cache
-        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata,
-                                cache_event)
+        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -129,7 +124,6 @@ class InternLMDecoderLayer(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: LlamaConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -139,16 +133,15 @@ class InternLMDecoderLayer(nn.Module):
         max_position_embeddings = getattr(config, "max_position_embeddings",
                                           8192)
         self.self_attn = InternLMAttention(
-            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             bias=config.bias,
             rope_theta=rope_theta,
             max_position_embeddings=max_position_embeddings,
             linear_method=linear_method,
+            rope_scaling=getattr(config, "rope_scaling", None),
         )
         self.mlp = InternLMMLP(
-            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -165,7 +158,6 @@ class InternLMDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
@@ -180,7 +172,6 @@ class InternLMDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             kv_cache=kv_cache,
             input_metadata=input_metadata,
-            cache_event=cache_event,
         )
 
         # Fully Connected
@@ -194,7 +185,6 @@ class InternLMModel(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: LlamaConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ):
@@ -205,12 +195,11 @@ class InternLMModel(nn.Module):
 
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.embed_tokens = VocabParallelEmbedding(
-            parallel_state,
             vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            InternLMDecoderLayer(parallel_state, config, linear_method)
+            InternLMDecoderLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -221,19 +210,16 @@ class InternLMModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for i in range(len(self.layers)):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
                 kv_caches[i],
                 input_metadata,
-                cache_event,
                 residual,
             )
         hidden_states, _ = self.norm(hidden_states, residual)
@@ -244,16 +230,15 @@ class InternLMForCausalLM(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config,
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = InternLMModel(parallel_state, config, linear_method)
+        self.model = InternLMModel(config, linear_method)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -261,17 +246,16 @@ class InternLMForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, kv_caches,
-                                   input_metadata, cache_events)
+                                   input_metadata)
         return hidden_states
 
     def sample(
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(self.lm_head.weight, hidden_states,
                                    sampling_metadata)
         return next_tokens
@@ -297,11 +281,18 @@ class InternLMForCausalLM(nn.Module):
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:
                     continue
-                param = params_dict[name.replace(weight_name, param_name)]
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)

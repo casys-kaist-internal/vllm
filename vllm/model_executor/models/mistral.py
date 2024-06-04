@@ -39,7 +39,8 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
-from vllm.model_executor.parallel_utils.parallel_state import ParallelState
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.weight_utils import (default_weight_loader,
                                               hf_model_weights_iterator)
@@ -52,7 +53,6 @@ class MistralMLP(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -60,12 +60,10 @@ class MistralMLP(nn.Module):
     ) -> None:
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
-            parallel_state,
             hidden_size, [intermediate_size] * 2,
             bias=False,
             linear_method=linear_method)
-        self.down_proj = RowParallelLinear(parallel_state,
-                                           intermediate_size,
+        self.down_proj = RowParallelLinear(intermediate_size,
                                            hidden_size,
                                            bias=False,
                                            linear_method=linear_method)
@@ -84,7 +82,6 @@ class MistralMLP(nn.Module):
 class MistralAttention(nn.Module):
 
     def __init__(self,
-                 parallel_state: ParallelState,
                  hidden_size: int,
                  num_heads: int,
                  num_kv_heads: int,
@@ -94,7 +91,7 @@ class MistralAttention(nn.Module):
                  sliding_window: Optional[int] = None) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        tp_size = get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -116,7 +113,6 @@ class MistralAttention(nn.Module):
         self.sliding_window = sliding_window
 
         self.qkv_proj = QKVParallelLinear(
-            parallel_state,
             hidden_size,
             self.head_dim,
             self.total_num_heads,
@@ -125,7 +121,6 @@ class MistralAttention(nn.Module):
             linear_method=linear_method,
         )
         self.o_proj = RowParallelLinear(
-            parallel_state,
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -150,14 +145,12 @@ class MistralAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         k_cache, v_cache = kv_cache
-        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata,
-                                cache_event)
+        attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -166,7 +159,6 @@ class MistralDecoderLayer(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
@@ -175,7 +167,6 @@ class MistralDecoderLayer(nn.Module):
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", 10000)
         self.self_attn = MistralAttention(
-            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             max_position=config.max_position_embeddings,
@@ -184,7 +175,6 @@ class MistralDecoderLayer(nn.Module):
             linear_method=linear_method,
             sliding_window=config.sliding_window)
         self.mlp = MistralMLP(
-            parallel_state=parallel_state,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -201,7 +191,6 @@ class MistralDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: KVCache,
         input_metadata: InputMetadata,
-        cache_event: Optional[torch.cuda.Event],
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
@@ -216,7 +205,6 @@ class MistralDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             kv_cache=kv_cache,
             input_metadata=input_metadata,
-            cache_event=cache_event,
         )
 
         # Fully Connected
@@ -230,7 +218,6 @@ class MistralModel(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
@@ -240,12 +227,11 @@ class MistralModel(nn.Module):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = VocabParallelEmbedding(
-            parallel_state,
             config.vocab_size,
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            MistralDecoderLayer(parallel_state, config, linear_method)
+            MistralDecoderLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -256,19 +242,16 @@ class MistralModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for i in range(len(self.layers)):
-            cache_event = None if cache_events is None else cache_events[i]
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
                 kv_caches[i],
                 input_metadata,
-                cache_event,
                 residual,
             )
         hidden_states, _ = self.norm(hidden_states, residual)
@@ -279,16 +262,15 @@ class MistralForCausalLM(nn.Module):
 
     def __init__(
         self,
-        parallel_state: ParallelState,
         config: MistralConfig,
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.linear_method = linear_method
-        self.model = MistralModel(parallel_state, config, linear_method)
+        self.model = MistralModel(config, linear_method)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        self.sampler = Sampler(parallel_state, config.vocab_size)
+        self.sampler = Sampler(config.vocab_size)
 
     def forward(
         self,
@@ -296,17 +278,16 @@ class MistralForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[KVCache],
         input_metadata: InputMetadata,
-        cache_events: Optional[List[torch.cuda.Event]],
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, kv_caches,
-                                   input_metadata, cache_events)
+                                   input_metadata)
         return hidden_states
 
     def sample(
         self,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
-    ) -> SamplerOutput:
+    ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(self.lm_head.weight, hidden_states,
                                    sampling_metadata)
         return next_tokens
@@ -332,11 +313,18 @@ class MistralForCausalLM(nn.Module):
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:
                     continue
-                param = params_dict[name.replace(weight_name, param_name)]
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)

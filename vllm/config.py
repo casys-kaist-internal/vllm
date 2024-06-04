@@ -1,4 +1,4 @@
-from typing import Optional, Union, Dict
+from typing import Optional, Union
 import os
 
 import torch
@@ -6,7 +6,7 @@ from transformers import PretrainedConfig
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import get_config
-from vllm.utils import get_cpu_memory
+from vllm.utils import get_cpu_memory, is_hip
 
 logger = init_logger(__name__)
 
@@ -49,6 +49,12 @@ class ModelConfig:
             output). If None, will be derived from the model.
         quantization: Quantization method that was used to quantize the model
             weights. If None, we assume the model weights are not quantized.
+        enforce_eager: Whether to enforce eager execution. If True, we will
+            disable CUDA graph and always execute the model in eager mode.
+            If False, we will use CUDA graph and eager execution in hybrid.
+        max_context_len_to_capture: Maximum context len covered by CUDA graphs.
+            When a sequence has context length larger than this, we fall back
+            to eager mode.
     """
 
     def __init__(
@@ -65,6 +71,8 @@ class ModelConfig:
         tokenizer_revision: Optional[str] = None,
         max_model_len: Optional[int] = None,
         quantization: Optional[str] = None,
+        enforce_eager: bool = False,
+        max_context_len_to_capture: Optional[int] = None,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -76,6 +84,8 @@ class ModelConfig:
         self.revision = revision
         self.tokenizer_revision = tokenizer_revision
         self.quantization = quantization
+        self.enforce_eager = enforce_eager
+        self.max_context_len_to_capture = max_context_len_to_capture
 
         if os.environ.get("VLLM_USE_MODELSCOPE", "False").lower() == "true":
             # download model from ModelScope hub,
@@ -95,15 +105,34 @@ class ModelConfig:
         self._verify_load_format()
         self._verify_tokenizer_mode()
         self._verify_quantization()
+        self._verify_cuda_graph()
 
     def _verify_load_format(self) -> None:
         load_format = self.load_format.lower()
-        if load_format not in [
-                "auto", "pt", "safetensors", "npcache", "dummy"
-        ]:
+        supported_load_format = [
+            "auto", "pt", "safetensors", "npcache", "dummy"
+        ]
+        rocm_not_supported_load_format = []
+        if load_format not in supported_load_format:
             raise ValueError(
                 f"Unknown load format: {self.load_format}. Must be one of "
                 "'auto', 'pt', 'safetensors', 'npcache', or 'dummy'.")
+        if is_hip() and load_format in rocm_not_supported_load_format:
+            rocm_supported_load_format = [
+                f for f in supported_load_format
+                if (f not in rocm_not_supported_load_format)
+            ]
+            raise ValueError(
+                f"load format \'{load_format}\' is not supported in ROCm. "
+                f"Supported load format are "
+                f"{rocm_supported_load_format}")
+
+        # TODO: Remove this check once HF updates the pt weights of Mixtral.
+        architectures = getattr(self.hf_config, "architectures", [])
+        if "MixtralForCausalLM" in architectures and load_format == "pt":
+            raise ValueError(
+                "Currently, the 'pt' format is not supported for Mixtral. "
+                "Please use the 'safetensors' format instead. ")
         self.load_format = load_format
 
     def _verify_tokenizer_mode(self) -> None:
@@ -115,7 +144,8 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _verify_quantization(self) -> None:
-        supported_quantization = ["awq", "squeezellm"]
+        supported_quantization = ["awq", "gptq", "squeezellm"]
+        rocm_not_supported_quantization = ["awq"]
         if self.quantization is not None:
             self.quantization = self.quantization.lower()
 
@@ -137,9 +167,20 @@ class ModelConfig:
                 raise ValueError(
                     f"Unknown quantization method: {self.quantization}. Must "
                     f"be one of {supported_quantization}.")
+            if is_hip(
+            ) and self.quantization in rocm_not_supported_quantization:
+                raise ValueError(
+                    f"{self.quantization} quantization is currently not supported "
+                    f"in ROCm.")
             logger.warning(f"{self.quantization} quantization is not fully "
                            "optimized yet. The speed can be slower than "
                            "non-quantized models.")
+
+    def _verify_cuda_graph(self) -> None:
+        if self.max_context_len_to_capture is None:
+            self.max_context_len_to_capture = self.max_model_len
+        self.max_context_len_to_capture = min(self.max_context_len_to_capture,
+                                              self.max_model_len)
 
     def verify_with_parallel_config(
         self,
@@ -364,6 +405,8 @@ _STR_DTYPE_TO_TORCH_DTYPE = {
     "bfloat16": torch.bfloat16,
 }
 
+_ROCM_NOT_SUPPORTED_DTYPE = ["float", "float32"]
+
 
 def _get_and_verify_dtype(
     config: PretrainedConfig,
@@ -392,6 +435,14 @@ def _get_and_verify_dtype(
         torch_dtype = dtype
     else:
         raise ValueError(f"Unknown dtype: {dtype}")
+
+    if is_hip() and torch_dtype == torch.float32:
+        rocm_supported_dtypes = [
+            k for k, v in _STR_DTYPE_TO_TORCH_DTYPE.items()
+            if (k not in _ROCM_NOT_SUPPORTED_DTYPE)
+        ]
+        raise ValueError(f"dtype \'{dtype}\' is not supported in ROCm. "
+                         f"Supported dtypes are {rocm_supported_dtypes}")
 
     # Verify the dtype.
     if torch_dtype != config_dtype:
@@ -466,41 +517,7 @@ def _get_and_verify_max_len(
     return int(max_model_len)
 
 
-class SpSConfig:
-    def __init__(self,
-                 draft_size: int,
-                 use_dynamic_draft_size: bool,
-                 use_tile_constraint: str, 
-                 use_target_attention: bool,
-                 use_lazy_draft_kv_cache: bool,
-                 predictor_degree: int,
-                 predictor_agg_type: str,
-                 use_lookup_table: bool
-                ) -> None:
+class SpecDecodeConfig:
+
+    def __init__(self, draft_size: int) -> None:
         self.draft_size = draft_size
-        self.start_max_draft_size = 7
-
-        self.use_dynamic_draft_size = use_dynamic_draft_size
-        self.use_tile_constraint = use_tile_constraint
-        self.use_target_attention = use_target_attention
-        self.use_lazy_draft_kv_cache = use_lazy_draft_kv_cache
-
-        # Profiling draft and target latencies 
-        self.draft_latencies: Dict[int, float] = {}
-        self.target_latencies: Dict[int, float] = {}
-        self.profile_finish = False
-
-        # Predictor 
-        self.predictor_degree = predictor_degree
-        self.predictor_agg_type = predictor_agg_type
-        self.use_lookup_table = use_lookup_table
-
-    def check_tile_size_constraint(self, num_tokens: int) -> bool:
-        if self.use_tile_constraint == "none":
-            return True
-        elif self.use_tile_constraint == "cut-128":
-            return num_tokens <= 128
-        elif self.use_tile_constraint == "skip-128-192":
-            return num_tokens <= 128 or num_tokens >= 192
-        else:
-            raise NotImplementedError(f"Unsupported tile constraint: {self.use_tile_constraint}")

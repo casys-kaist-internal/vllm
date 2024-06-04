@@ -30,6 +30,8 @@ vLLM is fast with:
 * State-of-the-art serving throughput
 * Efficient management of attention key and value memory with **PagedAttention**
 * Continuous batching of incoming requests
+* Fast model execution with CUDA/HIP graph
+* Quantization: `GPTQ <https://arxiv.org/abs/2210.17323>`_, `AWQ <https://arxiv.org/abs/2306.00978>`_, `SqueezeLLM <https://arxiv.org/abs/2306.07629>`_
 * Optimized CUDA kernels
 
 vLLM is flexible and easy to use with:
@@ -39,11 +41,11 @@ vLLM is flexible and easy to use with:
 * Tensor parallelism support for distributed inference
 * Streaming outputs
 * OpenAI-compatible API server
+* Support NVIDIA GPUs and AMD GPUs
 
 For more information, check out the following:
 
 * `vLLM announcing blog post <https://vllm.ai>`_ (intro to PagedAttention)
-* `vLLM paper <https://arxiv.org/abs/2309.06180>`_ (SOSP 2023)
 * `vLLM paper <https://arxiv.org/abs/2309.06180>`_ (SOSP 2023)
 * `How continuous batching enables 23x throughput in LLM inference while reducing p50 latency <https://www.anyscale.com/blog/continuous-batching-llm-inference>`_ by Cade Daniel et al.
 
@@ -57,6 +59,7 @@ Documentation
    :caption: Getting Started
 
    getting_started/installation
+   getting_started/amd-installation
    getting_started/quickstart
 
 .. toctree::

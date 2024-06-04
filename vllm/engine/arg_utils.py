@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig, SpSConfig)
+                         SchedulerConfig, SpecDecodeConfig)
 
 
 @dataclass
@@ -25,7 +25,7 @@ class EngineArgs:
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
-    gpu_memory_utilization: float = 0.95
+    gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: int = 256
     max_paddings: int = 256
@@ -33,6 +33,8 @@ class EngineArgs:
     revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     quantization: Optional[str] = None
+    enforce_eager: bool = False
+    max_context_len_to_capture: int = 8192
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -154,11 +156,13 @@ class EngineArgs:
                             type=int,
                             default=EngineArgs.swap_space,
                             help='CPU swap space size (GiB) per GPU')
-        parser.add_argument('--gpu-memory-utilization',
-                            type=float,
-                            default=EngineArgs.gpu_memory_utilization,
-                            help='the percentage of GPU memory to be used for'
-                            'the model executor')
+        parser.add_argument(
+            '--gpu-memory-utilization',
+            type=float,
+            default=EngineArgs.gpu_memory_utilization,
+            help='the fraction of GPU memory to be used for '
+            'the model executor, which can range from 0 to 1.'
+            'If unspecified, will use the default value of 0.9.')
         parser.add_argument('--max-num-batched-tokens',
                             type=int,
                             default=EngineArgs.max_num_batched_tokens,
@@ -179,9 +183,25 @@ class EngineArgs:
         parser.add_argument('--quantization',
                             '-q',
                             type=str,
-                            choices=['awq', 'squeezellm', None],
+                            choices=['awq', 'gptq', 'squeezellm', None],
                             default=None,
-                            help='Method used to quantize the weights')
+                            help='Method used to quantize the weights. If '
+                            'None, we first check the `quantization_config` '
+                            'attribute in the model config file. If that is '
+                            'None, we assume the model weights are not '
+                            'quantized and use `dtype` to determine the data '
+                            'type of the weights.')
+        parser.add_argument('--enforce-eager',
+                            action='store_true',
+                            help='Always use eager-mode PyTorch. If False, '
+                            'will use eager mode and CUDA graph in hybrid '
+                            'for maximal performance and flexibility.')
+        parser.add_argument('--max-context-len-to-capture',
+                            type=int,
+                            default=EngineArgs.max_context_len_to_capture,
+                            help='maximum context length covered by CUDA '
+                            'graphs. When a sequence has context length '
+                            'larger than this, we fall back to eager mode.')
         return parser
 
     @classmethod
@@ -200,7 +220,8 @@ class EngineArgs:
                                    self.download_dir, self.load_format,
                                    self.dtype, self.seed, self.revision,
                                    self.tokenizer_revision, self.max_model_len,
-                                   self.quantization)
+                                   self.quantization, self.enforce_eager,
+                                   self.max_context_len_to_capture)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space,
@@ -244,18 +265,11 @@ class AsyncEngineArgs(EngineArgs):
 
 
 @dataclass
-class SpSEngineArgs:
+class SpecDecodeEngineArgs:
     """Arguments for vLLM engine."""
     target_model: str
     draft_model: str
     draft_size: int = 7
-    use_dynamic_draft_size: bool = False
-    use_tile_constraint: str = "none"
-    use_target_attention: bool = False
-    use_lazy_draft_kv_cache: bool = True
-    predictor_degree: int = 3
-    predictor_agg_type: str = "median"
-    use_lookup_table: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -264,13 +278,13 @@ class SpSEngineArgs:
     dtype: str = 'auto'
     seed: int = 0
     max_model_len: Optional[int] = None
-    worker_use_ray: bool = False
+    worker_use_ray: bool = True
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
-    gpu_memory_utilization: float = 0.95
+    gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: int = 256
     max_paddings: int = 256
@@ -278,6 +292,8 @@ class SpSEngineArgs:
     revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     quantization: Optional[str] = None
+    enforce_eager: bool = False
+    max_context_len_to_capture: int = 8192
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -293,43 +309,14 @@ class SpSEngineArgs:
 
         # Model arguments
         parser.add_argument(
-            '--target-model',
+            '--model',
             type=str,
             default='facebook/opt-125m',
             help='name or path of the huggingface model to use')
-        parser.add_argument(
-            '--draft-model',
-            type=str,
-            default='facebook/opt-125m',
-            help='name or path of the huggingface model to use')
-        parser.add_argument('--draft-size',
-                            type=int,
-                            default=SpSEngineArgs.draft_size,
-                            help='number of auto-regressive draft model run')
-        parser.add_argument('--use-dynamic-draft-size',
-                            type=bool,
-                            default=SpSEngineArgs.use_dynamic_draft_size,
-                            help='whether to use dynamic draft size')
-        parser.add_argument('--use-tile-constraint',
-                            type=str,
-                            default=SpSEngineArgs.use_tile_constraint,
-                            help='whether to use tile size constraint')
-        parser.add_argument('--use-target-attention',
-                            type=bool,
-                            default=SpSEngineArgs.use_target_attention,
-                            help='whether to use target attention kernel')
-        parser.add_argument('--use-lazy-draft-kv-cache',
-                            type=bool,
-                            default=SpSEngineArgs.use_lazy_draft_kv_cache,
-                            help='whether to use lazy draft KV cache')
-        parser.add_argument('--target-draft-latency-ratio', 
-                            '-c',
-                            type=float,
-                            default=0.2)
         parser.add_argument(
             '--tokenizer',
             type=str,
-            default=SpSEngineArgs.tokenizer,
+            default=EngineArgs.tokenizer,
             help='name or path of the huggingface tokenizer to use')
         parser.add_argument(
             '--revision',
@@ -347,7 +334,7 @@ class SpSEngineArgs:
             'the default version.')
         parser.add_argument('--tokenizer-mode',
                             type=str,
-                            default=SpSEngineArgs.tokenizer_mode,
+                            default=EngineArgs.tokenizer_mode,
                             choices=['auto', 'slow'],
                             help='tokenizer mode. "auto" will use the fast '
                             'tokenizer if available, and "slow" will '
@@ -357,14 +344,14 @@ class SpSEngineArgs:
                             help='trust remote code from huggingface')
         parser.add_argument('--download-dir',
                             type=str,
-                            default=SpSEngineArgs.download_dir,
+                            default=EngineArgs.download_dir,
                             help='directory to download and load the weights, '
                             'default to the default cache dir of '
                             'huggingface')
         parser.add_argument(
             '--load-format',
             type=str,
-            default=SpSEngineArgs.load_format,
+            default=EngineArgs.load_format,
             choices=['auto', 'pt', 'safetensors', 'npcache', 'dummy'],
             help='The format of the model weights to load. '
             '"auto" will try to load the weights in the safetensors format '
@@ -379,7 +366,7 @@ class SpSEngineArgs:
         parser.add_argument(
             '--dtype',
             type=str,
-            default=SpSEngineArgs.dtype,
+            default=EngineArgs.dtype,
             choices=[
                 'auto', 'half', 'float16', 'bfloat16', 'float', 'float32'
             ],
@@ -400,13 +387,13 @@ class SpSEngineArgs:
         parser.add_argument('--pipeline-parallel-size',
                             '-pp',
                             type=int,
-                            default=SpSEngineArgs.pipeline_parallel_size,
-                            help='number of pipeline stages for target model')
+                            default=EngineArgs.pipeline_parallel_size,
+                            help='number of pipeline stages')
         parser.add_argument('--tensor-parallel-size',
                             '-tp',
                             type=int,
-                            default=SpSEngineArgs.tensor_parallel_size,
-                            help='number of tensor parallel replicas for target model')
+                            default=EngineArgs.tensor_parallel_size,
+                            help='number of tensor parallel replicas')
         parser.add_argument(
             '--max-parallel-loading-workers',
             type=int,
@@ -416,35 +403,37 @@ class SpSEngineArgs:
         # KV cache arguments
         parser.add_argument('--block-size',
                             type=int,
-                            default=SpSEngineArgs.block_size,
+                            default=EngineArgs.block_size,
                             choices=[8, 16, 32],
                             help='token block size')
         # TODO(woosuk): Support fine-grained seeds (e.g., seed per request).
         parser.add_argument('--seed',
                             type=int,
-                            default=SpSEngineArgs.seed,
+                            default=EngineArgs.seed,
                             help='random seed')
         parser.add_argument('--swap-space',
                             type=int,
-                            default=SpSEngineArgs.swap_space,
+                            default=EngineArgs.swap_space,
                             help='CPU swap space size (GiB) per GPU')
-        parser.add_argument('--gpu-memory-utilization',
-                            type=float,
-                            default=SpSEngineArgs.gpu_memory_utilization,
-                            help='the percentage of GPU memory to be used for'
-                            'the model executor')
+        parser.add_argument(
+            '--gpu-memory-utilization',
+            type=float,
+            default=EngineArgs.gpu_memory_utilization,
+            help='the fraction of GPU memory to be used for '
+            'the model executor, which can range from 0 to 1.'
+            'If unspecified, will use the default value of 0.9.')
         parser.add_argument('--max-num-batched-tokens',
                             type=int,
-                            default=SpSEngineArgs.max_num_batched_tokens,
+                            default=EngineArgs.max_num_batched_tokens,
                             help='maximum number of batched tokens per '
                             'iteration')
         parser.add_argument('--max-num-seqs',
                             type=int,
-                            default=SpSEngineArgs.max_num_seqs,
+                            default=EngineArgs.max_num_seqs,
                             help='maximum number of sequences per iteration')
         parser.add_argument('--max-paddings',
                             type=int,
-                            default=SpSEngineArgs.max_paddings,
+                            default=EngineArgs.max_paddings,
                             help='maximum number of paddings in a batch')
         parser.add_argument('--disable-log-stats',
                             action='store_true',
@@ -453,9 +442,25 @@ class SpSEngineArgs:
         parser.add_argument('--quantization',
                             '-q',
                             type=str,
-                            choices=['awq', 'squeezellm', None],
+                            choices=['awq', 'gptq', 'squeezellm', None],
                             default=None,
-                            help='Method used to quantize the weights')
+                            help='Method used to quantize the weights. If '
+                            'None, we first check the `quantization_config` '
+                            'attribute in the model config file. If that is '
+                            'None, we assume the model weights are not '
+                            'quantized and use `dtype` to determine the data '
+                            'type of the weights.')
+        parser.add_argument('--enforce-eager',
+                            action='store_true',
+                            help='Always use eager-mode PyTorch. If False, '
+                            'will use eager mode and CUDA graph in hybrid '
+                            'for maximal performance and flexibility.')
+        parser.add_argument('--max-context-len-to-capture',
+                            type=int,
+                            default=EngineArgs.max_context_len_to_capture,
+                            help='maximum context length covered by CUDA '
+                            'graphs. When a sequence has context length '
+                            'larger than this, we fall back to eager mode.')
         return parser
 
     @classmethod
@@ -468,20 +473,20 @@ class SpSEngineArgs:
 
     def create_engine_configs(
         self,
-    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig, SchedulerConfig, SpSConfig]:
-        target_model_config = ModelConfig(self.target_model, self.tokenizer,
-                                          self.tokenizer_mode, self.trust_remote_code,
-                                          self.download_dir, self.load_format,
-                                          self.dtype, self.seed, self.revision,
-                                          self.tokenizer_revision, self.max_model_len,
-                                          self.quantization)
-        draft_model_config = ModelConfig(self.draft_model, self.tokenizer,
-                                         self.tokenizer_mode, self.trust_remote_code,
-                                         self.download_dir, self.load_format,
-                                         self.dtype, self.seed, self.revision,
-                                         self.tokenizer_revision, self.max_model_len,
-                                         self.quantization)
-        # Change the vocab size of draft to match target
+    ) -> Tuple[ModelConfig, ModelConfig, CacheConfig, ParallelConfig,
+               SchedulerConfig, SpecDecodeConfig]:
+        target_model_config = ModelConfig(
+            self.target_model, self.tokenizer, self.tokenizer_mode,
+            self.trust_remote_code, self.download_dir, self.load_format,
+            self.dtype, self.seed, self.revision, self.tokenizer_revision,
+            self.max_model_len, self.quantization, self.enforce_eager,
+            self.max_context_len_to_capture)
+        draft_model_config = ModelConfig(
+            self.draft_model, self.tokenizer, self.tokenizer_mode,
+            self.trust_remote_code, self.download_dir, self.load_format,
+            self.dtype, self.seed, self.revision, self.tokenizer_revision,
+            self.max_model_len, self.quantization, self.enforce_eager,
+            self.max_context_len_to_capture)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space,
@@ -490,43 +495,17 @@ class SpSEngineArgs:
                                          self.tensor_parallel_size,
                                          self.worker_use_ray,
                                          self.max_parallel_loading_workers)
-        # NOTE(sjchoi): We assume that draft model is always copied to every GPU.
-        # So, there is no need to get parallelism argument for draft model.
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.max_paddings)
-        sps_config = SpSConfig(self.draft_size, 
-                               self.use_dynamic_draft_size,
-                               self.use_tile_constraint,
-                               self.use_target_attention,
-                               self.use_lazy_draft_kv_cache,
-                               self.predictor_degree,
-                               self.predictor_agg_type,
-                               self.use_lookup_table)
-
-        # If the model is Pythia, the target vocab and draft vocab is actually the same content
-        # with different length with 'None' token padded. So, we skip assertion
-        allowed_model = ['pythia']
-        # Check target_model_config.model and draft_model_config.model have substring allowed model
-        if not any(model in target_model_config.model for model in allowed_model) and not any(model in draft_model_config.model for model in allowed_model):
-            # Assertions for target model and draft model and print vocab size if fail
-            assert target_model_config.get_vocab_size() == draft_model_config.get_vocab_size(
-            ), f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}"
-        # else:
-        #     print(f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}")
-
-        assert (target_model_config.get_sliding_window()
-                == draft_model_config.get_sliding_window())
-        assert (target_model_config.trust_remote_code ==
-                draft_model_config.trust_remote_code)
-
-        return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, sps_config
+        spec_decode_config = SpecDecodeConfig(self.draft_size)
+        return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
 
 @dataclass
-class AsyncSpSEngineArgs(SpSEngineArgs):
-    """Arguments for asynchronous vLLM SpS engine."""
+class AsyncSpecDecodeEngineArgs(SpecDecodeEngineArgs):
+    """Arguments for asynchronous vLLM engine."""
     engine_use_ray: bool = False
     disable_log_requests: bool = False
     max_log_len: Optional[int] = None
@@ -534,7 +513,7 @@ class AsyncSpSEngineArgs(SpSEngineArgs):
     @staticmethod
     def add_cli_args(
             parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        parser = SpSEngineArgs.add_cli_args(parser)
+        parser = EngineArgs.add_cli_args(parser)
         parser.add_argument('--engine-use-ray',
                             action='store_true',
                             help='use Ray to start the LLM engine in a '

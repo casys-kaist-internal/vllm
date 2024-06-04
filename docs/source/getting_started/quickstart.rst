@@ -50,16 +50,6 @@ Use model from www.modelscope.cn
 
     llm = LLM(model="qwen/Qwen-7B-Chat", revision="v1.1.8", trust_remote_code=True)
 
-Use model from www.modelscope.cn
-
-.. code-block:: shell
-
-    export VLLM_USE_MODELSCOPE=True
-
-.. code-block:: python
-
-    llm = LLM(model="qwen/Qwen-7B-Chat", revision="v1.1.8", trust_remote_code=True)
-
 Call ``llm.generate`` to generate the outputs. It adds the input prompts to vLLM engine's waiting queue and executes the vLLM engine to generate the outputs with high throughput. The outputs are returned as a list of ``RequestOutput`` objects, which include all the output tokens.
 
 .. code-block:: python
@@ -86,16 +76,6 @@ Start the server:
 .. code-block:: console
 
     $ python -m vllm.entrypoints.api_server
-
-Use model from www.modelscope.cn
-
-.. code-block:: console
-
-    $ VLLM_USE_MODELSCOPE=True python -m vllm.entrypoints.api_server \
-    $    --model="qwen/Qwen-7B-Chat" \
-    $    --revision="v1.1.8" \
-    $    --trust-remote-code
-
 
 Use model from www.modelscope.cn
 
@@ -143,20 +123,13 @@ Use model from www.modelscope.cn
     $ VLLM_USE_MODELSCOPE=True python -m vllm.entrypoints.openai.api_server \
     $     --model="qwen/Qwen-7B-Chat" --revision="v1.1.8" --trust-remote-code
 
-Use model from www.modelscope.cn
-
-.. code-block:: console
-
-    $ VLLM_USE_MODELSCOPE=True python -m vllm.entrypoints.openai.api_server \
-    $     --model="qwen/Qwen-7B-Chat" --revision="v1.1.8" --trust-remote-code
-
 By default, the server uses a predefined chat template stored in the tokenizer. You can override this template by using the ``--chat-template`` argument:
 
 .. code-block:: console
 
    $ python -m vllm.entrypoints.openai.api_server \
    $     --model facebook/opt-125m \
-   $     --chat-template ./examples/template_chatml.json
+   $     --chat-template ./examples/template_chatml.jinja
 
 This server can be queried in the same format as OpenAI API. For example, list the models:
 
@@ -197,7 +170,7 @@ Since this server is compatible with OpenAI API, you can use it as a drop-in rep
                                           prompt="San Francisco is a")
     print("Completion result:", completion)
 
-For a more detailed client example, refer to `examples/openai_completion_completion_client.py <https://github.com/vllm-project/vllm/blob/main/examples/openai_completion_completion_client.py>`_.
+For a more detailed client example, refer to `examples/openai_completion_client.py <https://github.com/vllm-project/vllm/blob/main/examples/openai_completion_client.py>`_.
 
 Using OpenAI Chat API with vLLM
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

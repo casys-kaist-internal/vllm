@@ -37,10 +37,6 @@ def main(
     query.uniform_(-scale, scale)
 
     assert num_query_heads % num_kv_heads == 0
-    num_queries_per_kv = num_query_heads // num_kv_heads
-    head_mapping = torch.repeat_interleave(
-        torch.arange(num_kv_heads, dtype=torch.int32, device="cuda"),
-        num_queries_per_kv)
     alibi_slopes = None
     if use_alibi:
         alibi_slopes = torch.randn(num_query_heads,
@@ -94,7 +90,7 @@ def main(
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
-        start_time = time.perf_counter_ns()
+        start_time = time.perf_counter()
 
         for _ in range(num_iters):
             if version == "v1":
@@ -103,7 +99,7 @@ def main(
                     query,
                     key_cache,
                     value_cache,
-                    head_mapping,
+                    num_kv_heads,
                     scale,
                     block_tables,
                     context_lens,
@@ -120,7 +116,7 @@ def main(
                     query,
                     key_cache,
                     value_cache,
-                    head_mapping,
+                    num_kv_heads,
                     scale,
                     block_tables,
                     context_lens,
@@ -132,14 +128,10 @@ def main(
                 raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
 
-        end_time = time.perf_counter_ns()
+        end_time = time.perf_counter()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
-
-        elasped_time_ns = (end_time - start_time) / num_iters
-        elasped_time_ms = elasped_time_ns / 1e6
-
-        return elasped_time_ms
+        return (end_time - start_time) / num_iters
 
     # Warmup.
     print("Warming up...")
@@ -150,7 +142,7 @@ def main(
         latency = run_benchmark(num_iters=1, profile=True)
     else:
         latency = run_benchmark(num_iters=100, profile=False)
-    print(f"Kernel running time: {latency:.3f} ms")
+    print(f"Kernel running time: {latency * 1000000:.3f} us")
 
 
 if __name__ == '__main__':
@@ -159,7 +151,7 @@ if __name__ == '__main__':
     parser.add_argument("--version",
                         type=str,
                         choices=["v1", "v2"],
-                        default="v1")
+                        default="v2")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context-len", type=int, default=4096)
     parser.add_argument("--num-query-heads", type=int, default=64)
