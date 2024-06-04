@@ -314,6 +314,10 @@ class SpSEngineArgs:
                             type=str,
                             default=SpSEngineArgs.use_tile_constraint,
                             help='whether to use tile size constraint')
+        parser.add_argument("--use-lookup-table",
+                            type=bool,
+                            default=SpSEngineArgs.use_lookup_table,
+                            help="whether to use lookup table")
         parser.add_argument('--use-target-attention',
                             type=bool,
                             default=SpSEngineArgs.use_target_attention,

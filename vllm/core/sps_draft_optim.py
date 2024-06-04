@@ -713,7 +713,8 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
             temperature = self.worker_queue.get()
             # Make a copy of the draft optimizer states.
             if self.sps_config.use_lookup_table:
-                predictor = np.zeros_like(self.lookup_table)
+                predictor = self.lookup_table.copy()
+                predictor[temperature] = np.zeros_like(self.lookup_table[temperature])
             else:
                 predictor = clone(self.predictor)
             
@@ -729,7 +730,7 @@ class BetaEMADraftSizeOptimizer(DraftSizeOptimizer):
         nvtx.range_push("retrain predictor")
 
         global DEFER_EXIT
-        if not DEFER_EXIT:
+        if DEFER_EXIT is not None and not DEFER_EXIT:
             print("[debug] (noppanat) time:", str(datetime.datetime.now()), flush=True)
             torch.cuda.cudart().cudaProfilerStart()
             Thread(target=defer_exit, args=(10,)).start()
