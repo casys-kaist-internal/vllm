@@ -255,6 +255,7 @@ class SpSEngineArgs:
     use_lazy_draft_kv_cache: bool = True
     predictor_degree: int = 3
     predictor_agg_type: str = "median"
+    use_lookup_table: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -509,7 +510,8 @@ class SpSEngineArgs:
                                self.use_target_attention,
                                self.use_lazy_draft_kv_cache,
                                self.predictor_degree,
-                               self.predictor_agg_type)
+                               self.predictor_agg_type,
+                               self.use_lookup_table)
 
         # If the model is Pythia, the target vocab and draft vocab is actually the same content
         # with different length with 'None' token padded. So, we skip assertion

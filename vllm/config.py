@@ -474,7 +474,8 @@ class SpSConfig:
                  use_target_attention: bool,
                  use_lazy_draft_kv_cache: bool,
                  predictor_degree: int,
-                 predictor_agg_type: str
+                 predictor_agg_type: str,
+                 use_lookup_table: bool
                 ) -> None:
         self.draft_size = draft_size
         self.start_max_draft_size = 7
@@ -495,10 +496,12 @@ class SpSConfig:
         self.use_lookup_table = True
         self.use_async_training = True
 
-    def get_tile_size(self):
+    def check_tile_size_constraint(self, num_tokens: int) -> bool:
         if self.use_tile_constraint == "none":
-            return 100000
+            return True
         elif self.use_tile_constraint == "cut-128":
-            return 128
+            return num_tokens <= 128
+        elif self.use_tile_constraint == "skip-128-192":
+            return num_tokens <= 128 or num_tokens >= 192
         else:
             raise NotImplementedError(f"Unsupported tile constraint: {self.use_tile_constraint}")

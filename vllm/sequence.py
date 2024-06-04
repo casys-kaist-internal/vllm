@@ -159,6 +159,14 @@ class SequenceData:
 
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
+    
+    def drop_draft_tokens(self, draft_size) -> None:
+        if draft_size == len(self.draft_token_ids):
+            return 
+        
+        self.draft_token_ids = self.draft_token_ids[:draft_size]
+        self.draft_logprobs = self.draft_logprobs[:draft_size]
+        self.draft_probs = self.draft_probs[:draft_size]
 
     def get_draft_probs(self) -> List[torch.Tensor]:
         return self.draft_probs
@@ -203,11 +211,13 @@ class Sequence:
         prompt: str,
         prompt_token_ids: List[int],
         block_size: int,
+        temperature: float,
         draft_size: Optional[int] = 0,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
         self.block_size = block_size
+        self.temperature = temperature
 
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: SampleLogprobs = []
@@ -250,6 +260,7 @@ class Sequence:
         self.draft_size = draft_size
         self.score = []
         self.draft_size_list = []
+        self.predicton_probs = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -376,6 +387,9 @@ class Sequence:
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
     
+    def drop_draft_tokens(self, draft_size) -> None:
+        return self.data.drop_draft_tokens(draft_size)
+    
     # Calculates the Exponential Moving Average (EMA) of beta values
     def get_beta_ema(self) -> float:
         # Ensure there is at least one beta to calculate EMA
@@ -428,7 +442,7 @@ class Sequence:
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
         # print("accept ", " | ",  accept_cnt, " | ", self.beta_list,  " | ", self.data.get_draft_prob_for_tokens(),  " | ", self.accept_cnt_list, " | ", accept_probs,  " | ", beta_list)
-        # print("accept_cnt", accept_cnt, "draft_size", self.draft_size)
+        # print("accept_cnt", accept_cnt, "draft_size", self.draft_size, "accept_probs", accept_probs)
         # print(new_draft_probs)
         # print(accept_probs[:accept_cnt+1])
         # Update the stats for calculating the dynamic draft size.
@@ -466,6 +480,11 @@ class Sequence:
         self.beta_list.extend(beta_list)
         # self.score.append(accept_cnt / self.draft_size)
         self.draft_size_list.append(self.draft_size)
+
+        # if accept_cnt == self.draft_size:
+        #     self.exit_threshold -= 0.01
+        # else:
+        #     self.exit_threshold += 0.01
 
         return free_block_cnt
 

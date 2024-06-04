@@ -4,7 +4,6 @@ import json
 import time
 import random
 from typing import List, Optional, Tuple
-from pathlib import Path
 from pprint import pprint
 
 import numpy as np
@@ -29,11 +28,10 @@ folder_indicator = '5_27'
 gpu_name = torch.cuda.get_device_name(0)
 
 # Constants
-DATASET_DIR = '/home/noppanat/workspace/datasets'
-MODEL_DIR = '/home/noppanat/workspace/models'
-OUTPUT_DIR = Path(__file__).parent / {folder_indicator}
-PREDICTOR_PATH = 'predictor_decay_new'
-MAX_NUM_SEQUENCE = 1000
+DOWNLOAD_DIR = '/mnt/sda/download'
+OUTPUT_DIR = f'/mnt/sda/results/{gpu_name}/{folder_indicator}'
+PREDICTOR_PATH = 'predictor_5_28'
+MAX_NUM_SEQUENCE = 10000
 MAX_NUM_ITERATION = 10
 
 # Test cases
@@ -46,22 +44,23 @@ DYNAMIC_TILE_SKIP = True
 
 
 def load_gsm8k(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('gsm8k', 'main')['train']
+    dataset = load_dataset('gsm8k', 'main', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'question', 'answer', tokenizer)
 
 
 def load_humaneval(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('openai_humaneval')['test']
+    dataset = load_dataset('openai_humaneval', cache_dir=DOWNLOAD_DIR)['test']
     return process_dataset(dataset, 'prompt', 'canonical_solution', tokenizer)
 
 
 def load_alpaca(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('tatsu-lab/alpaca')['train']
+    dataset = load_dataset('tatsu-lab/alpaca', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'instruction', 'output', tokenizer, input_key='input')
 
 
 def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('philschmid/mt-bench')['train']
+    dataset = load_dataset('philschmid/mt-bench',
+                           cache_dir=DOWNLOAD_DIR)['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
@@ -76,7 +75,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
-    with open(f'{DATASET_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open(f'{DOWNLOAD_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     dataset = [data for data in dataset if len(data["conversations"]) >= 2]
@@ -92,7 +91,7 @@ def load_sharegpt(tokenizer: PreTrainedTokenizerBase):
 
 
 def load_apps(tokenizer: PreTrainedTokenizerBase):
-    dataset = load_dataset('codeparrot/apps')['train']
+    dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'question', 'solutions', tokenizer)
 
 
@@ -256,6 +255,7 @@ def save_results_to_csv(throughputs_mean, throughputs_std, args):
 def benchmark(args):
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
+    args.use_lookup_table = True
 
     llm = SpSLLM(
         target_model=args.target_model,
@@ -274,7 +274,7 @@ def benchmark(args):
         seed=args.seed,
         trust_remote_code=args.trust_remote_code,
         dtype=args.dtype,
-        download_dir=MODEL_DIR
+        download_dir=DOWNLOAD_DIR
     )
 
     if args.dataset == "all":
@@ -300,15 +300,19 @@ def benchmark(args):
     cleaned_temperature = str(args.temperature).replace(".", "_")
 
     if args.use_lookup_table:
-        predictor_path = f"{PREDICTOR_PATH}/lookup_{args.predictor_agg_type}_{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}.csv"
+        predictor_path = f"{PREDICTOR_PATH}/lookup_{args.predictor_agg_type}_{cleaned_target_model}_{cleaned_draft_model}_{args.dataset}"
     else:
         predictor_path = f"{PREDICTOR_PATH}/predictor_degree{args.predictor_degree}_{args.predictor_agg_type}_{cleaned_target_model}_{cleaned_draft_model}_{cleaned_temperature}_{args.dataset}.csv"
     # predictor_path = f"{PREDICTOR_PATH}/predictor_degree2_median_opt-6.7b_opt-125m_0_0_apps.csv"
     llm.llm_engine.workers[0].draft_optimizer.initialize(predictor_path)
 
     if llm.llm_engine.workers[0].draft_optimizer.retrain:
-        pretrain(llm, requests, args)
+        for temperature in [0, 0.25, 0.5, 0.75, 1.0]:
+            pretrain(llm, requests, args, temperature)
         llm.llm_engine.workers[0].draft_optimizer.save_predictor()
+
+    import sys
+    sys.exit()
 
     throughputs_mean = {f"static_{i}": [] for i in range(8)}
     throughputs_mean.update({"static_tile": [], "dynamic": [], "dynamic_tile_cut": [], "dynamic_tile_skip": []})
@@ -366,8 +370,8 @@ def benchmark(args):
 
     save_results_to_csv(throughputs_mean, throughputs_std, args)
 
-def pretrain(llm, requests, args):
-    print("Pretraining the predictor...")
+def pretrain(llm, requests, args, temperature):
+    print("Pretraining the predictor... for temperature: ", temperature)
     llm.llm_engine.sps_config.use_dynamic_draft_size = False
     llm.llm_engine.sps_config.use_tile_constraint = "none"
     llm.llm_engine.scheduler.num_batched_tokens = []
@@ -383,7 +387,7 @@ def pretrain(llm, requests, args):
         for prompt, _, output_len in sampled_requests:
             sampling_params = SamplingParams(
                 n=1,
-                temperature=args.temperature,
+                temperature=temperature,
                 top_p=1.0,
                 use_beam_search=False,
                 ignore_eos=True,
@@ -504,7 +508,7 @@ def main(args: argparse.Namespace):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of requests till completion.')
-    parser.add_argument("--dataset", type=str, default="humaneval",
+    parser.add_argument("--dataset", type=str, default="alpaca",
                         choices=["gsm8k", "humaneval", "alpaca",
                                  "mt-bench", "sharegpt", "apps", "all"],
                         help="Dataset to use.")
@@ -516,7 +520,7 @@ if __name__ == '__main__':
                         choices=["none", "cut-128"])
     parser.add_argument('--use-lazy-draft-kv-cache', action='store_true')
     parser.add_argument('--predictor-degree', type=int, default=3)
-    parser.add_argument('--predictor-agg-type', type=str, default='mean')
+    parser.add_argument('--predictor-agg-type', type=str, default='median')
     parser.add_argument('--use-lookup-table', action='store_true')
     parser.add_argument('--use-target-attention', action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)

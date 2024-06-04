@@ -185,12 +185,11 @@ class SpSWorker:
     def _process_draft_model_outputs(
         self,
         outputs: SamplerOutput,
-        running_seq_group_metadata_list: List[SequenceGroupMetadata],
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ):
-        running_seq_list: List[Sequence] = []
+        seq_list: List[Sequence] = []
         # Update the sequence groups with the model outputs.
-        for seq_group_metadata, output in zip(running_seq_group_metadata_list, outputs):
+        for seq_group_metadata, output in zip(seq_group_metadata_list, outputs):
             seq_group = seq_group_metadata.seq_group
             assert seq_group is not None    # seq_group must be set.
             # We assume that SpS engine does not use beam search.
@@ -215,15 +214,10 @@ class SpSWorker:
                 child_sample.probs
             )
             
-            running_seq_list.append(parent_seq)
-
-        seq_list: List[Sequence] = []
-        for seq_group_metadata in seq_group_metadata_list:
-            parent_seq = seq_group_metadata.seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
             seq_list.append(parent_seq)
         
         nvtx.range_push("update_draft_size_seq")
-        self.draft_optimizer.update_draft_size_seq(running_seq_list, seq_list)
+        self.draft_optimizer.update_draft_size_seq(seq_list)
         nvtx.range_pop()
 
         for seq, seq_group_metadata in zip(seq_list, seq_group_metadata_list):
@@ -352,26 +346,23 @@ class SpSWorker:
         while True:
             # Filter seq_group_metadata_list to remove seq_group_metadata where draft_size equals draft_iteration
             # Note: It's possible for the initial assigned draft size to be 0.
-            running_seq_group_metadata_list = [
-                seq_group_metadata
-                for seq_group_metadata in seq_group_metadata_list 
-                if seq_group_metadata.draft_size > (
-                    seq_group_metadata.seq_group.get_seqs(
+            num_running_seq = 0
+            for seq_group_metadata in seq_group_metadata_list:
+                if seq_group_metadata.draft_size > seq_group_metadata.seq_group.get_seqs(
                         status=SequenceStatus.RUNNING
-                    )[0].get_draft_len()
-                )
-            ]
+                    )[0].get_draft_len():
+                    num_running_seq += 1
 
             # Break the loop if seq_group_metadata_list is empty
-            if not running_seq_group_metadata_list:
+            if num_running_seq == 0:
                 break
 
             # Execute the model and process the outputs
             nvtx.range_push("runner.execute_model")
-            outputs = self.draft_model_runner.execute_model(running_seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
+            outputs = self.draft_model_runner.execute_model(seq_group_metadata_list, self.draft_gpu_cache, cache_events)                        
             nvtx.range_pop()
             nvtx.range_push("process_draft_model_outputs")
-            self._process_draft_model_outputs(outputs, running_seq_group_metadata_list, seq_group_metadata_list)
+            self._process_draft_model_outputs(outputs, seq_group_metadata_list)
             nvtx.range_pop()
             cache_events = None
 

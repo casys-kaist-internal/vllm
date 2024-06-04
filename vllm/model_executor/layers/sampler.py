@@ -630,9 +630,9 @@ def _sps_sample(
         torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
     # This part is for accepting all draft tokens with prob 1 
-    # accepted = torch.where(
-    #     torch.full_like(accept_prob, 0.5) < accept_prob,
-    #     torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
+    accepted = torch.where(
+        torch.full_like(accept_prob, 0.5) < accept_prob,
+        torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
     # cumulative sum
     accepted.cumsum_(dim=1)
