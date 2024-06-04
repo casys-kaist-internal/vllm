@@ -1,6 +1,6 @@
 # Should be mirrored in pyproject.toml
 ninja
 packaging
-setuptools>=49.4.0
+setuptools>=49.4.0,<70
 torch==2.1.0
 wheel
