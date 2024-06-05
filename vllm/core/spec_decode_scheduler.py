@@ -118,12 +118,13 @@ class SpecDecodeScheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.swapped)
 
-    def update_draft_target_queues(self, stage: SpecDecodeStage) -> None:
-        if stage == SpecDecodeStage.DRAFT_DECODE:
-            self.need_to_run_target += self.need_to_run_draft
+    def update_draft_target_queues(self, spec_decode_stage: SpecDecodeStage) -> None:
+        # swap the sequence groups between draft and target queues
+        if spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+            self.need_to_run_target = self.need_to_run_draft
             self.need_to_run_draft = []
-        elif stage == SpecDecodeStage.TARGET_DECODE:
-            self.need_to_run_draft += self.need_to_run_target
+        elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            self.need_to_run_draft = self.need_to_run_target
             self.need_to_run_target = []
 
     def _schedule(self) -> SpecDecodeSchedulerOutputs:
@@ -324,6 +325,9 @@ class SpecDecodeScheduler:
         # such as self.need_to_run_target, self.need_to_run_draft, self.swapped, and self.waiting.
         scheduler_outputs = self._schedule()
 
+        # Update the target draft queues for next schedule step
+        self.update_draft_target_queues(scheduler_outputs.spec_decode_stage)
+
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
@@ -355,9 +359,13 @@ class SpecDecodeScheduler:
         self.block_manager.free(seq)
 
     def free_finished_seq_groups(self) -> None:
-        # need_to_run_target cannot be freed.
         self.need_to_run_draft = [
             seq_group for seq_group in self.need_to_run_draft
+            if not seq_group.is_finished()
+        ]
+
+        self.need_to_run_target = [
+            seq_group for seq_group in self.need_to_run_target
             if not seq_group.is_finished()
         ]
 

@@ -9,7 +9,8 @@ from vllm.model_executor.parallel_utils.communication_op import (
 from vllm.model_executor.sampling_metadata import SamplingMetadata, SamplingTensors
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import (PromptLogprobs, SampleLogprobs, SamplerOutput,
-                           SequenceData, SequenceGroupOutput, SequenceOutput)
+                           SequenceData, SequenceGroupOutput, SequenceOutput, SpecDecodeStage)
+from vllm.utils import nvtx_range
 
 
 class Sampler(nn.Module):
@@ -90,12 +91,26 @@ class Sampler(nn.Module):
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
         # Sample the next tokens.
-        sample_results = _sample(probs, logprobs, sampling_metadata)
+        if sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT or sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+            sample_results = _sample(probs, logprobs, sampling_metadata)
+            accept_cnts = None
+
+        elif sampling_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            sample_results, accept_cnts, logprobs = _spec_decode_sample(
+                probs, sampling_metadata)
+
+        else:
+            raise ValueError(
+                f"Unsupported spec decode stage: {sampling_metadata.spec_decode_stage}"
+            )
+
         # Get the logprobs query results.
         prompt_logprobs, sample_logprobs = _get_logprobs(
             logprobs, sampling_metadata, sample_results)
+
         return _build_sampler_output(sample_results, sampling_metadata,
-                                     prompt_logprobs, sample_logprobs)
+                                     prompt_logprobs, sample_logprobs,
+                                     probs, accept_cnts)
 
 
 def _get_logits(hidden_states: torch.Tensor, embedding: torch.Tensor,
@@ -355,6 +370,7 @@ def _multinomial(
     return probs.div_(q).argmax(dim=1).view(-1, num_samples)
 
 
+@nvtx_range("_sample")
 def _sample(
     probs: torch.Tensor,
     logprobs: torch.Tensor,
@@ -420,6 +436,100 @@ def _sample(
         for i in range(len(sampling_metadata.seq_groups))
     ]
     return sample_results
+
+
+@nvtx_range("_spec_decode_sample")
+def _spec_decode_sample(
+    probs: torch.Tensor,
+    sampling_metadata: SamplingMetadata,
+) -> Tuple[List[Tuple[List[int], List[int]]], torch.Tensor, torch.Tensor]:
+
+    # Target lens includes one additional token just before draft tokens and draft tokens.
+    target_lens = sampling_metadata.target_lens
+    target_lens_minus_one = [l - 1 for l in target_lens]
+
+    # sampled_draft_token_ids: [seq_idx, target_lens_minus_one]
+    sampled_draft_token_ids = sampling_metadata.sampled_draft_token_ids
+
+    # target_probs: [seq_len, vocab_size] -> [seq_idx, target_lens, vocab_size]
+    target_probs = _reshape_and_pad(probs, target_lens, probs.size(-1))
+    del probs
+
+    # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
+    target_prob_for_sampled_draft_token = torch.gather(
+        target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
+    draft_probs = _reshape_and_pad(
+        sampling_metadata.draft_probs, target_lens_minus_one, target_probs.size(
+            -1)
+    )
+
+    # draft_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
+    draft_prob_for_sampled_draft_token = torch.gather(
+        draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # accept_probs: [seq_idx, target_lens_minus_one]
+    accept_prob = target_prob_for_sampled_draft_token.div_(
+        draft_prob_for_sampled_draft_token)
+    del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
+
+    # change inf or nan to 0
+    accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
+
+    random_prob = torch.rand_like(accept_prob)
+    # random_prob = torch.full_like(accept_prob, 0.5) # for testing
+
+    # accept is 0 and reject is 1
+    accepted = torch.where(
+        random_prob < accept_prob,
+        torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
+
+    # cumulative sum
+    accepted.cumsum_(dim=1)
+
+    # create a mask that contains 1 until the first reject
+    accepted = (accepted == 0)
+
+    # accept_cnts: [seq_idx]
+    accept_cnts = torch.sum(accepted, dim=1)
+    del accepted
+
+    target_lens_tensor = torch.tensor(
+        target_lens_minus_one, device=accept_cnts.device)
+    all_accept_mask = (accept_cnts == target_lens_tensor)
+
+    # make accept_cnt 0 for all accepted sequences.
+    masked_accept_cnt = accept_cnts.clone()
+    masked_accept_cnt[all_accept_mask] = 0
+
+    # target_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
+    # draft_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
+    indices = torch.arange(masked_accept_cnt.size(
+        0)).long().to(masked_accept_cnt.device)
+    target_prob_at_reject_idx = target_probs[indices,
+                                             masked_accept_cnt, :].squeeze(1)
+    draft_prob_at_reject_idx = draft_probs[indices, masked_accept_cnt, :].squeeze(
+        1)
+    del masked_accept_cnt
+
+    # modified_rejection_prob: [seq_idx, vocab_size]
+    modified_rejection_prob = _get_modified_rejection_prob(
+        target_prob_at_reject_idx, draft_prob_at_reject_idx)
+    del target_prob_at_reject_idx, draft_prob_at_reject_idx
+
+    # recover to original probability for all accepted sequences
+    indices = torch.arange(all_accept_mask.size(
+        0)).long().to(all_accept_mask.device)
+    modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
+                                                               target_lens_tensor, :][all_accept_mask].squeeze(1)
+    modified_rejection_logprobs = torch.log(modified_rejection_prob)
+    del target_probs, draft_probs, target_lens_tensor
+
+    sample_results = _sample(modified_rejection_prob,
+                             modified_rejection_logprobs, sampling_metadata)
+
+    return sample_results, accept_cnts, modified_rejection_logprobs
 
 
 def _get_logprobs(
@@ -536,25 +646,69 @@ def _get_logprobs(
     return result_prompt_logprobs, result_sample_logprobs
 
 
+@nvtx_range("_build_sampler_output")
 def _build_sampler_output(
     sample_results: List[Tuple[List[int], List[int]]],
     sampling_metadata: SamplingMetadata,
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
+    draft_probs: Optional[torch.Tensor] = None,
+    accept_cnts: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
-    for (seq_group, sample_result, group_prompt_logprobs,
-         group_sample_logprobs) in zip(sampling_metadata.seq_groups,
-                                       sample_results, prompt_logprobs,
-                                       sample_logprobs):
+    for (idx, (seq_group, sample_result, group_prompt_logprobs,
+         group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
+                                                  sample_results, prompt_logprobs,
+                                                  sample_logprobs)):
         seq_ids, _ = seq_group
         next_token_ids, parent_ids = sample_result
         seq_outputs = []
         for parent_id, next_token_id, logprobs in zip(parent_ids,
                                                       next_token_ids,
                                                       group_sample_logprobs):
-            seq_outputs.append(
-                SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
+            if sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
+            elif sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, draft_probs=draft_probs[idx]))
+            elif sampling_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+                seq_outputs.append(
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnts[idx]))
+            else:
+                raise ValueError(
+                    f"Unsupported spec decode stage: {sampling_metadata.spec_decode_stage}"
+                )
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
     return sampler_output
+
+
+@nvtx_range("_reshape_and_pad")
+def _reshape_and_pad(
+        x: torch.Tensor,
+        lens: List[int],
+        vocab_size: int
+):
+    max_size = max(lens)
+    padded_x = torch.zeros(
+        (len(lens), max_size, vocab_size), device=x.device)
+
+    idx = 0
+    for i, size in enumerate(lens):
+        padded_x[i, :size, :x.size(-1)] = x[idx:idx + size]
+        idx += size
+
+    return padded_x
+
+
+@nvtx_range("_get_modified_rejection_prob")
+def _get_modified_rejection_prob(
+    target_prob: torch.Tensor,
+    draft_prob: torch.Tensor
+) -> torch.Tensor:
+    target_prob.sub_(draft_prob)
+    target_prob.clamp_(min=0)
+    x_max_sum = target_prob.sum(dim=-1, keepdim=True)
+    target_prob.div_(x_max_sum)
+    return target_prob

@@ -122,7 +122,7 @@ class SequenceData:
         self.draft_token_ids.clear()
         self.draft_logprobs.clear()
         self.draft_probs.clear()
-        self.draft_kv_cache_cnt = self.get_len()
+        self.draft_kv_cache_cnt = self.get_len() - 1
 
     def get_draft_len(self) -> int:
         return len(self.draft_token_ids)
@@ -147,6 +147,9 @@ class SequenceData:
             self.draft_kv_cache_cnt:]
 
         return uncached_draft_token_ids
+
+    def update_draft_kv_cache_cnt(self, cnt: int) -> None:
+        self.draft_kv_cache_cnt += cnt
 
     def get_uncached_draft_len(self) -> int:
         all_tokens_including_draft_len = len(self.get_token_ids()) + len(
@@ -495,10 +498,14 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        draft_probs: Optional[torch.Tensor] = None,
+        accept_cnt: Optional[int] = 0,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.draft_probs = draft_probs
+        self.accept_cnt = accept_cnt
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "

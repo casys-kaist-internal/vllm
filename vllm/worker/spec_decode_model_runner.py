@@ -168,6 +168,7 @@ class SpecDecodeModelRunner:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 draft_kv_cache_cnt = seq_data.draft_kv_cache_cnt
                 generation_tokens = seq_data.get_uncached_draft_token_ids()
+                seq_data.update_draft_kv_cache_cnt(len(generation_tokens))
                 draft_lens.append(len(generation_tokens))
 
                 for token in generation_tokens:

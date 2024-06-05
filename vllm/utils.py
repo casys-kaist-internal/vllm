@@ -4,6 +4,7 @@ import socket
 import uuid
 from platform import uname
 from typing import List
+from contextlib import contextmanager
 
 import psutil
 import torch
@@ -69,3 +70,22 @@ def get_open_port() -> int:
 
 def set_cuda_visible_devices(device_ids: List[int]) -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, device_ids))
+
+
+@contextmanager
+def nvtx_range(msg, *args, **kwargs):
+    """ 
+    Context manager / decorator that pushes an NVTX range at the beginning
+    of its scope, and pops it at the end. If extra arguments are given,
+    they are passed as arguments to msg.format().
+
+    If running with cuda graphs, you must enable nsys cuda graph profiling.
+
+    Arguments:
+        msg (string): message to associate with the range
+    """
+    torch.cuda.nvtx.range_push(msg.format(*args, **kwargs))
+    try:
+        yield
+    finally:
+        torch.cuda.nvtx.range_pop()

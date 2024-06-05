@@ -322,7 +322,8 @@ class SpecDecodeLLMEngine:
         # Create the sequences.
         block_size = self.cache_config.block_size
         seq_id = next(self.seq_counter)
-        seq = Sequence(seq_id, prompt, prompt_token_ids, block_size)
+        seq = Sequence(seq_id, prompt, prompt_token_ids,
+                       block_size, self.spec_decode_config.draft_size)
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
@@ -451,6 +452,12 @@ class SpecDecodeLLMEngine:
                 check_stop_cnt = 1
                 num_tokens_to_log_system_stats += (parent.get_len())
 
+            elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+                parent.append_draft_token_id(
+                    child_sample.output_token, child_sample.logprobs, child_sample.draft_probs
+                )
+                check_stop_cnt = 0
+
             elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
                 free_block_cnt = parent.accept_draft_tokens(
                     child_sample.accept_cnt
@@ -458,10 +465,10 @@ class SpecDecodeLLMEngine:
                 self.scheduler.block_manager.free_blocks(
                     parent, free_block_cnt
                 )
+                # modified_rejection token for not all accept case and bonus token for all accept case
                 parent.append_token_id(
                     child_sample.output_token, child_sample.logprobs
                 )
-
                 # If all accept, the bonus token don't have draft kv cache yet.
                 if parent.draft_size != child_sample.accept_cnt:
                     parent.data.draft_kv_cache_cnt += 1
@@ -496,16 +503,12 @@ class SpecDecodeLLMEngine:
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         num_tokens_to_log_system_stats = 0
 
-        # Update the target draft queues
-        self.scheduler.update_draft_target_queues(spec_decode_stage)
+        for seq_group, outputs in zip(scheduled_seq_groups, output):
+            num_tokens_to_log_system_stats += self._process_sequence_group_outputs(
+                seq_group, outputs, spec_decode_stage)
 
-        if spec_decode_stage == SpecDecodeStage.PROMPT or spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-            for seq_group, outputs in zip(scheduled_seq_groups, output):
-                num_tokens_to_log_system_stats += self._process_sequence_group_outputs(
-                    seq_group, outputs, spec_decode_stage)
-
-            # Free the finished sequence groups.
-            self.scheduler.free_finished_seq_groups()
+        # Free the finished sequence groups.
+        self.scheduler.free_finished_seq_groups()
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
@@ -533,31 +536,47 @@ class SpecDecodeLLMEngine:
         seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
         spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
 
-        print(f"spec_decode_stage: {spec_decode_stage}")
-        if not scheduler_outputs.is_empty():
-            # Execute the model.
-            if spec_decode_stage == SpecDecodeStage.PROMPT or spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-                output = self._run_target_worker(
+        # print(f"spec_decode_stage: {spec_decode_stage}")
+
+        if scheduler_outputs.is_empty():
+            return self._process_model_outputs([], scheduler_outputs, spec_decode_stage)
+
+        # Execute the model.
+        if spec_decode_stage == SpecDecodeStage.PROMPT or spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            # Execute the target model in the ray process
+            output = self._run_target_worker(
+                "execute_model",
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            )
+
+            result = self._process_model_outputs(
+                output, scheduler_outputs, spec_decode_stage)
+
+        elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+            for _ in range(self.spec_decode_config.draft_size):
+                # Execute the draft model in the same process
+                output = self._run_draft_worker(
                     "execute_model",
                     seq_group_metadata_list=seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 )
+                scheduler_outputs.blocks_to_swap_in = {}
+                scheduler_outputs.blocks_to_swap_out = {}
+                scheduler_outputs.blocks_to_copy = {}
 
-            elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-                output = self._run_draft_worker(
-                    "execute_multi_step_model",
-                    seq_group_metadata_list=seq_group_metadata_list,
-                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                )
+                result = self._process_model_outputs(
+                    output, scheduler_outputs, spec_decode_stage)
 
         else:
-            output = []
+            raise ValueError(
+                f"Invalid SpecDecodeStage: {spec_decode_stage}")
 
-        return self._process_model_outputs(output, scheduler_outputs, spec_decode_stage)
+        return result
 
     def _log_system_stats(
         self,
@@ -675,7 +694,7 @@ class SpecDecodeLLMEngine:
             return
 
         # Check if the sequence has reached max_tokens.
-        if seq.get_output_len() == sampling_params.max_tokens:
+        if seq.get_output_len() >= sampling_params.max_tokens:
             seq.status = SequenceStatus.FINISHED_LENGTH_CAPPED
             return
 
