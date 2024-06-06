@@ -12,7 +12,7 @@ from vllm.model_executor.parallel_utils.communication_op import (
     broadcast, broadcast_object_list)
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata, SpecDecodeStage
-from vllm.utils import in_wsl
+from vllm.utils import in_wsl, nvtx_range
 
 logger = init_logger(__name__)
 
@@ -71,6 +71,7 @@ class SpecDecodeModelRunner:
         self.graph_block_tables = np.zeros(
             (max(_BATCH_SIZES_TO_CAPTURE), max_num_blocks), dtype=np.int32)
 
+    @nvtx_range("_prepare_prompt")
     def _prepare_prompt(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -148,6 +149,7 @@ class SpecDecodeModelRunner:
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
+    @nvtx_range("_prepare_draft_decode")
     def _prepare_draft_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -264,6 +266,7 @@ class SpecDecodeModelRunner:
         )
         return input_tokens, input_positions, input_metadata, draft_lens
 
+    @nvtx_range("_prepare_target_decode")
     def _prepare_target_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -379,6 +382,7 @@ class SpecDecodeModelRunner:
         )
         return input_tokens, input_positions, input_metadata, target_lens
 
+    @nvtx_range("_prepare_sample")
     def _prepare_sample(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -492,6 +496,7 @@ class SpecDecodeModelRunner:
         )
         return sampling_metadata
 
+    @nvtx_range("prepare_input_tensors")
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],

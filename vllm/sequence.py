@@ -6,6 +6,7 @@ import torch
 
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
+from vllm.utils import nvtx_range
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
@@ -294,6 +295,7 @@ class Sequence:
         return new_seq
 
     # Spec Decode
+    @nvtx_range("append_draft_token_id")
     def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
                               probs: torch.Tensor) -> None:
         assert token_id in logprobs

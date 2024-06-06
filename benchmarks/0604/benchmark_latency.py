@@ -108,7 +108,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-beam-search', action='store_true')
     parser.add_argument('--num-iters',
                         type=int,
-                        default=3,
+                        default=1,
                         help='Number of iterations to run.')
     parser.add_argument('--trust-remote-code',
                         action='store_true',

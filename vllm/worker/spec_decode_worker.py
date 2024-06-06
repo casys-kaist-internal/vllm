@@ -15,6 +15,7 @@ from vllm.model_executor.parallel_utils.parallel_state import (
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata, SequenceStatus
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.spec_decode_model_runner import SpecDecodeModelRunner
+from vllm.utils import nvtx_range
 
 
 class SpecDecodeWorker:
@@ -133,6 +134,7 @@ class SpecDecodeWorker:
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
 
+    @nvtx_range("cache_swap")
     def cache_swap(
         self,
         blocks_to_swap_in: Dict[int, int],

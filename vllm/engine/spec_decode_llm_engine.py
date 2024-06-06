@@ -503,16 +503,17 @@ class SpecDecodeLLMEngine:
 
             child_seqs.append((parent, parent, check_stop_cnt))
 
-        for seq, _, check_stop_cnt in child_seqs:
-            self._decode_sequence(seq, seq_group.sampling_params)
-            self._check_stop(
-                seq, seq_group.sampling_params, check_stop_cnt)
+        if spec_decode_stage != SpecDecodeStage.DRAFT_DECODE:
+            for seq, _, check_stop_cnt in child_seqs:
+                self._decode_sequence(seq, seq_group.sampling_params)
+                self._check_stop(
+                    seq, seq_group.sampling_params, check_stop_cnt)
 
-        # Free the finished and selected parent sequences' memory in block
-        # manager. Keep them in the sequence group as candidate output.
-        for seq, parent, _ in child_seqs:
-            if seq is parent and seq.is_finished():
-                self.scheduler.free_seq(seq)
+            # Free the finished and selected parent sequences' memory in block
+            # manager. Keep them in the sequence group as candidate output.
+            for seq, parent, _ in child_seqs:
+                if seq is parent and seq.is_finished():
+                    self.scheduler.free_seq(seq)
 
         return num_tokens_to_log_system_stats
 
@@ -756,28 +757,3 @@ class SpecDecodeLLMEngine:
         target_worker_output = ray.get(target_worker_output)
 
         return target_worker_output
-
-    # def _run_target_worker(
-    #     self,
-    #     method: str,
-    #     *args,
-    #     **kwargs,
-    # ) -> Any:
-    #     """Runs the given method on target worker"""
-    #     # Start the ray worker.
-    #     method = "compute_hidden_states"
-    #     target_worker_output = self.target_worker.execute_method.remote(
-    #         method, *args, **kwargs)
-
-    #     # Get the results of the ray worker
-    #     target_worker_output = ray.get(target_worker_output)
-
-    #     hidden_states = target_worker_output[0]
-    #     sampling_metadata = target_worker_output[1]
-
-    #     # Run sampler on the driver worker
-    #     method = "execute_sampler"
-    #     draft_worker_output = getattr(self.draft_worker,
-    #                                   method)(hidden_states, sampling_metadata)
-
-    #     return draft_worker_output
