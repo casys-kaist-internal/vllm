@@ -34,7 +34,7 @@ class SamplingMetadata:
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Optional[Dict[SamplingType, torch.Tensor]],
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
-        draft_probs: Optional[torch.Tensor] = None,
+        draft_probs_tensor: Optional[torch.Tensor] = None,
         perform_sampling: bool = True,
     ) -> None:
         self.seq_groups = seq_groups
@@ -45,7 +45,7 @@ class SamplingMetadata:
         self.selected_token_indices = selected_token_indices
         self.categorized_sample_indices = categorized_sample_indices
         self.sampled_draft_token_ids = sampled_draft_token_ids
-        self.draft_probs = draft_probs
+        self.draft_probs_tensor = draft_probs_tensor
         self.perform_sampling = perform_sampling
 
         self.num_prompts = len(prompt_lens) if prompt_lens is not None else 0

@@ -169,6 +169,7 @@ class SpecDecodeModelRunner:
             for seq_id in seq_ids:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 draft_kv_cache_cnt = seq_data.draft_kv_cache_cnt
+
                 generation_tokens = seq_data.get_uncached_draft_token_ids()
                 seq_data.update_draft_kv_cache_cnt(len(generation_tokens))
                 draft_lens.append(len(generation_tokens))
@@ -389,6 +390,7 @@ class SpecDecodeModelRunner:
         prompt_lens: List[int],
         draft_lens: List[int],
         target_lens: List[int],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
@@ -396,7 +398,6 @@ class SpecDecodeModelRunner:
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
         sampled_draft_token_ids: List[List[int]] = []
-        draft_probs: List[torch.Tensor] = []
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
         for i, seq_group_metadata in enumerate(seq_group_metadata_list):
@@ -439,6 +440,8 @@ class SpecDecodeModelRunner:
                 categorized_sample_indices_start_idx += num_seqs
 
             elif seq_group_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+                assert draft_probs_tensor is not None
+
                 num_seqs = len(seq_ids)
                 target_len = target_lens[i]
                 selected_token_indices.extend(
@@ -454,7 +457,6 @@ class SpecDecodeModelRunner:
                 draft_token_ids = seq_data.get_draft_token_ids()
                 assert len(draft_token_ids) == target_len - 1
                 sampled_draft_token_ids.append(draft_token_ids)
-                draft_probs.extend(seq_data.get_draft_probs())
 
             else:
                 raise ValueError(f"Invalid spec decode stage: "
@@ -472,16 +474,16 @@ class SpecDecodeModelRunner:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
-        if draft_probs:
+        if seq_group_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             sampled_draft_token_ids = _make_tensor_with_pad(sampled_draft_token_ids,
                                                             max_len=max(
                                                                 target_lens) - 1,
                                                             pad=0,
                                                             dtype=torch.long)
-            draft_probs = torch.stack(draft_probs, dim=0)
+            sampled_draft_token_ids.to(device="cuda", non_blocking=True)
         else:
             sampled_draft_token_ids = None
-            draft_probs = None
+            draft_probs_tensor = None
 
         sampling_metadata = SamplingMetadata(
             seq_groups=seq_groups,
@@ -492,7 +494,7 @@ class SpecDecodeModelRunner:
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
-            draft_probs=draft_probs
+            draft_probs_tensor=draft_probs_tensor
         )
         return sampling_metadata
 
@@ -500,6 +502,7 @@ class SpecDecodeModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, SamplingMetadata]:
         spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
         # Prepare input tensors.
@@ -520,7 +523,8 @@ class SpecDecodeModelRunner:
                 f"Invalid spec decode stage: {spec_decode_stage}")
 
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
-                                                 prompt_lens, draft_lens, target_lens)
+                                                 prompt_lens, draft_lens, target_lens,
+                                                 draft_probs_tensor)
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
 
@@ -529,9 +533,10 @@ class SpecDecodeModelRunner:
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[Tuple[torch.Tensor, torch.Tensor]],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
         input_tokens, input_positions, input_metadata, sampling_metadata = (
-            self.prepare_input_tensors(seq_group_metadata_list))
+            self.prepare_input_tensors(seq_group_metadata_list, draft_probs_tensor))
         # Execute the model.
         if input_metadata.use_cuda_graph:
             graph_batch_size = input_tokens.shape[0]
@@ -755,13 +760,14 @@ def _pad_to_max(x: List[int], max_len: int, pad: int) -> List[int]:
     return x + [pad] * (max_len - len(x))
 
 
+@nvtx_range("_make_tensor_with_pad")
 def _make_tensor_with_pad(
     x: List[List[int]],
     max_len: int,
     pad: int,
     dtype: torch.dtype,
     device: Union[str, torch.device] = "cuda",
-    pin_memory: bool = False,
+    pin_memory: bool = True,
 ) -> torch.Tensor:
     padded_x = [_pad_to_max(x_i, max_len, pad) for x_i in x]
     return torch.tensor(padded_x,

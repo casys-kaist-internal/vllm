@@ -1,6 +1,7 @@
 import enum
 import time
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union, OrderedDict
+from collections import OrderedDict
 
 from vllm.config import CacheConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.core.spec_decode_block_manager import SpecDecodeAllocStatus, SpecDecodeBlockSpaceManager
@@ -333,7 +334,7 @@ class SpecDecodeScheduler:
         # Create input data structures.
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for seq_group in scheduler_outputs.scheduled_seq_groups:
-            seq_data: Dict[int, SequenceData] = {}
+            seq_data: OrderedDict[int, SequenceData] = OrderedDict()
             block_tables: Dict[int, List[int]] = {}
 
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]

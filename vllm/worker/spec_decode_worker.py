@@ -168,6 +168,7 @@ class SpecDecodeWorker:
         blocks_to_swap_in: Optional[Dict[int, int]] = None,
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
         assert seq_group_metadata_list is not None
         num_seq_groups = len(seq_group_metadata_list)
@@ -184,7 +185,7 @@ class SpecDecodeWorker:
             return {}
 
         output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+                                                 self.gpu_cache, draft_probs_tensor)
         return output
 
 

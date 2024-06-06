@@ -15,7 +15,7 @@ from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup,
+from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup, SequenceGroupMetadata,
                            SequenceGroupOutput, SequenceOutput, SequenceStatus, SpecDecodeStage)
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
@@ -113,6 +113,12 @@ class SpecDecodeLLMEngine:
         if ray_usage != "1":
             os.environ["RAY_USAGE_STATS_ENABLED"] = "0"
         self._init_workers_ray(placement_group)
+        ray.put("dummy")
+
+        # Draft_probs that should be sent to target worker when target decode
+        self.draft_probs_dict = defaultdict(list)
+        self.draft_probs_tensor = torch.zeros(64, 7, 50272)
+        self.draft_probs_tensor_ref = ray.put(self.draft_probs_tensor)
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
@@ -136,7 +142,7 @@ class SpecDecodeLLMEngine:
         runtime_env.update({
             "nsight": {
                 "t": "cuda,cudnn,cublas,nvtx",
-                "o": "'worker_process_%p'",
+                "gpu-metrics-device": "0",
                 "cuda-graph-trace": "node",
             }
         })
@@ -232,6 +238,15 @@ class SpecDecodeLLMEngine:
 
         self._run_target_worker("init_model")
         self._run_target_worker("load_model")
+
+    def _init_draft_probs(self, draft_size: int) -> None:
+        # draft_probs: [max_seqs, draft_size, vocab_size]
+        self.draft_probs = torch.zeros(
+            64,
+            draft_size,
+            self.tokenizer.vocab_size,
+            device="cuda",
+        )
 
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
@@ -475,9 +490,11 @@ class SpecDecodeLLMEngine:
 
             elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
                 parent.append_draft_token_id(
-                    child_sample.output_token, child_sample.logprobs, child_sample.draft_probs
+                    child_sample.output_token, child_sample.logprobs
                 )
                 check_stop_cnt = 0
+                self.draft_probs_dict[parent.seq_id].append(
+                    child_sample.draft_probs)
 
             elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
                 free_block_cnt = parent.accept_draft_tokens(
@@ -495,6 +512,7 @@ class SpecDecodeLLMEngine:
                     parent.data.draft_kv_cache_cnt += 1
 
                 check_stop_cnt = (child_sample.accept_cnt + 1)
+                self.draft_probs_dict[parent.seq_id].clear()
                 num_tokens_to_log_system_stats += (child_sample.accept_cnt + 1)
 
             else:
@@ -547,6 +565,19 @@ class SpecDecodeLLMEngine:
 
         return request_outputs
 
+    @nvtx_range("_make_draft_probs_tensor")
+    def _make_draft_probs_tensor(self,
+                                 seq_group_metadata_list: List[SequenceGroupMetadata]) -> torch.Tensor:
+        draft_probs_list = []
+        for seq_group_metadata in seq_group_metadata_list:
+            keys = list(seq_group_metadata.seq_data.keys())
+            assert len(keys) == 1
+            seq_id = keys[0]
+            draft_probs = self.draft_probs_dict[seq_id]
+            draft_probs_list.extend(draft_probs)
+        draft_probs_tensor = torch.stack(draft_probs_list)
+        return draft_probs_tensor
+
     @nvtx_range("step")
     def step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
@@ -560,17 +591,18 @@ class SpecDecodeLLMEngine:
         seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
         spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
 
-        # print(f"spec_decode_stage: {spec_decode_stage}")
-
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs, spec_decode_stage)
 
         # Execute the model.
-        if spec_decode_stage == SpecDecodeStage.PROMPT or spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+        if spec_decode_stage == SpecDecodeStage.PROMPT:
             # Execute the target model in the ray process
+            seq_group_metadata_list_ref = ray.put(
+                seq_group_metadata_list)
+
             output = self._run_target_worker(
                 "execute_model",
-                seq_group_metadata_list=seq_group_metadata_list,
+                seq_group_metadata_list=seq_group_metadata_list_ref,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
@@ -595,6 +627,29 @@ class SpecDecodeLLMEngine:
 
                 result = self._process_model_outputs(
                     output, scheduler_outputs, spec_decode_stage)
+
+        elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            # Make draft_probs tensor
+            draft_probs_tensor = self._make_draft_probs_tensor(
+                seq_group_metadata_list)
+
+            torch.cuda.nvtx.range_push("metadata put")
+            seq_group_metadata_list_ref = ray.put(
+                seq_group_metadata_list)
+            torch.cuda.nvtx.range_pop()
+
+            # Execute the target model in the ray process
+            output = self._run_target_worker(
+                "execute_model",
+                seq_group_metadata_list=seq_group_metadata_list_ref,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                draft_probs_tensor=draft_probs_tensor
+            )
+
+            result = self._process_model_outputs(
+                output, scheduler_outputs, spec_decode_stage)
 
         else:
             raise ValueError(
@@ -728,7 +783,7 @@ class SpecDecodeLLMEngine:
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
 
-    @nvtx_range("_run_draft_worker")
+    @ nvtx_range("_run_draft_worker")
     def _run_draft_worker(
         self,
         method: str,
@@ -741,7 +796,7 @@ class SpecDecodeLLMEngine:
 
         return draft_worker_output
 
-    @nvtx_range("_run_target_worker")
+    @ nvtx_range("_run_target_worker")
     def _run_target_worker(
         self,
         method: str,

@@ -1,7 +1,7 @@
 """Sequence and its related classes."""
 import copy
 import enum
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple, OrderedDict
 import torch
 
 from vllm.block import LogicalTokenBlock
@@ -79,7 +79,6 @@ class SequenceData:
 
         self.draft_token_ids: List[int] = []
         self.draft_logprobs: List[float] = []
-        self.draft_probs: List[torch.Tensor] = []
         self.draft_kv_cache_cnt = 0  # the numer of tokens that are cached with draft KV cache
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
@@ -109,11 +108,9 @@ class SequenceData:
         return self.output_token_ids[-count:]
 
     # Spec Decode
-    def append_draft_token_id(self, token_id: int, logprobs: float,
-                              probs: torch.Tensor) -> None:
+    def append_draft_token_id(self, token_id: int, logprobs: float) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_logprobs.append(logprobs)
-        self.draft_probs.append(probs)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
         for i in range(accept_cnt):
@@ -122,7 +119,6 @@ class SequenceData:
 
         self.draft_token_ids.clear()
         self.draft_logprobs.clear()
-        self.draft_probs.clear()
         self.draft_kv_cache_cnt = self.get_len() - 1
 
     def get_draft_len(self) -> int:
@@ -130,9 +126,6 @@ class SequenceData:
 
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
-
-    def get_draft_probs(self) -> List[torch.Tensor]:
-        return self.draft_probs
 
     def get_draft_prob_for_tokens(self) -> List[float]:
         result = []
@@ -296,12 +289,11 @@ class Sequence:
 
     # Spec Decode
     @nvtx_range("append_draft_token_id")
-    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
-                              probs: torch.Tensor) -> None:
+    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float]) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id])
 
     def accept_draft_tokens(self, accept_cnt: int) -> int:
         assert self.draft_size == self.get_draft_len()
@@ -469,7 +461,7 @@ class SequenceGroupMetadata:
         self,
         request_id: str,
         is_prompt: bool,
-        seq_data: Dict[int, SequenceData],
+        seq_data: OrderedDict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
         spec_decode_stage: Optional[SpecDecodeStage] = None,
@@ -546,4 +538,4 @@ class SequenceGroupOutput:
 
 # For each sequence group, we generate a list of SequenceOutput object,
 # each of which contains one possible candidate for the next token.
-SamplerOutput = List[SequenceGroupOutput]
+SamplerOutput = Tuple[List[SequenceGroupOutput], torch.Tensor]

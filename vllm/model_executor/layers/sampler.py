@@ -87,6 +87,7 @@ class Sampler(nn.Module):
         # We use float32 for probabilities and log probabilities.
         # Compute the probabilities.
         probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+
         # Compute the log probabilities.
         # Use log_softmax to ensure numerical stability.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
@@ -462,7 +463,7 @@ def _spec_decode_sample(
 
     # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
     draft_probs = _reshape_and_pad(
-        sampling_metadata.draft_probs, target_lens_minus_one, target_probs.size(
+        sampling_metadata.draft_probs_tensor, target_lens_minus_one, target_probs.size(
             -1)
     )
 
@@ -658,6 +659,7 @@ def _build_sampler_output(
     accept_cnts: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
+
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
                                                   sample_results, prompt_logprobs,
