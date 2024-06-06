@@ -180,6 +180,7 @@ _build/
 
 # nsight systems
 *.nsys
+*.nsys-rep
 benchmarks/nsight/*
 benchmarks/*.json
 benchmarks/figures/*.txt

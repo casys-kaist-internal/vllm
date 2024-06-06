@@ -8,6 +8,7 @@ from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceStatus, SpecDecodeStage)
+from vllm.utils import nvtx_range
 
 logger = init_logger(__name__)
 
@@ -319,6 +320,7 @@ class SpecDecodeScheduler:
         )
         return scheduler_outputs
 
+    @nvtx_range("SpecDecodeScheduler::schedule")
     def schedule(self) -> Tuple[List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler

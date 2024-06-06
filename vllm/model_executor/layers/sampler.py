@@ -32,6 +32,7 @@ class Sampler(nn.Module):
         super().__init__()
         self.vocab_size = vocab_size
 
+    @nvtx_range("sampler forward")
     def forward(
         self,
         embedding: torch.Tensor,
@@ -353,6 +354,7 @@ def _beam_search_sample(
 # Note that we always sample with replacement.
 # probs will be modified in place, but this is fine, as we pass
 # in a copy already.
+@nvtx_range("_multinomial")
 def _multinomial(
     probs: torch.Tensor,
     num_samples: int,
@@ -453,7 +455,6 @@ def _spec_decode_sample(
 
     # target_probs: [seq_len, vocab_size] -> [seq_idx, target_lens, vocab_size]
     target_probs = _reshape_and_pad(probs, target_lens, probs.size(-1))
-    del probs
 
     # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     target_prob_for_sampled_draft_token = torch.gather(
@@ -472,7 +473,7 @@ def _spec_decode_sample(
     # accept_probs: [seq_idx, target_lens_minus_one]
     accept_prob = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
-    del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
+    del probs, target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
@@ -532,6 +533,7 @@ def _spec_decode_sample(
     return sample_results, accept_cnts, modified_rejection_logprobs
 
 
+@nvtx_range("_get_logprobs")
 def _get_logprobs(
     logprobs: torch.Tensor,
     sampling_metadata: SamplingMetadata,

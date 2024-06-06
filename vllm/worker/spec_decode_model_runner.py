@@ -519,7 +519,7 @@ class SpecDecodeModelRunner:
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
 
-    @ torch.inference_mode()
+    @torch.inference_mode()
     def execute_model(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
@@ -547,7 +547,7 @@ class SpecDecodeModelRunner:
         )
         return output
 
-    @ torch.inference_mode()
+    @torch.inference_mode()
     def compute_hidden_states(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
@@ -569,7 +569,7 @@ class SpecDecodeModelRunner:
         )
         return [hidden_states, sampling_metadata]
 
-    @ torch.inference_mode()
+    @torch.inference_mode()
     def execute_sampler(
         self,
         hidden_states: torch.Tensor,
@@ -580,7 +580,7 @@ class SpecDecodeModelRunner:
             sampling_metadata=sampling_metadata,
         )
 
-    @ torch.inference_mode()
+    @torch.inference_mode()
     def profile_run(self) -> None:
         # Enable top-k sampling to reflect the accurate memory usage.
         vocab_size = self.model_config.get_vocab_size()
@@ -612,7 +612,7 @@ class SpecDecodeModelRunner:
         torch.cuda.synchronize()
         return
 
-    @ torch.inference_mode()
+    @torch.inference_mode()
     def capture_model(self, kv_caches: List[KVCache]) -> None:
         assert not self.model_config.enforce_eager
         logger.info("Capturing the model for CUDA graphs. This may lead to "

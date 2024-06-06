@@ -19,7 +19,7 @@ from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup,
                            SequenceGroupOutput, SequenceOutput, SequenceStatus, SpecDecodeStage)
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
-from vllm.utils import Counter, set_cuda_visible_devices, get_ip, get_open_port
+from vllm.utils import Counter, set_cuda_visible_devices, get_ip, get_open_port, nvtx_range
 
 if ray:
     from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -128,6 +128,21 @@ class SpecDecodeLLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
+    def _configure_ray_workers_use_nsight(self,
+                                          ray_remote_kwargs) -> Dict[str, Any]:
+        # If nsight profiling is enabled, we need to set the profiling
+        # configuration for the ray workers as runtime env.
+        runtime_env = ray_remote_kwargs.setdefault("runtime_env", {})
+        runtime_env.update({
+            "nsight": {
+                "t": "cuda,cudnn,cublas,nvtx",
+                "o": "'worker_process_%p'",
+                "cuda-graph-trace": "node",
+            }
+        })
+
+        return ray_remote_kwargs
+
     def _init_workers_ray(self, placement_group: "PlacementGroup",
                           **ray_remote_kwargs):
         assert self.parallel_config.tensor_parallel_size == 1
@@ -135,6 +150,11 @@ class SpecDecodeLLMEngine:
 
         assert len(
             placement_group.bundle_specs) == 1, ("We only consider single GPU for now.")
+
+        if self.parallel_config.ray_workers_use_nsight:
+            print("Using nsight profiling for Ray workers.")
+            ray_remote_kwargs = self._configure_ray_workers_use_nsight(
+                ray_remote_kwargs)
 
         driver_ip = get_ip()
         bundle_id = 0
@@ -404,6 +424,7 @@ class SpecDecodeLLMEngine:
                         eos_token_id=self.tokenizer.eos_token_id))
         return current_worst_score >= highest_attainable_score
 
+    @nvtx_range("_process_sequence_group_outputs")
     def _process_sequence_group_outputs(self, seq_group: SequenceGroup,
                                         outputs: SequenceGroupOutput,
                                         spec_decode_stage: SpecDecodeStage) -> int:
@@ -495,6 +516,7 @@ class SpecDecodeLLMEngine:
 
         return num_tokens_to_log_system_stats
 
+    @nvtx_range("_process_model_outputs")
     def _process_model_outputs(
             self, output: SamplerOutput,
             scheduler_outputs: SpecDecodeSchedulerOutputs,
@@ -524,6 +546,7 @@ class SpecDecodeLLMEngine:
 
         return request_outputs
 
+    @nvtx_range("step")
     def step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
@@ -704,6 +727,7 @@ class SpecDecodeLLMEngine:
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
 
+    @nvtx_range("_run_draft_worker")
     def _run_draft_worker(
         self,
         method: str,
@@ -716,6 +740,7 @@ class SpecDecodeLLMEngine:
 
         return draft_worker_output
 
+    @nvtx_range("_run_target_worker")
     def _run_target_worker(
         self,
         method: str,
