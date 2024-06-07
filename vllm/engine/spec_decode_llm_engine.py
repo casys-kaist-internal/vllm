@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import copy
 from collections import defaultdict
 import os
@@ -20,6 +21,7 @@ from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup, SequenceGroup
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter, set_cuda_visible_devices, get_ip, get_open_port, nvtx_range
+from vllm.worker.spec_decode_worker import SpecDecodeWorker
 
 if ray:
     from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
+
+# Set the start method to 'spawn'
+mp.set_start_method('spawn', force=True)
 
 
 class SpecDecodeLLMEngine:
@@ -105,20 +110,10 @@ class SpecDecodeLLMEngine:
             revision=target_model_config.revision)
         self.seq_counter = Counter()
 
-        assert self.parallel_config.worker_use_ray
-
-        # Create the parallel GPU workers.
-        # Disable Ray usage stats collection.
-        ray_usage = os.environ.get("RAY_USAGE_STATS_ENABLED", "0")
-        if ray_usage != "1":
-            os.environ["RAY_USAGE_STATS_ENABLED"] = "0"
-        self._init_workers_ray(placement_group)
-        ray.put("dummy")
+        self._init_workers_mp()
 
         # Draft_probs that should be sent to target worker when target decode
         self.draft_probs_dict = defaultdict(list)
-        self.draft_probs_tensor = torch.zeros(64, 7, 50272)
-        self.draft_probs_tensor_ref = ray.put(self.draft_probs_tensor)
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
@@ -149,104 +144,28 @@ class SpecDecodeLLMEngine:
 
         return ray_remote_kwargs
 
-    def _init_workers_ray(self, placement_group: "PlacementGroup",
-                          **ray_remote_kwargs):
-        assert self.parallel_config.tensor_parallel_size == 1
-        num_gpus = 0.5  # Since there will be two workers, we use 0.5 GPU per worker
-
-        assert len(
-            placement_group.bundle_specs) == 1, ("We only consider single GPU for now.")
-
-        if self.parallel_config.ray_workers_use_nsight:
-            print("Using nsight profiling for Ray workers.")
-            ray_remote_kwargs = self._configure_ray_workers_use_nsight(
-                ray_remote_kwargs)
-
-        driver_ip = get_ip()
-        bundle_id = 0
-
-        scheduling_strategy = PlacementGroupSchedulingStrategy(
-            placement_group=placement_group,
-            placement_group_capture_child_tasks=True,
-            placement_group_bundle_index=bundle_id,
-        )
-
-        worker = ray.remote(
-            num_cpus=0,
-            num_gpus=num_gpus,
-            scheduling_strategy=scheduling_strategy,
-            **ray_remote_kwargs,
-        )(RayWorkerVllm).remote(self.target_model_config.trust_remote_code)
-
-        self.target_worker: RayWorkerVllm = worker
-
-        if self.target_worker is None:
-            raise ValueError(
-                "Ray does not allocate any GPUs on the driver node. Consider "
-                "adjusting the Ray placement group or running the driver on a "
-                "GPU node.")
-
-        _, driver_gpu_ids = ray.get(
-            self.target_worker.get_node_and_gpu_ids.remote())
-
-        # Set CUDA_VISIBLE_DEVICES for the driver
-        set_cuda_visible_devices(driver_gpu_ids)
-
-        # Lazy import the Worker to avoid importing torch.cuda/xformers
-        # before CUDA_VISIBLE_DEVICES is set in the Worker
-        from vllm.worker.spec_decode_worker import SpecDecodeWorker
-
-        # Initialize torch distributed process group for the workers.
-        target_model_config = copy.deepcopy(self.target_model_config)
-        draft_model_config = copy.deepcopy(self.draft_model_config)
-        parallel_config = copy.deepcopy(self.parallel_config)
-        scheduler_config = copy.deepcopy(self.scheduler_config)
-        spec_decode_config = copy.deepcopy(self.spec_decode_config)
-
-        driver_rank = 0
-        driver_local_rank = 0
-
-        # Driver worker
-        distributed_init_method = f"tcp://{driver_ip}:{get_open_port()}"
+    def _init_workers_mp(self):
         self.draft_worker = SpecDecodeWorker(
-            draft_model_config,
-            parallel_config,
-            scheduler_config,
-            spec_decode_config,
-            driver_local_rank,
-            driver_rank,
-            distributed_init_method,
-            is_driver_worker=True,
+            copy.deepcopy(self.draft_model_config),
+            copy.deepcopy(self.parallel_config),
+            copy.deepcopy(self.scheduler_config),
+            copy.deepcopy(self.spec_decode_config),
+            local_rank=0,
+            rank=0,
+            distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
         )
 
-        # Ray worker
-        distributed_init_method = f"tcp://{driver_ip}:{get_open_port()}"
-        self.target_worker.init_worker.remote(
-            lambda rank=driver_rank, local_rank=driver_local_rank: SpecDecodeWorker(
-                target_model_config,
-                parallel_config,
-                scheduler_config,
-                spec_decode_config,
-                local_rank,
-                rank,
-                distributed_init_method,
-            )
-        )
+        self.draft_worker.init_model()
+        self.draft_worker.load_model()
 
-        self._run_draft_worker("init_model")
-        self._run_draft_worker("load_model")
+        parent_conn, child_conn = mp.Pipe()
 
-        self._run_target_worker("init_model")
-        self._run_target_worker("load_model")
+        process = mp.Process(target=init_worker, args=(child_conn, self.target_model_config,
+                             self.parallel_config, self.scheduler_config, self.spec_decode_config))
+        process.start()
 
-    def _init_draft_probs(self, draft_size: int) -> None:
-        # draft_probs: [max_seqs, draft_size, vocab_size]
-        self.draft_probs = torch.zeros(
-            64,
-            draft_size,
-            self.tokenizer.vocab_size,
-            device="cuda",
-        )
+        self.target_worker_process = process
+        self.target_worker_pipe = parent_conn
 
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
@@ -548,20 +467,21 @@ class SpecDecodeLLMEngine:
             num_tokens_to_log_system_stats += self._process_sequence_group_outputs(
                 seq_group, outputs, spec_decode_stage)
 
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
-
-        # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for seq_group in (scheduled_seq_groups +
-                          scheduler_outputs.ignored_seq_groups):
-            request_output = RequestOutput.from_seq_group(seq_group)
-            request_outputs.append(request_output)
+        if spec_decode_stage != SpecDecodeStage.DRAFT_DECODE:
+            # Free the finished sequence groups.
+            self.scheduler.free_finished_seq_groups()
 
-        if self.log_stats:
-            # Log the system stats.
-            self._log_system_stats(
-                spec_decode_stage, num_tokens_to_log_system_stats)
+            # Create the outputs.
+            for seq_group in (scheduled_seq_groups +
+                              scheduler_outputs.ignored_seq_groups):
+                request_output = RequestOutput.from_seq_group(seq_group)
+                request_outputs.append(request_output)
+
+            if self.log_stats:
+                # Log the system stats.
+                self._log_system_stats(
+                    spec_decode_stage, num_tokens_to_log_system_stats)
 
         return request_outputs
 
@@ -576,6 +496,7 @@ class SpecDecodeLLMEngine:
             draft_probs = self.draft_probs_dict[seq_id]
             draft_probs_list.extend(draft_probs)
         draft_probs_tensor = torch.stack(draft_probs_list)
+
         return draft_probs_tensor
 
     @nvtx_range("step")
@@ -597,12 +518,9 @@ class SpecDecodeLLMEngine:
         # Execute the model.
         if spec_decode_stage == SpecDecodeStage.PROMPT:
             # Execute the target model in the ray process
-            seq_group_metadata_list_ref = ray.put(
-                seq_group_metadata_list)
-
             output = self._run_target_worker(
                 "execute_model",
-                seq_group_metadata_list=seq_group_metadata_list_ref,
+                seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
@@ -633,15 +551,10 @@ class SpecDecodeLLMEngine:
             draft_probs_tensor = self._make_draft_probs_tensor(
                 seq_group_metadata_list)
 
-            torch.cuda.nvtx.range_push("metadata put")
-            seq_group_metadata_list_ref = ray.put(
-                seq_group_metadata_list)
-            torch.cuda.nvtx.range_pop()
-
             # Execute the target model in the ray process
             output = self._run_target_worker(
                 "execute_model",
-                seq_group_metadata_list=seq_group_metadata_list_ref,
+                seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
@@ -783,32 +696,65 @@ class SpecDecodeLLMEngine:
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
 
-    @ nvtx_range("_run_draft_worker")
-    def _run_draft_worker(
-        self,
-        method: str,
-        *args,
-        **kwargs,
-    ) -> Any:
-        """Runs the given method on draft worker"""
-        draft_worker_output = getattr(self.draft_worker,
-                                      method)(*args, **kwargs)
+    # @ nvtx_range("_run_draft_worker")
+    # def _run_draft_worker(
+    #     self,
+    #     method: str,
+    #     *args,
+    #     **kwargs,
+    # ) -> Any:
+    #     """Runs the given method on draft worker"""
+    #     draft_worker_output = getattr(self.draft_worker,
+    #                                   method)(*args, **kwargs)
 
-        return draft_worker_output
+    #     return draft_worker_output
 
-    @ nvtx_range("_run_target_worker")
-    def _run_target_worker(
-        self,
-        method: str,
-        *args,
-        **kwargs,
-    ) -> Any:
-        """Runs the given method on target worker"""
-        # Start the ray worker.
-        target_worker_output = self.target_worker.execute_method.remote(
-            method, *args, **kwargs)
+    # @ nvtx_range("_run_target_worker")
+    # def _run_target_worker(
+    #     self,
+    #     method: str,
+    #     *args,
+    #     **kwargs,
+    # ) -> Any:
+    #     """Runs the given method on target worker"""
+    #     # Start the ray worker.
+    #     target_worker_output = self.target_worker.execute_method.remote(
+    #         method, *args, **kwargs)
 
-        # Get the results of the ray worker
-        target_worker_output = ray.get(target_worker_output)
+    #     # Get the results of the ray worker
+    #     target_worker_output = ray.get(target_worker_output)
 
-        return target_worker_output
+    #     return target_worker_output
+
+    def _run_target_worker(self, method: str, *args, **kwargs) -> Any:
+        self.target_worker_pipe.send((method, args, kwargs))
+        result = self.target_worker_pipe.recv()
+        return result
+
+    def _run_draft_worker(self, method: str, *args, **kwargs) -> Any:
+        worker_instance = self.draft_worker
+        return getattr(worker_instance, method)(*args, **kwargs)
+
+    def shutdown(self):
+        self.target_worker_pipe.send(("shutdown", [], {}))
+        self.target_worker_process.join()
+
+
+def init_worker(pipe, target_model_config, parallel_config, scheduler_config, spec_decode_config):
+    worker_instance = SpecDecodeWorker(
+        copy.deepcopy(target_model_config),
+        copy.deepcopy(parallel_config),
+        copy.deepcopy(scheduler_config),
+        copy.deepcopy(spec_decode_config),
+        local_rank=0,
+        rank=0,
+        distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
+    )
+    worker_instance.init_model()
+    worker_instance.load_model()
+    while True:
+        method, args, kwargs = pipe.recv()
+        if method == "shutdown":
+            break
+        result = getattr(worker_instance, method)(*args, **kwargs)
+        pipe.send(result)

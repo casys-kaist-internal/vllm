@@ -295,6 +295,7 @@ class Sequence:
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id])
 
+    @nvtx_range("accept_draft_tokens")
     def accept_draft_tokens(self, accept_cnt: int) -> int:
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt

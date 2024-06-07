@@ -35,8 +35,6 @@ class SpecDecodeWorker:
         local_rank: int,
         rank: int,
         distributed_init_method: str,
-        # if it is the driver worker then it is the draft worker.
-        is_driver_worker: bool = False,
     ) -> None:
         self.model_config = model_config
         self.parallel_config = parallel_config
@@ -45,12 +43,8 @@ class SpecDecodeWorker:
         self.local_rank = local_rank
         self.rank = rank
         self.distributed_init_method = distributed_init_method
-        self.is_driver_worker = is_driver_worker
-        if self.is_driver_worker:
-            assert self.rank == 0, "The driver worker must have rank 0."
-
         self.model_runner = SpecDecodeModelRunner(model_config, parallel_config,
-                                                  scheduler_config, is_driver_worker)
+                                                  scheduler_config)
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
         self.cache_config = None

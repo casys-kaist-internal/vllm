@@ -278,7 +278,7 @@ class SpecDecodeEngineArgs:
     dtype: str = 'auto'
     seed: int = 0
     max_model_len: Optional[int] = None
-    worker_use_ray: bool = True
+    worker_use_ray: bool = False
     ray_workers_use_nsight: bool = False
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1

@@ -83,6 +83,8 @@ def main(args: argparse.Namespace):
         latencies.append(run_to_completion(profile_dir=None))
     print(f'Avg latency: {np.mean(latencies)} seconds')
 
+    llm.shutdown()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

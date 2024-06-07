@@ -1,7 +1,6 @@
 import enum
 import time
 from typing import Dict, Iterable, List, Optional, Tuple, Union, OrderedDict
-from collections import OrderedDict
 
 from vllm.config import CacheConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.core.spec_decode_block_manager import SpecDecodeAllocStatus, SpecDecodeBlockSpaceManager

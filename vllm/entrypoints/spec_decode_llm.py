@@ -194,8 +194,12 @@ class SpecDecodeLLM:
                         pbar.update(1)
         if use_tqdm:
             pbar.close()
+
         # Sort the outputs by request ID.
         # This is necessary because some requests may be finished earlier than
         # its previous requests.
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         return outputs
+
+    def shutdown(self) -> None:
+        self.llm_engine.shutdown()
