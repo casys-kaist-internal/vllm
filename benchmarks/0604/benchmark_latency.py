@@ -53,7 +53,8 @@ def main(args: argparse.Namespace):
                         str(profile_dir))) as p:
                 llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                              sampling_params=sampling_params,
-                             use_tqdm=False)
+                             use_tqdm=False,
+                             collocate=args.collocate)
             print(p.key_averages())
         else:
             start_time = time.perf_counter()
@@ -94,6 +95,7 @@ if __name__ == '__main__':
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
+    parser.add_argument('--collocate', action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',

@@ -125,6 +125,7 @@ class SpecDecodeLLM:
         sampling_params: Optional[SamplingParams] = None,
         prompt_token_ids: Optional[List[List[int]]] = None,
         use_tqdm: bool = True,
+        collocate: bool = False,
     ) -> List[RequestOutput]:
         """Generates the completions for the input prompts.
 
@@ -166,7 +167,11 @@ class SpecDecodeLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-        return self._run_engine(use_tqdm)
+
+        if collocate:
+            return self._run_engine_collocate(use_tqdm)
+        else:
+            return self._run_engine(use_tqdm)
 
     def _add_request(
         self,
@@ -187,6 +192,29 @@ class SpecDecodeLLM:
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
+            for output in step_outputs:
+                if output.finished:
+                    outputs.append(output)
+                    if use_tqdm:
+                        pbar.update(1)
+        if use_tqdm:
+            pbar.close()
+
+        # Sort the outputs by request ID.
+        # This is necessary because some requests may be finished earlier than
+        # its previous requests.
+        outputs = sorted(outputs, key=lambda x: int(x.request_id))
+        return outputs
+
+    def _run_engine_collocate(self, use_tqdm: bool) -> List[RequestOutput]:
+        # Initialize tqdm.
+        if use_tqdm:
+            num_requests = self.llm_engine.get_num_unfinished_requests()
+            pbar = tqdm(total=num_requests, desc="Processed prompts")
+        # Run the engine.
+        outputs: List[RequestOutput] = []
+        while self.llm_engine.has_unfinished_requests():
+            step_outputs = self.llm_engine.collocate_step()
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

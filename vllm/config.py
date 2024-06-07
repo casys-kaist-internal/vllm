@@ -381,6 +381,7 @@ class SchedulerConfig:
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
         self.max_paddings = max_paddings
+        self.balance_threshold = 20  # 20%
         self._verify_args()
 
     def _verify_args(self) -> None:
