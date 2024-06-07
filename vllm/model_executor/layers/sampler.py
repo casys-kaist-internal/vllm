@@ -93,7 +93,9 @@ class Sampler(nn.Module):
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
         # Sample the next tokens.
-        if sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT or sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+        if (sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT or
+                sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE or
+                sampling_metadata.draft_probs_tensor.numel() == 0):
             sample_results = _sample(probs, logprobs, sampling_metadata)
             accept_cnts = None
 
@@ -498,7 +500,7 @@ def _spec_decode_sample(
     del accepted
 
     target_lens_tensor = torch.tensor(
-        target_lens_minus_one, device=accept_cnts.device)
+        target_lens_minus_one, device='cuda')
     all_accept_mask = (accept_cnts == target_lens_tensor)
 
     # make accept_cnt 0 for all accepted sequences.
@@ -660,6 +662,9 @@ def _build_sampler_output(
 ) -> SamplerOutput:
     sampler_output = []
 
+    # GPU -> CPU sync
+    accept_cnts = accept_cnts.tolist() if accept_cnts is not None else None
+
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
                                                   sample_results, prompt_logprobs,
@@ -677,8 +682,9 @@ def _build_sampler_output(
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, draft_probs=draft_probs[idx]))
             elif sampling_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+                accept_cnt = accept_cnts[idx] if accept_cnts is not None else 0
                 seq_outputs.append(
-                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnts[idx]))
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnt))
             else:
                 raise ValueError(
                     f"Unsupported spec decode stage: {sampling_metadata.spec_decode_stage}"

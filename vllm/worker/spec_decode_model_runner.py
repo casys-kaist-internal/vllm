@@ -8,8 +8,6 @@ import torch.nn as nn
 from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
-from vllm.model_executor.parallel_utils.communication_op import (
-    broadcast, broadcast_object_list)
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata, SpecDecodeStage
 from vllm.utils import in_wsl, nvtx_range
@@ -160,6 +158,7 @@ class SpecDecodeModelRunner:
         block_tables: List[List[int]] = []
         draft_lens: List[int] = []
 
+        torch.cuda.nvtx.range_push("loop")
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE
 
@@ -199,6 +198,7 @@ class SpecDecodeModelRunner:
                                                  self.block_size)
                         block_table = block_table[-sliding_window_blocks:]
                     block_tables.append(block_table)
+        torch.cuda.nvtx.range_pop()
 
         batch_size = len(input_tokens)
         max_context_len = max(context_lens)
@@ -753,25 +753,24 @@ class CUDAGraphRunner:
         return self.forward(*args, **kwargs)
 
 
-def _pad_to_max(x: List[int], max_len: int, pad: int) -> List[int]:
-    assert len(x) <= max_len
-    return x + [pad] * (max_len - len(x))
-
-
 @nvtx_range("_make_tensor_with_pad")
 def _make_tensor_with_pad(
     x: List[List[int]],
     max_len: int,
     pad: int,
     dtype: torch.dtype,
-    device: Union[str, torch.device] = "cuda",
-    pin_memory: bool = True,
+    device: Optional[Union[str, torch.device]] = "cuda",
 ) -> torch.Tensor:
-    padded_x = [_pad_to_max(x_i, max_len, pad) for x_i in x]
-    return torch.tensor(padded_x,
-                        dtype=dtype,
-                        device=device,
-                        pin_memory=pin_memory and str(device) == "cpu")
+    """Make a padded tensor of a 2D inputs.
+
+    The padding is applied to the end of each inner list until it reaches
+    `max_len`.
+    """
+    padded_x = np.zeros([len(x), max_len], dtype=np.int32) + pad
+    for ind, blocktb in enumerate(x):
+        assert len(blocktb) <= max_len
+        padded_x[ind, :len(blocktb)] = blocktb
+    return torch.tensor(padded_x, dtype=dtype, device=device)
 
 
 def _get_graph_batch_size(batch_size: int) -> int:
