@@ -161,7 +161,7 @@ class SpecDecodeScheduler:
             imbalance_percentage = 0
 
         # Determine imbalance
-        if total_load < 5 or imbalance_percentage <= self.scheduler_config.balance_threshold:
+        if total_load < 32 or imbalance_percentage <= self.scheduler_config.balance_threshold:
             return  # Queues are balanced within the acceptable range
 
         # Rebalance queues

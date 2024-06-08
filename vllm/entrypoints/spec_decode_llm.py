@@ -167,7 +167,7 @@ class SpecDecodeLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-
+        self.llm_engine.temp_counter = 0
         if collocate:
             return self._run_engine_collocate(use_tqdm)
         else:

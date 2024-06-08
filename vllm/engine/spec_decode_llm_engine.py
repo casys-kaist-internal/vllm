@@ -1,11 +1,8 @@
-import copy
 from collections import defaultdict
-import os
 import time
 from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple,
                     Union)
 import torch
-import torch.multiprocessing as mp
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
@@ -13,7 +10,7 @@ from vllm.core.spec_decode_scheduler import SpecDecodeScheduler, SpecDecodeSched
 from vllm.engine.arg_utils import SpecDecodeEngineArgs
 from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import initialize_cluster, ray
-from vllm.engine.mp_utils import init_worker
+from vllm.engine.worker_executor import WorkerExecutor
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
@@ -33,10 +30,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-_LOGGING_INTERVAL_SEC = 1
-
-# Set the start method to 'spawn'
-mp.set_start_method('spawn', force=True)
+_LOGGING_INTERVAL_SEC = 5
 
 
 class SpecDecodeLLMEngine:
@@ -112,10 +106,14 @@ class SpecDecodeLLMEngine:
             revision=target_model_config.revision)
         self.seq_counter = Counter()
 
-        self._init_workers_mp()
+        self.worker_executor = WorkerExecutor(
+            target_model_config, draft_model_config, parallel_config, scheduler_config, spec_decode_config
+        )
 
         # Draft_probs that should be sent to target worker when target decode
         self.draft_probs_dict = defaultdict(list)
+        self.draft_probs_tensor = torch.zeros(
+            1000, target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
@@ -131,44 +129,6 @@ class SpecDecodeLLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
-    def _configure_ray_workers_use_nsight(self,
-                                          ray_remote_kwargs) -> Dict[str, Any]:
-        # If nsight profiling is enabled, we need to set the profiling
-        # configuration for the ray workers as runtime env.
-        runtime_env = ray_remote_kwargs.setdefault("runtime_env", {})
-        runtime_env.update({
-            "nsight": {
-                "t": "cuda,cudnn,cublas,nvtx",
-                "gpu-metrics-device": "0",
-                "cuda-graph-trace": "node",
-            }
-        })
-
-        return ray_remote_kwargs
-
-    def _init_workers_mp(self):
-        self.draft_worker = SpecDecodeWorker(
-            copy.deepcopy(self.draft_model_config),
-            copy.deepcopy(self.parallel_config),
-            copy.deepcopy(self.scheduler_config),
-            copy.deepcopy(self.spec_decode_config),
-            local_rank=0,
-            rank=0,
-            distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
-        )
-
-        self.draft_worker.init_model()
-        self.draft_worker.load_model()
-
-        parent_conn, child_conn = mp.Pipe()
-
-        process = mp.Process(target=init_worker, args=(child_conn, self.target_model_config,
-                             self.parallel_config, self.scheduler_config, self.spec_decode_config))
-        process.start()
-
-        self.target_worker_process = process
-        self.target_worker_pipe = parent_conn
-
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
             self.parallel_config)
@@ -179,14 +139,14 @@ class SpecDecodeLLMEngine:
         # Get the maximum number of blocks that can be allocated on GPU and CPU.
         initial_free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
 
-        draft_consumed_memory, draft_cache_block_size = self._run_draft_worker(
+        draft_consumed_memory, draft_cache_block_size = self.worker_executor.run_draft_worker_sync(
             "profile_num_available_blocks",
             block_size=self.cache_config.block_size,
             gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
             cpu_swap_space=self.cache_config.swap_space_bytes,
         )
 
-        target_consumed_memory, target_cache_block_size = self._run_target_worker(
+        target_consumed_memory, target_cache_block_size = self.worker_executor.run_target_worker_sync(
             "profile_num_available_blocks",
             block_size=self.cache_config.block_size,
             gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
@@ -222,14 +182,14 @@ class SpecDecodeLLMEngine:
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
         # Initialize the cache.
-        self._run_draft_worker("init_cache_engine",
-                               cache_config=self.cache_config)
-        self._run_target_worker("init_cache_engine",
-                                cache_config=self.cache_config)
+        self.worker_executor.run_draft_worker_sync("init_cache_engine",
+                                                   cache_config=self.cache_config)
+        self.worker_executor.run_target_worker_sync("init_cache_engine",
+                                                    cache_config=self.cache_config)
         # Warm up the model. This includes capturing the model into CUDA graph
         # if enforce_eager is False.
-        self._run_draft_worker("warm_up_model")
-        self._run_target_worker("warm_up_model")
+        self.worker_executor.run_draft_worker_sync("warm_up_model")
+        self.worker_executor.run_target_worker_sync("warm_up_model")
 
     @ classmethod
     def from_engine_args(cls, engine_args: SpecDecodeEngineArgs) -> "SpecDecodeLLMEngine":
@@ -389,16 +349,12 @@ class SpecDecodeLLMEngine:
                 sample.draft_probs)
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-            free_block_cnt = seq.accept_draft_tokens(
-                sample.accept_cnt
-            )
-            self.scheduler.block_manager.free_blocks(
-                seq, free_block_cnt
-            )
+            free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
+            self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
+
             # modified_rejection token for not all accept case and bonus token for all accept case
-            seq.append_token_id(
-                sample.output_token, sample.logprobs
-            )
+            seq.append_token_id(sample.output_token, sample.logprobs)
+
             # If all accept, the bonus token don't have draft kv cache yet.
             if seq.draft_size != sample.accept_cnt:
                 seq.data.draft_kv_cache_cnt += 1
@@ -441,9 +397,8 @@ class SpecDecodeLLMEngine:
             else:
                 num_generation_tokens_to_log += num_tokens_to_log
 
-            if seq_group.spec_decode_stage != SpecDecodeStage.DRAFT_DECODE:
-                # Free the finished sequence groups.
-                self.scheduler.free_finished_seq_groups()
+        # Free the finished sequence groups.
+        self.scheduler.free_finished_seq_groups()
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
@@ -459,21 +414,22 @@ class SpecDecodeLLMEngine:
 
         return request_outputs
 
-    @nvtx_range("_make_draft_probs_tensor")
-    def _make_draft_probs_tensor(self,
-                                 seq_group_metadata_list: List[SequenceGroupMetadata]) -> torch.Tensor:
-        draft_probs_list = []
+    @nvtx_range("_fill_draft_probs_tensor")
+    def _fill_draft_probs_tensor(self,
+                                 seq_group_metadata_list: List[SequenceGroupMetadata]) -> None:
+        idx = 0
         for seq_group_metadata in seq_group_metadata_list:
             keys = list(seq_group_metadata.seq_data.keys())
             assert len(keys) == 1
             seq_id = keys[0]
             draft_probs = self.draft_probs_dict[seq_id]
-            draft_probs_list.extend(draft_probs)
+            length = len(draft_probs)
 
-        if len(draft_probs_list) == 0:
-            return torch.tensor([], device='cuda').share_memory_()
+            if length > 0:
+                self.draft_probs_tensor[idx:idx +
+                                        length, :] = torch.stack(draft_probs)
 
-        return torch.stack(draft_probs_list).share_memory_()
+            idx += length
 
     @nvtx_range("step")
     def step(self) -> List[RequestOutput]:
@@ -493,8 +449,8 @@ class SpecDecodeLLMEngine:
 
         # Execute the model.
         if spec_decode_stage == SpecDecodeStage.PROMPT:
-            # Execute the target model in the ray process
-            output = self._run_target_worker(
+            # Execute the target model in the child process
+            output = self.worker_executor.run_target_worker_sync(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -509,8 +465,8 @@ class SpecDecodeLLMEngine:
                 return self._process_model_outputs([], scheduler_outputs)
 
             for _ in range(self.spec_decode_config.draft_size):
-                # Execute the draft model in the same process
-                output = self._run_draft_worker(
+                # Execute the draft model in the parent process
+                output = self.worker_executor.run_draft_worker_sync(
                     "execute_model",
                     seq_group_metadata_list=seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -525,17 +481,16 @@ class SpecDecodeLLMEngine:
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             # Make draft_probs tensor
-            draft_probs_tensor = self._make_draft_probs_tensor(
-                seq_group_metadata_list)
+            self._fill_draft_probs_tensor(seq_group_metadata_list)
 
-            # Execute the target model in the different process
-            output = self._run_target_worker(
+            # Execute the target model in the child process
+            output = self.worker_executor.run_target_worker_sync(
                 "execute_model",
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                draft_probs_tensor=draft_probs_tensor
+                draft_probs_tensor=self.draft_probs_tensor,
             )
 
             result = self._process_model_outputs(output, scheduler_outputs)
@@ -563,17 +518,15 @@ class SpecDecodeLLMEngine:
             target_result = self._process_model_outputs(
                 [], target_scheduler_outputs)
         else:
-            # Make shared draft_probs tensor
-            draft_probs_tensor = self._make_draft_probs_tensor(
-                target_seq_group_metadata_list)
+            self._fill_draft_probs_tensor(target_seq_group_metadata_list)
 
-            self._send_target_worker_task(
+            self.worker_executor.run_target_worker_async(
                 "execute_model",
                 seq_group_metadata_list=target_seq_group_metadata_list,
                 blocks_to_swap_in=target_scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=target_scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=target_scheduler_outputs.blocks_to_copy,
-                draft_probs_tensor=draft_probs_tensor
+                draft_probs_tensor=self.draft_probs_tensor,
             )
 
         if draft_scheduler_outputs.is_empty() or self.spec_decode_config.draft_size == 0:
@@ -582,7 +535,7 @@ class SpecDecodeLLMEngine:
         else:
             for _ in range(self.spec_decode_config.draft_size):
                 # Execute the draft model in the same process
-                draft_output = self._run_draft_worker(
+                draft_output = self.worker_executor.run_draft_worker_sync(
                     "execute_model",
                     seq_group_metadata_list=draft_seq_group_metadata_list,
                     blocks_to_swap_in=draft_scheduler_outputs.blocks_to_swap_in,
@@ -598,10 +551,9 @@ class SpecDecodeLLMEngine:
 
         if not target_scheduler_outputs.is_empty():
             # Wait for the target worker output
-            target_output = self._receive_target_worker_output()
+            target_output = self.worker_executor.get_target_worker_async_output()
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
-            del draft_probs_tensor
 
         result = target_result + draft_result
 
@@ -731,24 +683,3 @@ class SpecDecodeLLMEngine:
                 and any(token == self.tokenizer.eos_token_id for token in last_tokens)):
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
-
-    @nvtx_range("_run_target_worker")
-    def _run_target_worker(self, method: str, *args, **kwargs) -> Any:
-        self.target_worker_pipe.send((method, args, kwargs))
-        result = self.target_worker_pipe.recv()
-        return result
-
-    def _send_target_worker_task(self, method: str, *args, **kwargs) -> Any:
-        self.target_worker_pipe.send((method, args, kwargs))
-
-    def _receive_target_worker_output(self):
-        return self.target_worker_pipe.recv()
-
-    @nvtx_range("_run_draft_worker")
-    def _run_draft_worker(self, method: str, *args, **kwargs) -> Any:
-        worker_instance = self.draft_worker
-        return getattr(worker_instance, method)(*args, **kwargs)
-
-    def shutdown(self):
-        self.target_worker_pipe.send(("shutdown", [], {}))
-        self.target_worker_process.join()

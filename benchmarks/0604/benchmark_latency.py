@@ -29,7 +29,7 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         enforce_eager=args.enforce_eager,
         download_dir=DOWNLOAD_DIR,
-        disable_log_stats=False
+        # disable_log_stats=False
     )
 
     sampling_params = SamplingParams(
@@ -86,7 +86,7 @@ def main(args: argparse.Namespace):
         latencies.append(run_to_completion(profile_dir=None))
     print(f'Avg latency: {np.mean(latencies)} seconds')
 
-    llm.shutdown()
+    llm.llm_engine.worker_executor.shutdown()
 
 
 if __name__ == '__main__':
@@ -114,7 +114,7 @@ if __name__ == '__main__':
     parser.add_argument('--use-beam-search', action='store_true')
     parser.add_argument('--num-iters',
                         type=int,
-                        default=1,
+                        default=3,
                         help='Number of iterations to run.')
     parser.add_argument('--trust-remote-code',
                         action='store_true',

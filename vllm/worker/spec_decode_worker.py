@@ -180,6 +180,9 @@ class SpecDecodeWorker:
 
         output = self.model_runner.execute_model(seq_group_metadata_list,
                                                  self.gpu_cache, draft_probs_tensor)
+
+        del draft_probs_tensor
+
         return output
 
 
