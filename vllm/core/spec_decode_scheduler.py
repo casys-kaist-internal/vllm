@@ -124,8 +124,6 @@ class SpecDecodeScheduler:
         return len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.balancing_queue)
 
     def _swap_target_draft_queues(self) -> None:
-        print(f"length of draft queue: {len(self.need_to_run_draft)}")
-        print(f"length of target queue: {len(self.need_to_run_target)}")
         self.need_to_run_target, self.need_to_run_draft = self.need_to_run_draft, self.need_to_run_target
 
     def _balance_target_draft_queues(self) -> None:
@@ -163,7 +161,7 @@ class SpecDecodeScheduler:
             imbalance_percentage = 0
 
         # Determine imbalance
-        if imbalance_percentage <= self.scheduler_config.balance_threshold:
+        if total_load < 5 or imbalance_percentage <= self.scheduler_config.balance_threshold:
             return  # Queues are balanced within the acceptable range
 
         # Rebalance queues

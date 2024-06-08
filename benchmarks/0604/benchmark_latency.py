@@ -29,6 +29,7 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         enforce_eager=args.enforce_eager,
         download_dir=DOWNLOAD_DIR,
+        disable_log_stats=False
     )
 
     sampling_params = SamplingParams(
@@ -60,7 +61,8 @@ def main(args: argparse.Namespace):
             start_time = time.perf_counter()
             llm.generate(prompt_token_ids=dummy_prompt_token_ids,
                          sampling_params=sampling_params,
-                         use_tqdm=False)
+                         use_tqdm=False,
+                         collocate=args.collocate)
             end_time = time.perf_counter()
             latency = end_time - start_time
             return latency

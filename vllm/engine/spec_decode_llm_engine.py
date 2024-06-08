@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-_LOGGING_INTERVAL_SEC = 5
+_LOGGING_INTERVAL_SEC = 1
 
 # Set the start method to 'spawn'
 mp.set_start_method('spawn', force=True)
@@ -491,8 +491,6 @@ class SpecDecodeLLMEngine:
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs)
 
-        print("Spec Decode Stage: ", spec_decode_stage)
-
         # Execute the model.
         if spec_decode_stage == SpecDecodeStage.PROMPT:
             # Execute the target model in the ray process
@@ -603,6 +601,7 @@ class SpecDecodeLLMEngine:
             target_output = self._receive_target_worker_output()
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
+            del draft_probs_tensor
 
         result = target_result + draft_result
 
@@ -614,7 +613,7 @@ class SpecDecodeLLMEngine:
         num_generation_tokens_to_log: int,
     ) -> None:
         # Do not log the stats during the draft stage. Only log final accepted tokens
-        if num_prompt_tokens_to_log == 0 or num_generation_tokens_to_log == 0:
+        if num_prompt_tokens_to_log == 0 and num_generation_tokens_to_log == 0:
             return
 
         now = time.monotonic()
@@ -676,7 +675,7 @@ class SpecDecodeLLMEngine:
                     f"{avg_prompt_throughput:.1f} tokens/s, "
                     "Avg generation throughput: "
                     f"{avg_generation_throughput:.1f} tokens/s, "
-                    f"Running: {len(self.scheduler.get_num_running_seq_groups())} reqs, "
+                    f"Running: {self.scheduler.get_num_running_seq_groups()} reqs, "
                     f"Swapped: {len(self.scheduler.swapped)} reqs, "
                     f"Pending: {len(self.scheduler.waiting)} reqs, "
                     f"GPU KV cache usage: {gpu_cache_usage * 100:.1f}%, "
