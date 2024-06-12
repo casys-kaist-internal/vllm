@@ -19,6 +19,7 @@ class WorkerExecutor:
             local_rank=0,
             rank=0,
             distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
+            is_target=False
         )
 
         self.draft_worker.init_model()
@@ -62,7 +63,7 @@ class WorkerExecutor:
 
 
 def init_worker(pipe, target_model_config, parallel_config, scheduler_config, spec_decode_config):
-    worker_instance = SpecDecodeWorker(
+    target_worker = SpecDecodeWorker(
         copy.deepcopy(target_model_config),
         copy.deepcopy(parallel_config),
         copy.deepcopy(scheduler_config),
@@ -70,9 +71,10 @@ def init_worker(pipe, target_model_config, parallel_config, scheduler_config, sp
         local_rank=0,
         rank=0,
         distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
+        is_target=True
     )
-    worker_instance.init_model()
-    worker_instance.load_model()
+    target_worker.init_model()
+    target_worker.load_model()
 
     while True:
         method, args, kwargs = pipe.recv()
@@ -80,5 +82,5 @@ def init_worker(pipe, target_model_config, parallel_config, scheduler_config, sp
         if method == "shutdown":
             break
 
-        result = getattr(worker_instance, method)(*args, **kwargs)
+        result = getattr(target_worker, method)(*args, **kwargs)
         pipe.send(result)

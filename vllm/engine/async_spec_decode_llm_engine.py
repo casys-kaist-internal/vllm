@@ -188,7 +188,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
 
         if not scheduler_outputs.is_empty():
             # Execute the model.
-            if spec_decode_stage == SpecDecodeStage.PROMPT:
+            if spec_decode_stage == SpecDecodeStage.PREFILL:
                 all_outputs = await self._run_workers_async(
                     "execute_target_model",
                     driver_kwargs={
@@ -197,7 +197,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
                         "blocks_to_swap_out": scheduler_outputs.blocks_to_swap_out,
                         "blocks_to_copy": scheduler_outputs.blocks_to_copy,
                     })
-            
+
             elif spec_decode_stage == SpecDecodeStage.DRAFT:
                 all_outputs = await self._run_workers_async(
                     "execute_draft_model",
@@ -207,7 +207,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
                         "blocks_to_swap_out": scheduler_outputs.blocks_to_swap_out,
                         "blocks_to_copy": scheduler_outputs.blocks_to_copy,
                     })
-            
+
             elif spec_decode_stage == SpecDecodeStage.TARGET:
                 all_outputs = await self._run_workers_async(
                     "execute_target_model",

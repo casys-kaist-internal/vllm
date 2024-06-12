@@ -16,14 +16,16 @@ class InputMetadata:
 
     def __init__(
         self,
-        is_prompt: bool,
+        num_prefill_tokens: int,
+        num_decode_tokens: int,
         slot_mapping: torch.Tensor,
         max_context_len: Optional[int],
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
         use_cuda_graph: bool,
     ) -> None:
-        self.is_prompt = is_prompt
+        self.num_prefill_tokens = num_prefill_tokens
+        self.num_decode_tokens = num_decode_tokens
         self.max_context_len = max_context_len
         self.slot_mapping = slot_mapping
         self.context_lens = context_lens
@@ -36,7 +38,6 @@ class InputMetadata:
 
     def __repr__(self) -> str:
         return ("InputMetadata("
-                f"is_prompt={self.is_prompt}, "
                 f"max_context_len={self.max_context_len}, "
                 f"slot_mapping={self.slot_mapping}, "
                 f"context_lens={self.context_lens}, "

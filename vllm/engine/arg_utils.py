@@ -295,6 +295,7 @@ class SpecDecodeEngineArgs:
     quantization: Optional[str] = None
     enforce_eager: bool = False
     max_context_len_to_capture: int = 8192
+    enable_chunked_prefill: bool = False
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -480,7 +481,7 @@ class SpecDecodeEngineArgs:
             self.target_model, self.tokenizer, self.tokenizer_mode,
             self.trust_remote_code, self.download_dir, self.load_format,
             self.dtype, self.seed, self.revision, self.tokenizer_revision,
-            self.max_model_len, self.quantization, self.enforce_eager,
+            self.max_model_len, self.quantization, True,
             self.max_context_len_to_capture)
         draft_model_config = ModelConfig(
             self.draft_model, self.tokenizer, self.tokenizer_mode,
@@ -500,7 +501,7 @@ class SpecDecodeEngineArgs:
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
-                                           self.max_paddings)
+                                           self.enable_chunked_prefill)
         spec_decode_config = SpecDecodeConfig(self.draft_size)
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 

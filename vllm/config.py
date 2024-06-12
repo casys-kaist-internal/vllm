@@ -370,22 +370,29 @@ class SchedulerConfig:
         max_num_batched_tokens: Optional[int],
         max_num_seqs: int,
         max_model_len: int,
-        max_paddings: int,
+        enable_chunked_prefill: bool,
     ) -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
         else:
-            # If max_model_len is too short, use 2048 as the default value for
-            # higher throughput.
-            self.max_num_batched_tokens = max(max_model_len, 2048)
+            if enable_chunked_prefill:
+                # It is the values that have the best balance between ITL
+                # and TTFT on A100. Note it is not optimized for throughput.
+                self.max_num_batched_tokens = 512
+            else:
+                # If max_model_len is too short, use 2048 as the default value for
+                # higher throughput.
+                self.max_num_batched_tokens = max(max_model_len, 2048)
+
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
-        self.max_paddings = max_paddings
+        self.chunk_prefill_enabled = enable_chunked_prefill
         self.balance_threshold = 20  # 20%
         self._verify_args()
 
     def _verify_args(self) -> None:
-        if self.max_num_batched_tokens < self.max_model_len:
+        if (self.max_num_batched_tokens < self.max_model_len
+                and not self.chunk_prefill_enabled):
             raise ValueError(
                 f"max_num_batched_tokens ({self.max_num_batched_tokens}) is "
                 f"smaller than max_model_len ({self.max_model_len}). "

@@ -6,7 +6,7 @@ import torch
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
-from vllm.core.spec_decode_scheduler import SpecDecodeScheduler, SpecDecodeSchedulerOutputs
+from vllm.core.spec_decode_scheduler import SpecDecodeScheduler, SpecDecodeSchedulerOutputs, ScheduledSequenceGroup
 from vllm.engine.arg_utils import SpecDecodeEngineArgs
 from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import initialize_cluster, ray
@@ -19,7 +19,6 @@ from vllm.sequence import (SamplerOutput, Sequence, SequenceGroup, SequenceGroup
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.utils import Counter, set_cuda_visible_devices, get_ip, get_open_port, nvtx_range
-from vllm.worker.spec_decode_worker import SpecDecodeWorker
 
 
 if ray:
@@ -137,29 +136,28 @@ class SpecDecodeLLMEngine:
     def _init_cache(self) -> None:
         """Profiles the memory usage and initializes the KV cache."""
         # Get the maximum number of blocks that can be allocated on GPU and CPU.
-        initial_free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
-
-        draft_consumed_memory, draft_cache_block_size = self.worker_executor.run_draft_worker_sync(
-            "profile_num_available_blocks",
+        torch.cuda.empty_cache()
+        draft_cache_block_size = self.worker_executor.run_draft_worker_sync(
+            "profile_consumed_memory",
             block_size=self.cache_config.block_size,
-            gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
-            cpu_swap_space=self.cache_config.swap_space_bytes,
         )
-
-        target_consumed_memory, target_cache_block_size = self.worker_executor.run_target_worker_sync(
-            "profile_num_available_blocks",
+        target_cache_block_size = self.worker_executor.run_target_worker_sync(
+            "profile_consumed_memory",
             block_size=self.cache_config.block_size,
-            gpu_memory_utilization=self.cache_config.gpu_memory_utilization,
-            cpu_swap_space=self.cache_config.swap_space_bytes,
         )
+        torch.cuda.synchronize()
 
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        peak_memory = total_gpu_memory - free_gpu_memory
         cache_block_size = draft_cache_block_size + target_cache_block_size
-        peak_gpu_memory = total_gpu_memory - (initial_free_gpu_memory -
-                                              (draft_consumed_memory + target_consumed_memory))
         num_gpu_blocks = int(
-            (total_gpu_memory * self.cache_config.gpu_memory_utilization - peak_gpu_memory) // cache_block_size)
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization - peak_memory) //
+            cache_block_size)
         num_cpu_blocks = int(
             self.cache_config.swap_space_bytes // cache_block_size)
+        num_gpu_blocks = max(num_gpu_blocks, 0)
+        num_cpu_blocks = max(num_cpu_blocks, 0)
+        torch.cuda.empty_cache()
 
         # FIXME(woosuk): Change to debug log.
         logger.info(f"# GPU blocks: {num_gpu_blocks}, "
@@ -317,13 +315,16 @@ class SpecDecodeLLMEngine:
         return current_worst_score >= highest_attainable_score
 
     @nvtx_range("_process_sequence_group_outputs")
-    def _process_sequence_group_outputs(self, seq_group: SequenceGroup,
-                                        outputs: SequenceGroupOutput,
-                                        spec_decode_stage: SpecDecodeStage) -> int:
+    def _process_sequence_group_outputs(self, scheduled_seq_group: ScheduledSequenceGroup,
+                                        outputs: SequenceGroupOutput) -> int:
+        seq_group = scheduled_seq_group.seq_group
+        spec_decode_stage = seq_group.spec_decode_stage
+
         # We assume that SpecDecodeEngine does not use beam search
         assert not seq_group.sampling_params.use_beam_search
 
         num_tokens_to_log_system_stats = 0
+        check_stop_cnt = 0
 
         # Process prompt logprobs
         prompt_logprobs = outputs.prompt_logprobs
@@ -334,11 +335,14 @@ class SpecDecodeLLMEngine:
         sample = outputs.samples[0]
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
 
-        if spec_decode_stage == SpecDecodeStage.PROMPT:
-            seq.append_token_id(sample.output_token,
-                                sample.logprobs)
-            check_stop_cnt = 1
-            num_tokens_to_log_system_stats += (seq.get_len())
+        if spec_decode_stage == SpecDecodeStage.PREFILL:
+            if scheduled_seq_group.do_sample:
+                seq.append_token_id(sample.output_token, sample.logprobs)
+                check_stop_cnt = 1
+            num_tokens_to_log_system_stats += (
+                scheduled_seq_group.token_chunk_size)
+            seq.update_num_computed_target_tokens(
+                scheduled_seq_group.token_chunk_size)
 
         elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
             seq.append_draft_token_id(
@@ -347,6 +351,11 @@ class SpecDecodeLLMEngine:
             check_stop_cnt = 0
             self.draft_probs_dict[seq.seq_id].append(
                 sample.draft_probs)
+            seq.update_num_computed_draft_tokens(
+                scheduled_seq_group.token_chunk_size)
+            # since multi-step draft decode,
+            # we need to update the next draft token size which is always 1 from the second iteration
+            scheduled_seq_group.token_chunk_size = 1
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
@@ -354,10 +363,12 @@ class SpecDecodeLLMEngine:
 
             # modified_rejection token for not all accept case and bonus token for all accept case
             seq.append_token_id(sample.output_token, sample.logprobs)
+            seq.update_num_computed_target_tokens(1)
 
             # If all accept, the bonus token don't have draft kv cache yet.
+            # So only update num_computed_draft_tokens if not all accept
             if seq.draft_size != sample.accept_cnt:
-                seq.data.draft_kv_cache_cnt += 1
+                seq.update_num_computed_draft_tokens(1)
 
             check_stop_cnt = (sample.accept_cnt + 1)
             self.draft_probs_dict[seq.seq_id].clear()
@@ -384,15 +395,24 @@ class SpecDecodeLLMEngine:
             self, output: SamplerOutput,
             scheduler_outputs: SpecDecodeSchedulerOutputs) -> List[RequestOutput]:
         # Update the scheduled sequence groups with the model outputs.
-        scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
+        prefill_scheduled_seq_groups: List[ScheduledSequenceGroup] = scheduler_outputs.prefill_scheduled_seq_groups
+        target_decode_scheduled_seq_groups: List[
+            ScheduledSequenceGroup] = scheduler_outputs.target_decode_scheduled_seq_groups
+        draft_decode_scheduled_seq_groups: List[
+            ScheduledSequenceGroup] = scheduler_outputs.draft_decode_scheduled_seq_groups
+
+        scheduled_seq_groups = prefill_scheduled_seq_groups + \
+            target_decode_scheduled_seq_groups + draft_decode_scheduled_seq_groups
+
         num_prompt_tokens_to_log = 0
         num_generation_tokens_to_log = 0
 
-        for seq_group, outputs in zip(scheduled_seq_groups, output):
+        assert len(scheduled_seq_groups) == len(output)
+        for scheduled_seq_group, outputs in zip(scheduled_seq_groups, output):
             num_tokens_to_log = self._process_sequence_group_outputs(
-                seq_group, outputs, seq_group.spec_decode_stage)
+                scheduled_seq_group, outputs)
 
-            if seq_group.spec_decode_stage == SpecDecodeStage.PROMPT:
+            if scheduled_seq_group.seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
                 num_prompt_tokens_to_log += num_tokens_to_log
             else:
                 num_generation_tokens_to_log += num_tokens_to_log
@@ -402,9 +422,10 @@ class SpecDecodeLLMEngine:
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for seq_group in (scheduled_seq_groups +
-                          scheduler_outputs.ignored_seq_groups):
-            request_output = RequestOutput.from_seq_group(seq_group)
+        for scheduled_seq_group in (scheduled_seq_groups +
+                                    scheduler_outputs.ignored_seq_groups):
+            request_output = RequestOutput.from_seq_group(
+                scheduled_seq_group.seq_group)
             request_outputs.append(request_output)
 
         if self.log_stats:
@@ -419,6 +440,7 @@ class SpecDecodeLLMEngine:
                                  seq_group_metadata_list: List[SequenceGroupMetadata]) -> None:
         idx = 0
         for seq_group_metadata in seq_group_metadata_list:
+            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE
             keys = list(seq_group_metadata.seq_data.keys())
             assert len(keys) == 1
             seq_id = keys[0]
@@ -441,52 +463,22 @@ class SpecDecodeLLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-        spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
+        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+         draft_decode_seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule()
 
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs)
 
         # Execute the model.
-        if spec_decode_stage == SpecDecodeStage.PROMPT:
-            # Execute the target model in the child process
-            output = self.worker_executor.run_target_worker_sync(
-                "execute_model",
-                seq_group_metadata_list=seq_group_metadata_list,
-                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                blocks_to_copy=scheduler_outputs.blocks_to_copy,
-            )
-
-            result = self._process_model_outputs(output, scheduler_outputs)
-
-        elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-            if self.spec_decode_config.draft_size == 0:
-                return self._process_model_outputs([], scheduler_outputs)
-
-            for _ in range(self.spec_decode_config.draft_size):
-                # Execute the draft model in the parent process
-                output = self.worker_executor.run_draft_worker_sync(
-                    "execute_model",
-                    seq_group_metadata_list=seq_group_metadata_list,
-                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                )
-                scheduler_outputs.blocks_to_swap_in = {}
-                scheduler_outputs.blocks_to_swap_out = {}
-                scheduler_outputs.blocks_to_copy = {}
-
-                result = self._process_model_outputs(output, scheduler_outputs)
-
-        elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-            # Make draft_probs tensor
-            self._fill_draft_probs_tensor(seq_group_metadata_list)
+        if self.scheduler.need_to_run_target:
+            self._fill_draft_probs_tensor(
+                target_decode_seq_group_metadata_list)
 
             # Execute the target model in the child process
             output = self.worker_executor.run_target_worker_sync(
                 "execute_model",
-                seq_group_metadata_list=seq_group_metadata_list,
+                prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
@@ -496,8 +488,23 @@ class SpecDecodeLLMEngine:
             result = self._process_model_outputs(output, scheduler_outputs)
 
         else:
-            raise ValueError(
-                f"Invalid SpecDecodeStage: {spec_decode_stage}")
+            if self.spec_decode_config.draft_size == 0:
+                return self._process_model_outputs([], scheduler_outputs)
+
+            for _ in range(self.spec_decode_config.draft_size):
+                # Execute the draft model in the parent process
+                output = self.worker_executor.run_draft_worker_sync(
+                    "execute_model",
+                    draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
+                scheduler_outputs.blocks_to_swap_in = {}
+                scheduler_outputs.blocks_to_swap_out = {}
+                scheduler_outputs.blocks_to_copy = {}
+
+                result = self._process_model_outputs(output, scheduler_outputs)
 
         return result
 
@@ -511,25 +518,27 @@ class SpecDecodeLLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        (target_seq_group_metadata_list, draft_seq_group_metadata_list,
-         target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
+        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
 
         if target_scheduler_outputs.is_empty():
             target_result = self._process_model_outputs(
                 [], target_scheduler_outputs)
         else:
-            self._fill_draft_probs_tensor(target_seq_group_metadata_list)
+            self._fill_draft_probs_tensor(
+                target_decode_seq_group_metadata_list)
 
             self.worker_executor.run_target_worker_async(
                 "execute_model",
-                seq_group_metadata_list=target_seq_group_metadata_list,
+                prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
                 blocks_to_swap_in=target_scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=target_scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=target_scheduler_outputs.blocks_to_copy,
                 draft_probs_tensor=self.draft_probs_tensor,
             )
 
-        if draft_scheduler_outputs.is_empty() or self.spec_decode_config.draft_size == 0:
+        if draft_scheduler_outputs.is_empty():
             draft_result = self._process_model_outputs(
                 [], draft_scheduler_outputs)
         else:
@@ -537,7 +546,7 @@ class SpecDecodeLLMEngine:
                 # Execute the draft model in the same process
                 draft_output = self.worker_executor.run_draft_worker_sync(
                     "execute_model",
-                    seq_group_metadata_list=draft_seq_group_metadata_list,
+                    draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
                     blocks_to_swap_in=draft_scheduler_outputs.blocks_to_swap_in,
                     blocks_to_swap_out=draft_scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=draft_scheduler_outputs.blocks_to_copy,
@@ -555,9 +564,7 @@ class SpecDecodeLLMEngine:
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
 
-        result = target_result + draft_result
-
-        return result
+        return target_result + draft_result
 
     def _log_system_stats(
         self,

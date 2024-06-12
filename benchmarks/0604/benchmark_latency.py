@@ -29,6 +29,7 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         enforce_eager=args.enforce_eager,
         download_dir=DOWNLOAD_DIR,
+        enable_chunked_prefill=args.enable_chunked_prefill,
         # disable_log_stats=False
     )
 
@@ -98,6 +99,9 @@ if __name__ == '__main__':
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
     parser.add_argument('--collocate', action='store_true')
+    parser.add_argument('--enable-chunked-prefill',
+                        '-cp',
+                        action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',

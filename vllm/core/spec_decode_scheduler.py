@@ -1,6 +1,7 @@
 import enum
 import time
-from typing import Dict, Iterable, List, Optional, Tuple, Union, OrderedDict
+from typing import Dict, Iterable, List, Optional, Tuple, Union, OrderedDict, Set
+from dataclasses import dataclass, field
 
 from vllm.config import CacheConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.core.spec_decode_block_manager import SpecDecodeAllocStatus, SpecDecodeBlockSpaceManager
@@ -26,19 +27,93 @@ class PreemptionMode(enum.Enum):
     RECOMPUTE = enum.auto()
 
 
+@dataclass
+class ScheduledSequenceGroup:
+    # A sequence group that's scheduled.
+    seq_group: SequenceGroup
+    # The total chunk size (number of tokens) to process for next iteration.
+    # 1 for decoding. Same as prompt tokens for prefill, but if prefill is
+    # chunked, it can be smaller than that.
+    token_chunk_size: int
+    do_sample: bool = True
+
+
+@dataclass
+class SchedulingBudget:
+    """The available slots for scheduling.
+
+    TODO(sang): Right now, the budget is request_id-aware meaning it can ignore
+    budget update from the same request_id. It is because in normal scheduling
+    path, we update RUNNING num_seqs ahead of time, meaning it could be
+    updated more than once when scheduling RUNNING requests. Since this won't
+    happen if we only have chunked prefill scheduling, we can remove this
+    feature from the API when chunked prefill is enabled by default.
+    """
+    token_budget: int
+    max_num_seqs: int
+    _requeset_ids_num_batched_tokens: Set[str] = field(default_factory=set)
+    _requeset_ids_num_curr_seqs: Set[str] = field(default_factory=set)
+    _num_batched_tokens: int = 0
+    _num_curr_seqs: int = 0
+
+    def can_schedule(self, *, num_new_tokens: int, num_new_seqs: int):
+        assert num_new_tokens != 0
+        assert num_new_seqs != 0
+        return (self.num_batched_tokens + num_new_tokens <= self.token_budget
+                and self.num_curr_seqs + num_new_seqs <= self.max_num_seqs)
+
+    def remaining_token_budget(self):
+        return self.token_budget - self.num_batched_tokens
+
+    def add_num_batched_tokens(self, req_id: str, num_batched_tokens: int):
+        if req_id in self._requeset_ids_num_batched_tokens:
+            return
+
+        self._requeset_ids_num_batched_tokens.add(req_id)
+        self._num_batched_tokens += num_batched_tokens
+
+    def subtract_num_batched_tokens(self, req_id: str,
+                                    num_batched_tokens: int):
+        if req_id in self._requeset_ids_num_batched_tokens:
+            self._requeset_ids_num_batched_tokens.remove(req_id)
+            self._num_batched_tokens -= num_batched_tokens
+
+    def add_num_seqs(self, req_id: str, num_curr_seqs: int):
+        if req_id in self._requeset_ids_num_curr_seqs:
+            return
+
+        self._requeset_ids_num_curr_seqs.add(req_id)
+        self._num_curr_seqs += num_curr_seqs
+
+    def subtract_num_seqs(self, req_id: str, num_curr_seqs: int):
+        if req_id in self._requeset_ids_num_curr_seqs:
+            self._requeset_ids_num_curr_seqs.remove(req_id)
+            self._num_curr_seqs -= num_curr_seqs
+
+    @property
+    def num_batched_tokens(self):
+        return self._num_batched_tokens
+
+    @property
+    def num_curr_seqs(self):
+        return self._num_curr_seqs
+
+
 class SpecDecodeSchedulerOutputs:
 
     def __init__(
         self,
-        scheduled_seq_groups: List[SequenceGroup],
-        num_batched_tokens: int,
+        prefill_scheduled_seq_groups: List[SequenceGroup],
+        target_decode_scheduled_seq_groups: List[SequenceGroup],
+        draft_decode_scheduled_seq_groups: List[SequenceGroup],
         blocks_to_swap_in: Dict[int, int],
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
         ignored_seq_groups: List[SequenceGroup],
     ) -> None:
-        self.scheduled_seq_groups = scheduled_seq_groups
-        self.num_batched_tokens = num_batched_tokens
+        self.prefill_scheduled_seq_groups = prefill_scheduled_seq_groups
+        self.target_decode_scheduled_seq_groups = target_decode_scheduled_seq_groups
+        self.draft_decode_scheduled_seq_groups = draft_decode_scheduled_seq_groups
         self.blocks_to_swap_in = blocks_to_swap_in
         self.blocks_to_swap_out = blocks_to_swap_out
         self.blocks_to_copy = blocks_to_copy
@@ -46,9 +121,15 @@ class SpecDecodeSchedulerOutputs:
         assert not (blocks_to_swap_in and blocks_to_swap_out)
         self.ignored_seq_groups = ignored_seq_groups
 
+        if self.prefill_scheduled_seq_groups or self.target_decode_scheduled_seq_groups:
+            self.is_target = True
+        else:
+            self.is_target = False
+
     def is_empty(self) -> bool:
         # NOTE: We do not consider the ignored sequence groups.
-        return (not self.scheduled_seq_groups and not self.blocks_to_swap_in
+        return (not self.prefill_scheduled_seq_groups and not self.target_decode_scheduled_seq_groups
+                and not self.draft_decode_scheduled_seq_groups and not self.blocks_to_swap_in
                 and not self.blocks_to_swap_out and not self.blocks_to_copy)
 
 
@@ -179,340 +260,92 @@ class SpecDecodeScheduler:
         logger.info(
             f"Rebalanced queues: {len(self.need_to_run_draft)} draft, {len(self.need_to_run_target)} target, {len(self.balancing_queue)} in balancing queue")
 
-    def _schedule(self) -> SpecDecodeSchedulerOutputs:
-        # Blocks that need to be swaped or copied before model execution.
-        blocks_to_swap_in: Dict[int, int] = {}
-        blocks_to_swap_out: Dict[int, int] = {}
-        blocks_to_copy: Dict[int, List[int]] = {}
+    def _schedule_prefill(self,
+                          scheduled_seq_groups: List[ScheduledSequenceGroup],
+                          ignored_seq_groups: List[SequenceGroup],
+                          budget: SchedulingBudget):
+        # The total number of sequences on the fly, including the
+        # requests in the generation phase.
+        num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
+                            for seq_group in self.need_to_run_draft)
+        num_curr_seqs += sum(seq_group.get_max_num_running_seqs()
+                             for seq_group in self.need_to_run_target)
 
-        # Fix the current time.
-        now = time.monotonic()
+        # Optimization: We do not sort the waiting queue since the preempted
+        # sequence groups are added to the front and the new sequence groups
+        # are added to the back.
+        while self.waiting:
+            seq_group = self.waiting[0]
 
-        # Join waiting sequences if possible.
-        if not self.swapped:
-            ignored_seq_groups: List[SequenceGroup] = []
-            scheduled: List[SequenceGroup] = []
-            # The total number of sequences on the fly, including the
-            # requests in the generation phase.
-            num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                                for seq_group in self.need_to_run_draft)
-            num_curr_seqs += sum(seq_group.get_max_num_running_seqs()
-                                 for seq_group in self.need_to_run_target)
-            seq_lens: List[int] = []
+            waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
+            assert len(waiting_seqs) == 1, (
+                "Waiting sequence group should have only one prompt "
+                "sequence.")
+            seq = waiting_seqs[0]
+            num_new_tokens = seq.get_num_uncomputed_target_tokens()
 
-            # Optimization: We do not sort the waiting queue since the preempted
-            # sequence groups are added to the front and the new sequence groups
-            # are added to the back.
-            while self.waiting:
-                seq_group = self.waiting[0]
+            do_sample = True
+            if self.scheduler_config.chunk_prefill_enabled:
+                if num_new_tokens > budget.remaining_token_budget():
+                    num_new_tokens = budget.remaining_token_budget()
+                    do_sample = False
 
-                waiting_seqs = seq_group.get_seqs(
-                    status=SequenceStatus.WAITING)
-                assert len(waiting_seqs) == 1, (
-                    "Waiting sequence group should have only one prompt "
-                    "sequence.")
-                num_prompt_tokens = waiting_seqs[0].get_len()
-                if num_prompt_tokens > self.prompt_limit:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds limit of {self.prompt_limit}")
-                    for seq in waiting_seqs:
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
+            if num_new_tokens > self.prompt_limit:
+                logger.warning(
+                    f"Input prompt ({num_new_tokens} tokens) is too long"
+                    f" and exceeds limit of {self.prompt_limit}")
+                seq.status = SequenceStatus.FINISHED_IGNORED
+                ignored_seq_groups.append(seq_group)
+                self.waiting.pop(0)
+                continue
 
-                # If the sequence group cannot be allocated, stop.
-                can_allocate = self.block_manager.can_allocate(seq_group)
-                if can_allocate == SpecDecodeAllocStatus.LATER:
-                    break
-                elif can_allocate == SpecDecodeAllocStatus.NEVER:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds the capacity of block_manager")
-                    for seq in waiting_seqs:
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
+            # If the sequence group cannot be allocated, stop.
+            can_allocate = self.block_manager.can_allocate(seq_group)
+            if can_allocate == SpecDecodeAllocStatus.LATER:
+                break
+            elif can_allocate == SpecDecodeAllocStatus.NEVER:
+                logger.warning(
+                    f"Input prompt ({num_new_tokens} tokens) is too long"
+                    f" and exceeds the capacity of block_manager")
+                seq.status = SequenceStatus.FINISHED_IGNORED
+                ignored_seq_groups.append(seq_group)
+                self.waiting.pop(0)
+                continue
 
-                # If the number of batched tokens exceeds the limit, stop.
-                new_seq_lens = seq_lens + [num_prompt_tokens]
-                num_batched_tokens = len(new_seq_lens) * max(new_seq_lens)
-                if (num_batched_tokens >
-                        self.scheduler_config.max_num_batched_tokens):
-                    break
+            num_new_seqs = seq_group.get_max_num_running_seqs()
+            if (num_new_tokens == 0
+                or not budget.can_schedule(num_new_tokens=num_new_tokens,
+                                           num_new_seqs=num_new_seqs)):
+                break
 
-                # The total number of sequences in the RUNNING state should not
-                # exceed the maximum number of sequences.
-                num_new_seqs = seq_group.get_max_num_running_seqs()
-                if (num_curr_seqs + num_new_seqs >
-                        self.scheduler_config.max_num_seqs):
-                    break
+            # Can schedule this request
+            seq_group = self.waiting.pop(0)
+            self._allocate(seq_group)
+            num_curr_seqs += num_new_seqs
+            self.need_to_run_target.append(seq_group)
+            seq_group.spec_decode_stage = SpecDecodeStage.PREFILL
+            budget.add_num_batched_tokens(
+                seq_group.request_id, num_new_tokens)
+            budget.add_num_seqs(seq_group.request_id, num_new_seqs)
+            scheduled_seq_groups.append(
+                ScheduledSequenceGroup(seq_group, num_new_tokens, do_sample))
 
-                num_paddings = num_batched_tokens - sum(new_seq_lens)
-                if num_paddings > self.scheduler_config.max_paddings:
-                    break
-                seq_lens = new_seq_lens
-
-                seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
-                num_curr_seqs += num_new_seqs
-                scheduled.append(seq_group)
-                seq_group.spec_decode_stage = SpecDecodeStage.PROMPT
-
-            if scheduled or ignored_seq_groups:
-                self.need_to_run_target = scheduled
-                scheduler_outputs = SpecDecodeSchedulerOutputs(
-                    scheduled_seq_groups=self.need_to_run_target,
-                    num_batched_tokens=len(seq_lens) *
-                    max(seq_lens) if seq_lens else 0,
-                    blocks_to_swap_in=blocks_to_swap_in,
-                    blocks_to_swap_out=blocks_to_swap_out,
-                    blocks_to_copy=blocks_to_copy,
-                    ignored_seq_groups=ignored_seq_groups,
-                )
-                return scheduler_outputs
-
-        if self.need_to_run_draft:
-            # NOTE(woosuk): Preemption happens only when there is no available slot
-            # to keep all the sequence groups in the RUNNING state.
-            # In this case, the policy is responsible for deciding which sequence
-            # groups to preempt.
-            self.need_to_run_draft = self.policy.sort_by_priority(
-                now, self.need_to_run_draft)
-
-            # Reserve new token slots for the running sequence groups.
-            need_to_run_draft: List[SequenceGroup] = []
-            preempted: List[SequenceGroup] = []
-            while self.need_to_run_draft:
-                seq_group = self.need_to_run_draft.pop(0)
-                seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                # We reserve new token slots also considering the target decode stage.
-                while not self.block_manager.can_append_slots(seq_group, seq.draft_size + 1):
-                    if self.need_to_run_draft:
-                        # Preempt the lowest-priority sequence groups.
-                        victim_seq_group = self.need_to_run_draft.pop(-1)
-                        self._preempt(victim_seq_group, blocks_to_swap_out)
-                        preempted.append(victim_seq_group)
-                    else:
-                        # No other sequence groups can be preempted.
-                        # Preempt the current sequence group.
-                        self._preempt(seq_group, blocks_to_swap_out)
-                        preempted.append(seq_group)
-                        break
-                else:
-                    # Append new slots to the sequence group.
-                    self._append_slots(
-                        seq_group, seq.draft_size + 1, blocks_to_copy)
-                    need_to_run_draft.append(seq_group)
-            self.need_to_run_draft = need_to_run_draft
-
-            # Swap in the sequence groups in the SWAPPED state if possible.
-            self.swapped = self.policy.sort_by_priority(now, self.swapped)
-            if not preempted:
-                num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                                    for seq_group in self.need_to_run_draft)
-
-                while self.swapped:
-                    seq_group = self.swapped[0]
-                    # If the sequence group cannot be swapped in, stop.
-                    if not self.block_manager.can_swap_in(seq_group):
-                        break
-
-                    # The total number of sequences in the RUNNING state should not
-                    # exceed the maximum number of sequences.
-                    num_new_seqs = seq_group.get_max_num_running_seqs()
-                    if (num_curr_seqs + num_new_seqs >
-                            self.scheduler_config.max_num_seqs):
-                        break
-
-                    seq_group = self.swapped.pop(0)
-                    self._swap_in(seq_group, blocks_to_swap_in)
-                    seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                    self._append_slots(
-                        seq_group, seq.draft_size, blocks_to_copy)
-                    num_curr_seqs += num_new_seqs
-                    self.need_to_run_draft.append(seq_group)
-
-            num_batched_tokens = 0
-            for seq_group in self.need_to_run_draft:
-                seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                num_batched_tokens += seq.data.get_uncached_draft_len()
-                seq_group.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
-
-            scheduler_outputs = SpecDecodeSchedulerOutputs(
-                scheduled_seq_groups=self.need_to_run_draft,
-                num_batched_tokens=num_batched_tokens,
-                blocks_to_swap_in=blocks_to_swap_in,
-                blocks_to_swap_out=blocks_to_swap_out,
-                blocks_to_copy=blocks_to_copy,
-                ignored_seq_groups=[],
-            )
-            return scheduler_outputs
-
-        # Sort the sequence groups by priority.
-        self.need_to_run_target = self.policy.sort_by_priority(
-            now, self.need_to_run_target)
-
-        # We don't consider preemption for target decode because we already
-        # considered appending slots including the target token (also the bonus token)
-        # in the draft decoding stage.
-        num_batched_tokens = 0
-        for seq_group in self.need_to_run_target:
-            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            assert seq.draft_size == seq.get_draft_len()
-            num_batched_tokens += (seq.get_draft_len() + 1)
-            seq_group.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
-
-        scheduler_outputs = SpecDecodeSchedulerOutputs(
-            scheduled_seq_groups=self.need_to_run_target,
-            num_batched_tokens=num_batched_tokens,
-            blocks_to_swap_in=blocks_to_swap_in,
-            blocks_to_swap_out=blocks_to_swap_out,
-            blocks_to_copy=blocks_to_copy,
-            ignored_seq_groups=[],
-        )
-        return scheduler_outputs
-
-    def _collocate_target_schedule(self) -> SpecDecodeSchedulerOutputs:
-        # Blocks that need to be swaped or copied before model execution.
-        blocks_to_swap_in: Dict[int, int] = {}
-        blocks_to_swap_out: Dict[int, int] = {}
-        blocks_to_copy: Dict[int, List[int]] = {}
-
-        # Fix the current time.
-        now = time.monotonic()
-
-        # Join waiting sequences if possible.
-        if not self.swapped:
-            ignored_seq_groups: List[SequenceGroup] = []
-            scheduled: List[SequenceGroup] = []
-            # The total number of sequences on the fly, including the
-            # requests in the generation phase.
-            num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                                for seq_group in self.need_to_run_draft)
-            num_curr_seqs += sum(seq_group.get_max_num_running_seqs()
-                                 for seq_group in self.need_to_run_target)
-            seq_lens: List[int] = []
-
-            # Optimization: We do not sort the waiting queue since the preempted
-            # sequence groups are added to the front and the new sequence groups
-            # are added to the back.
-            while self.waiting:
-                seq_group = self.waiting[0]
-
-                waiting_seqs = seq_group.get_seqs(
-                    status=SequenceStatus.WAITING)
-                assert len(waiting_seqs) == 1, (
-                    "Waiting sequence group should have only one prompt "
-                    "sequence.")
-                num_prompt_tokens = waiting_seqs[0].get_len()
-                if num_prompt_tokens > self.prompt_limit:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds limit of {self.prompt_limit}")
-                    for seq in waiting_seqs:
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
-
-                # If the sequence group cannot be allocated, stop.
-                can_allocate = self.block_manager.can_allocate(seq_group)
-                if can_allocate == SpecDecodeAllocStatus.LATER:
-                    break
-                elif can_allocate == SpecDecodeAllocStatus.NEVER:
-                    logger.warning(
-                        f"Input prompt ({num_prompt_tokens} tokens) is too long"
-                        f" and exceeds the capacity of block_manager")
-                    for seq in waiting_seqs:
-                        seq.status = SequenceStatus.FINISHED_IGNORED
-                    ignored_seq_groups.append(seq_group)
-                    self.waiting.pop(0)
-                    continue
-
-                # If the number of batched tokens exceeds the limit, stop.
-                new_seq_lens = seq_lens + [num_prompt_tokens]
-                num_batched_tokens = len(new_seq_lens) * max(new_seq_lens)
-                if (num_batched_tokens >
-                        self.scheduler_config.max_num_batched_tokens):
-                    break
-
-                # The total number of sequences in the RUNNING state should not
-                # exceed the maximum number of sequences.
-                num_new_seqs = seq_group.get_max_num_running_seqs()
-                if (num_curr_seqs + num_new_seqs >
-                        self.scheduler_config.max_num_seqs):
-                    break
-
-                num_paddings = num_batched_tokens - sum(new_seq_lens)
-                if num_paddings > self.scheduler_config.max_paddings:
-                    break
-                seq_lens = new_seq_lens
-
-                seq_group = self.waiting.pop(0)
-                self._allocate(seq_group)
-                num_curr_seqs += num_new_seqs
-                scheduled.append(seq_group)
-                seq_group.spec_decode_stage = SpecDecodeStage.PROMPT
-
-            if scheduled or ignored_seq_groups:
-                self.need_to_run_target = scheduled
-                scheduler_outputs = SpecDecodeSchedulerOutputs(
-                    scheduled_seq_groups=self.need_to_run_target,
-                    num_batched_tokens=len(seq_lens) *
-                    max(seq_lens) if seq_lens else 0,
-                    blocks_to_swap_in=blocks_to_swap_in,
-                    blocks_to_swap_out=blocks_to_swap_out,
-                    blocks_to_copy=blocks_to_copy,
-                    ignored_seq_groups=ignored_seq_groups,
-                )
-                return scheduler_outputs
-
-        # Sort the sequence groups by priority.
-        self.need_to_run_target = self.policy.sort_by_priority(
-            now, self.need_to_run_target)
-
-        # We don't consider preemption for target decode because we already
-        # considered appending slots including the target token (also the bonus token)
-        # in the draft decoding stage.
-        num_batched_tokens = 0
-        for seq_group in self.need_to_run_target:
-            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            assert seq.draft_size == seq.get_draft_len()
-            num_batched_tokens += (seq.get_draft_len() + 1)
-            seq_group.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
-
-        scheduler_outputs = SpecDecodeSchedulerOutputs(
-            scheduled_seq_groups=self.need_to_run_target,
-            num_batched_tokens=num_batched_tokens,
-            blocks_to_swap_in=blocks_to_swap_in,
-            blocks_to_swap_out=blocks_to_swap_out,
-            blocks_to_copy=blocks_to_copy,
-            ignored_seq_groups=[],
-        )
-        return scheduler_outputs
-
-    def _collocate_draft_schedule(self) -> SpecDecodeSchedulerOutputs:
-        # Blocks that need to be swaped or copied before model execution.
-        blocks_to_swap_in: Dict[int, int] = {}
-        blocks_to_swap_out: Dict[int, int] = {}
-        blocks_to_copy: Dict[int, List[int]] = {}
-
-        # Fix the current time.
-        now = time.monotonic()
-
+    def _schedule_draft_decode(self,
+                               scheduled_seq_groups: List[ScheduledSequenceGroup],
+                               blocks_to_swap_in: Dict[int, int],
+                               blocks_to_swap_out: Dict[int, int],
+                               blocks_to_copy: Dict[int, int]):
         # NOTE(woosuk): Preemption happens only when there is no available slot
         # to keep all the sequence groups in the RUNNING state.
         # In this case, the policy is responsible for deciding which sequence
         # groups to preempt.
+        now = time.time()
         self.need_to_run_draft = self.policy.sort_by_priority(
             now, self.need_to_run_draft)
 
         # Reserve new token slots for the running sequence groups.
-        need_to_run_draft: List[SequenceGroup] = []
         preempted: List[SequenceGroup] = []
+        need_to_run_draft: List[SequenceGroup] = []
         while self.need_to_run_draft:
             seq_group = self.need_to_run_draft.pop(0)
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
@@ -530,10 +363,14 @@ class SpecDecodeScheduler:
                     preempted.append(seq_group)
                     break
             else:
-                # Append new slots to the sequence group.
+                # Can schedule this request
                 self._append_slots(
                     seq_group, seq.draft_size + 1, blocks_to_copy)
                 need_to_run_draft.append(seq_group)
+                seq_group.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
+                scheduled_seq_groups.append(
+                    ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_draft_tokens()))
+
         self.need_to_run_draft = need_to_run_draft
 
         # Swap in the sequence groups in the SWAPPED state if possible.
@@ -541,6 +378,8 @@ class SpecDecodeScheduler:
         if not preempted:
             num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
                                 for seq_group in self.need_to_run_draft)
+            num_curr_seqs += sum(seq_group.get_max_num_running_seqs()
+                                 for seq_group in self.need_to_run_target)
 
             while self.swapped:
                 seq_group = self.swapped[0]
@@ -559,68 +398,184 @@ class SpecDecodeScheduler:
                 self._swap_in(seq_group, blocks_to_swap_in)
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
                 self._append_slots(
-                    seq_group, seq.draft_size, blocks_to_copy)
+                    seq_group, seq.draft_size + 1, blocks_to_copy)
                 num_curr_seqs += num_new_seqs
-                self.need_to_run_draft.append(seq_group)
 
-        num_batched_tokens = 0
-        for seq_group in self.need_to_run_draft:
+                self.need_to_run_draft.append(seq_group)
+                seq_group.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
+                scheduled_seq_groups.append(
+                    ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_draft_tokens()))
+
+    def _schedule_target_decode(self,
+                                scheduled_seq_groups: List[ScheduledSequenceGroup],
+                                budget: SchedulingBudget) -> int:
+        # Sort the sequence groups by priority.
+        now = time.time()
+        self.need_to_run_target = self.policy.sort_by_priority(
+            now, self.need_to_run_target)
+
+        # We don't consider preemption for target decode because we already
+        # considered appending slots including the target token (also the bonus token)
+        # in the draft decoding stage.
+        for seq_group in self.need_to_run_target:
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            num_batched_tokens += seq.data.get_uncached_draft_len()
-            seq_group.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
+            assert seq.draft_size == seq.get_draft_len()
+            seq_group.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
+            budget.add_num_batched_tokens(
+                seq_group.request_id, (seq.get_draft_len() + 1))
+            scheduled_seq_groups.append(
+                ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_target_tokens()))
+
+    def _schedule(self) -> SpecDecodeSchedulerOutputs:
+        # Blocks that need to be swaped or copied before model execution.
+        blocks_to_swap_in: Dict[int, int] = {}
+        blocks_to_swap_out: Dict[int, int] = {}
+        blocks_to_copy: Dict[int, List[int]] = {}
+
+        prefill_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+        target_decode_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+        draft_decode_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+
+        # Ignore the sequence groups that are too long.
+        ignored_seq_groups: List[SequenceGroup] = []
+
+        # Inlcude running requests to the budget.
+        target_budget = SchedulingBudget(
+            token_budget=self.scheduler_config.max_num_batched_tokens,
+            max_num_seqs=self.scheduler_config.max_num_seqs,
+        )
+        for seq_group in self.need_to_run_target:
+            target_budget.add_num_seqs(seq_group.request_id,
+                                       seq_group.get_max_num_running_seqs())
+
+        if not self.scheduler_config.chunk_prefill_enabled:
+            # Join waiting sequences if possible.
+            if not self.swapped:
+                self._schedule_prefill(
+                    prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
+
+            if target_budget.num_batched_tokens == 0:
+                if self.need_to_run_draft:
+                    self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                                blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+
+                else:
+                    self._schedule_target_decode(
+                        target_decode_scheduled_seq_groups, target_budget)
+
+        else:
+            if self.need_to_run_draft:
+                self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                            blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+
+            else:
+                self._schedule_target_decode(
+                    target_decode_scheduled_seq_groups, target_budget)
+                self._schedule_prefill(
+                    prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
 
         scheduler_outputs = SpecDecodeSchedulerOutputs(
-            scheduled_seq_groups=self.need_to_run_draft,
-            num_batched_tokens=num_batched_tokens,
+            prefill_scheduled_seq_groups=prefill_scheduled_seq_groups,
+            target_decode_scheduled_seq_groups=target_decode_scheduled_seq_groups,
+            draft_decode_scheduled_seq_groups=draft_decode_scheduled_seq_groups,
+            blocks_to_swap_in=blocks_to_swap_in,
+            blocks_to_swap_out=blocks_to_swap_out,
+            blocks_to_copy=blocks_to_copy,
+            ignored_seq_groups=ignored_seq_groups,
+        )
+        return scheduler_outputs
+
+    def _collocate_schedule(self) -> Tuple[SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
+        # Blocks that need to be swaped or copied before model execution.
+        blocks_to_swap_in: Dict[int, int] = {}
+        blocks_to_swap_out: Dict[int, int] = {}
+        blocks_to_copy: Dict[int, List[int]] = {}
+
+        prefill_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+        target_decode_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+        draft_decode_scheduled_seq_groups: List[ScheduledSequenceGroup] = []
+
+        # Ignore the sequence groups that are too long.
+        ignored_seq_groups: List[SequenceGroup] = []
+
+        # Inlcude running requests to the budget.
+        target_budget = SchedulingBudget(
+            token_budget=self.scheduler_config.max_num_batched_tokens,
+            max_num_seqs=self.scheduler_config.max_num_seqs,
+        )
+        for seq_group in self.need_to_run_target:
+            target_budget.add_num_seqs(seq_group.request_id,
+                                       seq_group.get_max_num_running_seqs())
+
+        # Target prefill + decoding scheduling
+        if not self.scheduler_config.chunk_prefill_enabled:
+            # Schedule target prefill or target decoding
+            # Join waiting sequences if possible.
+            if not self.swapped:
+                self._schedule_prefill(
+                    prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
+
+            if target_budget.num_batched_tokens == 0:
+                self._schedule_target_decode(
+                    target_decode_scheduled_seq_groups, target_budget)
+
+        else:
+            # Schedule target prefill and decoding together
+            self._schedule_target_decode(
+                target_decode_scheduled_seq_groups, target_budget)
+            self._schedule_prefill(prefill_scheduled_seq_groups, ignored_seq_groups,
+                                   target_budget)
+
+        # Draft decode scheduling
+        self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                    blocks_to_swap_in,
+                                    blocks_to_swap_out,
+                                    blocks_to_copy)
+
+        target_scheduler_outputs = SpecDecodeSchedulerOutputs(
+            prefill_scheduled_seq_groups=prefill_scheduled_seq_groups,
+            target_decode_scheduled_seq_groups=target_decode_scheduled_seq_groups,
+            draft_decode_scheduled_seq_groups=[],
+            blocks_to_swap_in={},
+            blocks_to_swap_out={},
+            blocks_to_copy={},
+            ignored_seq_groups=ignored_seq_groups,
+        )
+        draft_scheduler_outputs = SpecDecodeSchedulerOutputs(
+            prefill_scheduled_seq_groups=[],
+            target_decode_scheduled_seq_groups=[],
+            draft_decode_scheduled_seq_groups=draft_decode_scheduled_seq_groups,
             blocks_to_swap_in=blocks_to_swap_in,
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             ignored_seq_groups=[],
         )
-        return scheduler_outputs
-
-    def _collocate_schedule(self) -> Tuple[SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
-        target_scheduler_outputs = self._collocate_target_schedule()
-        draft_scheduler_outputs = self._collocate_draft_schedule()
-
         return target_scheduler_outputs, draft_scheduler_outputs
 
-    @nvtx_range("SpecDecodeScheduler::schedule")
-    def schedule(self) -> Tuple[List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs]:
+    @ nvtx_range("SpecDecodeScheduler::schedule")
+    def schedule(self) -> Tuple[List[SequenceGroupMetadata], List[SequenceGroupMetadata],
+                                List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target, self.need_to_run_draft, self.swapped, and self.waiting.
         self._swap_target_draft_queues()
+
         scheduler_outputs = self._schedule()
 
-        # Create input data structures.
-        seq_group_metadata_list: List[SequenceGroupMetadata] = []
-        for seq_group in scheduler_outputs.scheduled_seq_groups:
-            spec_decode_stage = seq_group.spec_decode_stage
-            seq_data: OrderedDict[int, SequenceData] = OrderedDict()
-            block_tables: Dict[int, List[int]] = {}
+        prefill_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            scheduler_outputs.prefill_scheduled_seq_groups)
+        target_decode_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            scheduler_outputs.target_decode_scheduled_seq_groups)
+        draft_decode_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            scheduler_outputs.draft_decode_scheduled_seq_groups)
 
-            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            seq_id = seq.seq_id
-            seq_data[seq_id] = seq.data
-            block_tables[seq_id] = self.block_manager.get_block_table(seq)
-            is_prompt = True if spec_decode_stage == SpecDecodeStage.PROMPT else False
+        return (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+                draft_decode_seq_group_metadata_list, scheduler_outputs)
 
-            seq_group_metadata = SequenceGroupMetadata(
-                request_id=seq_group.request_id,
-                is_prompt=is_prompt,
-                seq_data=seq_data,
-                sampling_params=seq_group.sampling_params,
-                block_tables=block_tables,
-                spec_decode_stage=spec_decode_stage,
-                draft_size=seq.draft_size
-            )
-            seq_group_metadata_list.append(seq_group_metadata)
-        return seq_group_metadata_list, scheduler_outputs
-
-    @nvtx_range("SpecDecodeScheduler::collocate_schedule")
-    def collocate_schedule(self) -> Tuple[List[SequenceGroupMetadata], List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
-        # schedule sequence groups.
+    @ nvtx_range("SpecDecodeScheduler::collocate_schedule")
+    def collocate_schedule(self) -> Tuple[List[SequenceGroupMetadata], List[SequenceGroupMetadata],
+                                          List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
+        # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target, self.need_to_run_draft, self.swapped, and self.waiting.
         # Balance the draft and target queues
@@ -629,9 +584,26 @@ class SpecDecodeScheduler:
 
         target_scheduler_outputs, draft_scheduler_outputs = self._collocate_schedule()
 
-        # Create input data structures for target decode
-        target_seq_group_metadata_list: List[SequenceGroupMetadata] = []
-        for seq_group in target_scheduler_outputs.scheduled_seq_groups:
+        prefill_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            target_scheduler_outputs.prefill_scheduled_seq_groups)
+        target_decode_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            target_scheduler_outputs.target_decode_scheduled_seq_groups)
+        draft_decode_seq_group_metadata_list = self._create_seq_group_metadata_list(
+            draft_scheduler_outputs.draft_decode_scheduled_seq_groups)
+
+        return (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+                draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs)
+
+    def _create_seq_group_metadata_list(
+        self,
+        scheduled_seq_groups: List[ScheduledSequenceGroup]
+    ) -> List[SequenceGroupMetadata]:
+        seq_group_metadata_list: List[SequenceGroupMetadata] = []
+
+        for scheduled_seq_group in scheduled_seq_groups:
+            seq_group = scheduled_seq_group.seq_group
+            token_chunk_size = scheduled_seq_group.token_chunk_size
+
             spec_decode_stage = seq_group.spec_decode_stage
             seq_data: OrderedDict[int, SequenceData] = OrderedDict()
             block_tables: Dict[int, List[int]] = {}
@@ -640,7 +612,7 @@ class SpecDecodeScheduler:
             seq_id = seq.seq_id
             seq_data[seq_id] = seq.data
             block_tables[seq_id] = self.block_manager.get_block_table(seq)
-            is_prompt = True if spec_decode_stage == SpecDecodeStage.PROMPT else False
+            is_prompt = True if spec_decode_stage == SpecDecodeStage.PREFILL else False
 
             seq_group_metadata = SequenceGroupMetadata(
                 request_id=seq_group.request_id,
@@ -648,36 +620,13 @@ class SpecDecodeScheduler:
                 seq_data=seq_data,
                 sampling_params=seq_group.sampling_params,
                 block_tables=block_tables,
+                token_chunk_size=token_chunk_size,
                 spec_decode_stage=spec_decode_stage,
                 draft_size=seq.draft_size
             )
-            target_seq_group_metadata_list.append(seq_group_metadata)
+            seq_group_metadata_list.append(seq_group_metadata)
 
-        # Create input data structures for draft decode
-        draft_seq_group_metadata_list: List[SequenceGroupMetadata] = []
-        for seq_group in draft_scheduler_outputs.scheduled_seq_groups:
-            spec_decode_stage = seq_group.spec_decode_stage
-            seq_data: OrderedDict[int, SequenceData] = OrderedDict()
-            block_tables: Dict[int, List[int]] = {}
-
-            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            seq_id = seq.seq_id
-            seq_data[seq_id] = seq.data
-            block_tables[seq_id] = self.block_manager.get_block_table(seq)
-            is_prompt = True if spec_decode_stage == SpecDecodeStage.PROMPT else False
-
-            seq_group_metadata = SequenceGroupMetadata(
-                request_id=seq_group.request_id,
-                is_prompt=is_prompt,
-                seq_data=seq_data,
-                sampling_params=seq_group.sampling_params,
-                block_tables=block_tables,
-                spec_decode_stage=spec_decode_stage,
-                draft_size=seq.draft_size
-            )
-            draft_seq_group_metadata_list.append(seq_group_metadata)
-
-        return target_seq_group_metadata_list, draft_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs
+        return seq_group_metadata_list
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)
@@ -754,6 +703,8 @@ class SpecDecodeScheduler:
         for seq in seqs:
             seq.status = SequenceStatus.WAITING
             self.block_manager.free(seq)
+            seq.reset_state_for_recompute()
+
         # NOTE: For FCFS, we insert the preempted sequence group to the front
         # of the waiting queue.
         self.waiting.insert(0, seq_group)

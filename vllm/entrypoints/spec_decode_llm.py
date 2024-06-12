@@ -79,11 +79,12 @@ class SpecDecodeLLM:
         revision: Optional[str] = None,
         tokenizer_revision: Optional[str] = None,
         seed: int = 0,
-        gpu_memory_utilization: float = 0.6,
+        gpu_memory_utilization: float = 0.9,
         swap_space: int = 4,
         enforce_eager: bool = False,
         max_context_len_to_capture: int = 8192,
-        **kwargs,
+        enable_chunked_prefill: bool = False,
+        ** kwargs,
     ) -> None:
         if "disable_log_stats" not in kwargs:
             kwargs["disable_log_stats"] = True
@@ -104,7 +105,8 @@ class SpecDecodeLLM:
             swap_space=swap_space,
             enforce_eager=enforce_eager,
             max_context_len_to_capture=max_context_len_to_capture,
-            **kwargs,
+            enable_chunked_prefill=enable_chunked_prefill,
+            ** kwargs,
         )
         self.llm_engine = SpecDecodeLLMEngine.from_engine_args(engine_args)
         self.request_counter = Counter()
@@ -167,7 +169,6 @@ class SpecDecodeLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-        self.llm_engine.temp_counter = 0
         if collocate:
             return self._run_engine_collocate(use_tqdm)
         else:
@@ -230,4 +231,4 @@ class SpecDecodeLLM:
         return outputs
 
     def shutdown(self) -> None:
-        self.llm_engine.shutdown()
+        self.llm_engine.worker_executor.shutdown()
