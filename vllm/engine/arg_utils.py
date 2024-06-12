@@ -270,6 +270,7 @@ class SpecDecodeEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 7
+    enable_chunked_prefill: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -279,7 +280,6 @@ class SpecDecodeEngineArgs:
     seed: int = 0
     max_model_len: Optional[int] = None
     worker_use_ray: bool = False
-    ray_workers_use_nsight: bool = False
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
@@ -295,7 +295,6 @@ class SpecDecodeEngineArgs:
     quantization: Optional[str] = None
     enforce_eager: bool = False
     max_context_len_to_capture: int = 8192
-    enable_chunked_prefill: bool = False
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -311,10 +310,23 @@ class SpecDecodeEngineArgs:
 
         # Model arguments
         parser.add_argument(
-            '--model',
+            '--target-model',
+            type=str,
+            default='facebook/opt-6.7b',
+            help='name or path of the huggingface model to use')
+        parser.add_argument(
+            '--draft-model',
             type=str,
             default='facebook/opt-125m',
             help='name or path of the huggingface model to use')
+        parser.add_argument('--draft-size',
+                            type=int,
+                            default=7,
+                            help='draft size')
+        parser.add_argument('--enable-chunked-prefill',
+                            '-cp',
+                            action='store_true',
+                            help='enable chunked prefill')
         parser.add_argument(
             '--tokenizer',
             type=str,
@@ -496,7 +508,6 @@ class SpecDecodeEngineArgs:
         parallel_config = ParallelConfig(self.pipeline_parallel_size,
                                          self.tensor_parallel_size,
                                          self.worker_use_ray,
-                                         self.ray_workers_use_nsight,
                                          self.max_parallel_loading_workers)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
@@ -516,7 +527,7 @@ class AsyncSpecDecodeEngineArgs(SpecDecodeEngineArgs):
     @staticmethod
     def add_cli_args(
             parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        parser = EngineArgs.add_cli_args(parser)
+        parser = SpecDecodeEngineArgs.add_cli_args(parser)
         parser.add_argument('--engine-use-ray',
                             action='store_true',
                             help='use Ray to start the LLM engine in a '

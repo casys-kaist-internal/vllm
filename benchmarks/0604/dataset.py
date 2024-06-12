@@ -149,7 +149,7 @@ def load_finance(num_prompts: int,
 def sample_requests(dataset_name: str,
                     num_prompts: int,
                     tokenizer: PreTrainedTokenizerBase,
-                    fixed_output_len: Optional[int]):
+                    fixed_output_len: Optional[int] = None):
     if dataset_name == 'gsm8k':
         return load_gsm8k(num_prompts, tokenizer, fixed_output_len)
     elif dataset_name == 'humaneval':

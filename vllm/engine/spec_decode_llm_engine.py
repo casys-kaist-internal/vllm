@@ -468,7 +468,7 @@ class SpecDecodeLLMEngine:
             return self._process_model_outputs([], scheduler_outputs)
 
         # Execute the model.
-        if self.scheduler.need_to_run_target:
+        if self.scheduler.need_to_run_target_decode:
             self._fill_draft_probs_tensor(
                 target_decode_seq_group_metadata_list)
 
@@ -559,14 +559,16 @@ class SpecDecodeLLMEngine:
                 draft_result = self._process_model_outputs(
                     draft_output, draft_scheduler_outputs)
 
-            self.scheduler.swap_target_draft_queues(draft_scheduler_outputs)
+            self.scheduler.swap_and_balance_target_draft_queues(
+                draft_scheduler_outputs)
 
         if not target_scheduler_outputs.is_empty():
             # Wait for the target worker output
             target_output = self.worker_executor.get_target_worker_async_output()
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
-            self.scheduler.swap_target_draft_queues(target_scheduler_outputs)
+            self.scheduler.swap_and_balance_target_draft_queues(
+                target_scheduler_outputs)
 
         self.scheduler.free_finished_seq_groups()
 

@@ -1,6 +1,8 @@
 import copy
 import torch.multiprocessing as mp
 from typing import Any
+import asyncio
+from functools import partial
 
 from vllm.worker.spec_decode_worker import SpecDecodeWorker
 from vllm.utils import get_ip, get_open_port, nvtx_range
@@ -34,10 +36,10 @@ class WorkerExecutor:
         self.target_worker_process = process
         self.target_worker_pipe = parent_conn
 
+    # For sync engine
     @ nvtx_range("run_draft_worker_sync")
     def run_draft_worker_sync(self, method: str, *args, **kwargs) -> Any:
-        worker_instance = self.draft_worker
-        return getattr(worker_instance, method)(*args, **kwargs)
+        return getattr(self.draft_worker, method)(*args, **kwargs)
 
     @ nvtx_range("run_target_worker_sync")
     def run_target_worker_sync(self, method: str, *args, **kwargs) -> Any:
@@ -56,6 +58,25 @@ class WorkerExecutor:
         Receive the output from the target worker.
         """
         return self.target_worker_pipe.recv()
+
+    # For async engine
+    async def _run_draft_worker_sync(self, method: str, *args, **kwargs) -> Any:
+        driver_executor = getattr(self.draft_worker, method)
+        coro = asyncio.get_event_loop().run_in_executor(
+            None, partial(driver_executor, *args, **kwargs))
+        return await coro
+
+    # Wait the blocking recv in separate thread
+    async def _run_target_worker_sync(self, method: str, *args, **kwargs) -> Any:
+        loop = asyncio.get_event_loop()
+        self.target_worker_pipe.send((method, args, kwargs))
+        result = await loop.run_in_executor(None, self.target_worker_pipe.recv)
+        return result
+
+    async def _get_target_worker_async_output(self) -> None:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, self.target_worker_pipe.recv)
+        return result
 
     def shutdown(self) -> None:
         self.target_worker_pipe.send(("shutdown", [], {}))
