@@ -204,8 +204,19 @@ class SpecDecodeScheduler:
     def get_num_running_seq_groups(self) -> int:
         return len(self.need_to_run_draft) + len(self.need_to_run_target) + len(self.balancing_queue)
 
-    def _swap_target_draft_queues(self) -> None:
-        self.need_to_run_target, self.need_to_run_draft = self.need_to_run_draft, self.need_to_run_target
+    def swap_target_draft_queues(self, scheduler_outputs) -> None:
+        scheduled_seq_groups = scheduler_outputs.prefill_scheduled_seq_groups + \
+            scheduler_outputs.target_decode_scheduled_seq_groups + \
+            scheduler_outputs.draft_decode_scheduled_seq_groups
+
+        for scheduled_seq_group in scheduled_seq_groups:
+            seq_group = scheduled_seq_group.seq_group
+            if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+                self.need_to_run_draft.remove(seq_group)
+                self.need_to_run_target.append(seq_group)
+            else:
+                self.need_to_run_target.remove(seq_group)
+                self.need_to_run_draft.append(seq_group)
 
     def _balance_target_draft_queues(self) -> None:
         # Need to balance the draft and target queues
@@ -558,7 +569,6 @@ class SpecDecodeScheduler:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target, self.need_to_run_draft, self.swapped, and self.waiting.
-        self._swap_target_draft_queues()
 
         scheduler_outputs = self._schedule()
 
@@ -579,7 +589,6 @@ class SpecDecodeScheduler:
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target, self.need_to_run_draft, self.swapped, and self.waiting.
         # Balance the draft and target queues
-        self._swap_target_draft_queues()
         self._balance_target_draft_queues()
 
         target_scheduler_outputs, draft_scheduler_outputs = self._collocate_schedule()

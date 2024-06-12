@@ -223,6 +223,11 @@ def main():
     finance_data = load_finance(num_prompts, tokenizer, fixed_output_len)
     print("Finance Sample Data Length:", len(finance_data))
 
+    # Test Dummy dataset
+    print("Loading Dummy dataset...")
+    dummy_data = load_dummy(num_prompts, tokenizer, fixed_output_len)
+    print("Dummy Sample Data Length:", len(dummy_data))
+
 
 if __name__ == '__main__':
     main()

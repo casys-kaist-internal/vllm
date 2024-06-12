@@ -112,7 +112,7 @@ class SpecDecodeLLMEngine:
         # Draft_probs that should be sent to target worker when target decode
         self.draft_probs_dict = defaultdict(list)
         self.draft_probs_tensor = torch.zeros(
-            1000, target_model_config.get_vocab_size(), device='cuda').share_memory_()
+            self.scheduler_config.max_num_seqs * 7, target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
@@ -407,18 +407,16 @@ class SpecDecodeLLMEngine:
         num_prompt_tokens_to_log = 0
         num_generation_tokens_to_log = 0
 
-        assert len(scheduled_seq_groups) == len(output)
-        for scheduled_seq_group, outputs in zip(scheduled_seq_groups, output):
-            num_tokens_to_log = self._process_sequence_group_outputs(
-                scheduled_seq_group, outputs)
+        if output:
+            assert len(scheduled_seq_groups) == len(output)
+            for scheduled_seq_group, outputs in zip(scheduled_seq_groups, output):
+                num_tokens_to_log = self._process_sequence_group_outputs(
+                    scheduled_seq_group, outputs)
 
-            if scheduled_seq_group.seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
-                num_prompt_tokens_to_log += num_tokens_to_log
-            else:
-                num_generation_tokens_to_log += num_tokens_to_log
-
-        # Free the finished sequence groups.
-        self.scheduler.free_finished_seq_groups()
+                if scheduled_seq_group.seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
+                    num_prompt_tokens_to_log += num_tokens_to_log
+                else:
+                    num_generation_tokens_to_log += num_tokens_to_log
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
@@ -435,7 +433,7 @@ class SpecDecodeLLMEngine:
 
         return request_outputs
 
-    @nvtx_range("_fill_draft_probs_tensor")
+    @ nvtx_range("_fill_draft_probs_tensor")
     def _fill_draft_probs_tensor(self,
                                  seq_group_metadata_list: List[SequenceGroupMetadata]) -> None:
         idx = 0
@@ -453,7 +451,7 @@ class SpecDecodeLLMEngine:
 
             idx += length
 
-    @nvtx_range("step")
+    @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
@@ -489,7 +487,7 @@ class SpecDecodeLLMEngine:
 
         else:
             if self.spec_decode_config.draft_size == 0:
-                return self._process_model_outputs([], scheduler_outputs)
+                result = self._process_model_outputs([], scheduler_outputs)
 
             for _ in range(self.spec_decode_config.draft_size):
                 # Execute the draft model in the parent process
@@ -506,9 +504,12 @@ class SpecDecodeLLMEngine:
 
                 result = self._process_model_outputs(output, scheduler_outputs)
 
+        self.scheduler.swap_target_draft_queues(scheduler_outputs)
+        self.scheduler.free_finished_seq_groups()
+
         return result
 
-    @nvtx_range("collocate_step")
+    @ nvtx_range("collocate_step")
     def collocate_step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
@@ -558,11 +559,16 @@ class SpecDecodeLLMEngine:
                 draft_result = self._process_model_outputs(
                     draft_output, draft_scheduler_outputs)
 
+            self.scheduler.swap_target_draft_queues(draft_scheduler_outputs)
+
         if not target_scheduler_outputs.is_empty():
             # Wait for the target worker output
             target_output = self.worker_executor.get_target_worker_async_output()
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
+            self.scheduler.swap_target_draft_queues(target_scheduler_outputs)
+
+        self.scheduler.free_finished_seq_groups()
 
         return target_result + draft_result
 

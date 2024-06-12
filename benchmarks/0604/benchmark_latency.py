@@ -3,13 +3,15 @@ import argparse
 import time
 from pathlib import Path
 from typing import Optional
+from tabulate import tabulate
+from transformers import (AutoTokenizer)
+from dataset import sample_requests
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from vllm import SpecDecodeLLM, SamplingParams
-from dataset import sample_requests
 
 DOWNLOAD_DIR = '/mnt/sda/download'
 
@@ -17,14 +19,17 @@ DOWNLOAD_DIR = '/mnt/sda/download'
 def main(args: argparse.Namespace):
     print(args)
 
-    if args.dataset is None:
-        # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
-        requests = [(prompt, args.input_len, args.output_len)
-                    for _ in range(args.num_prompts)]
-    else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
-                                   args.output_len)
+    table = [["target_model", args.target_model],
+             ["draft_model", args.draft_model],
+             ["draft_size", args.draft_size],
+             ["collocate", args.collocate],
+             ["chunked_prefill", args.chunked_prefill],
+             ["dataset", args.dataset],
+             ["input_len", args.input_len],
+             ["output_len", args.output_len],
+             ["batch_size", args.batch_size],]
+
+    print(tabulate(table))
 
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
@@ -32,6 +37,8 @@ def main(args: argparse.Namespace):
         target_model=args.target_model,
         draft_model=args.draft_model,
         draft_size=args.draft_size,
+        collocate=args.collocate,
+        enable_chunked_prefill=args.chunked_prefill,
         tokenizer=args.tokenizer,
         quantization=args.quantization,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -39,7 +46,6 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         enforce_eager=args.enforce_eager,
         download_dir=DOWNLOAD_DIR,
-        enable_chunked_prefill=args.enable_chunked_prefill,
         # disable_log_stats=False
     )
 
@@ -52,49 +58,52 @@ def main(args: argparse.Namespace):
         max_tokens=args.output_len,
     )
     print(sampling_params)
-    dummy_prompt_token_ids = [[0] * args.input_len] * args.batch_size
 
-    def run_to_completion(profile_dir: Optional[str] = None):
-        if profile_dir:
-            with torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                        str(profile_dir))) as p:
-                llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-                             sampling_params=sampling_params,
-                             use_tqdm=False,
-                             collocate=args.collocate)
-            print(p.key_averages())
-        else:
-            start_time = time.perf_counter()
-            llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-                         sampling_params=sampling_params,
-                         use_tqdm=False,
-                         collocate=args.collocate)
-            end_time = time.perf_counter()
-            latency = end_time - start_time
-            return latency
+    # Sample the requests.
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer, trust_remote_code=True)
+
+    if args.dataset == "dummy":
+        # Synthesize a prompt with the given input length.
+        prompt = "hi" * (args.input_len - 1)
+        requests = [(prompt, args.input_len, args.output_len)
+                    for _ in range(args.batch_size)]
+    else:
+        requests = sample_requests(args.dataset, args.batch_size, tokenizer,
+                                   args.output_len)
+
+    def run_to_completion():
+        # Add the requests to the engine.
+        for prompt, _, output_len in requests:
+            sampling_params = SamplingParams(
+                n=args.n,
+                temperature=0.0,
+                top_p=1.0,
+                use_beam_search=False,
+                ignore_eos=True,
+                max_tokens=output_len,
+            )
+            # FIXME(woosuk): Do not use internal method.
+            llm._add_request(
+                prompt=prompt,
+                prompt_token_ids=None,
+                sampling_params=sampling_params,
+            )
+
+        start = time.perf_counter()
+        # FIXME(woosuk): Do not use internal method.
+        llm._run_engine(use_tqdm=False)
+        end = time.perf_counter()
+
+        return end - start
 
     print("Warming up...")
-    run_to_completion(profile_dir=None)
-
-    if args.profile:
-        profile_dir = args.profile_result_dir
-        if not profile_dir:
-            profile_dir = Path(
-                "."
-            ) / "vllm_benchmark_result" / f"latency_result_{time.time()}"
-        print(f"Profiling (results will be saved to '{profile_dir}')...")
-        run_to_completion(profile_dir=args.profile_result_dir)
-        return
+    run_to_completion()
 
     # Benchmark.
     latencies = []
     for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-        latencies.append(run_to_completion(profile_dir=None))
+        latencies.append(run_to_completion())
     print(f'Avg latency: {np.mean(latencies)} seconds')
 
     llm.llm_engine.worker_executor.shutdown()
@@ -104,12 +113,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Benchmark the latency of processing a single batch of '
         'requests till completion.')
+    parser.add_argument("--dataset",
+                        type=str,
+                        default=None,
+                        help="Path to the dataset.")
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
-    parser.add_argument('--collocate', action='store_true')
-    parser.add_argument('--enable-chunked-prefill',
+    parser.add_argument('--collocate',
+                        '-c',
+                        action='store_true')
+    parser.add_argument('--chunked-prefill',
                         '-cp',
                         action='store_true')
     parser.add_argument('--tokenizer', type=str, default=None)
@@ -156,4 +171,14 @@ if __name__ == '__main__':
         help=('path to save the pytorch profiler output. Can be visualized '
               'with ui.perfetto.dev or Tensorboard.'))
     args = parser.parse_args()
+
+    if args.tokenizer is None:
+        args.tokenizer = args.target_model
+    if args.dataset is None:
+        args.dataset = "dummy"
+        assert args.input_len is not None
+        assert args.output_len is not None
+    else:
+        args.input_len = "N/A"
+
     main(args)

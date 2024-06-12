@@ -70,6 +70,8 @@ class SpecDecodeLLM:
         target_model: str,
         draft_model: str,
         draft_size: int,
+        collocate: bool = False,
+        enable_chunked_prefill: bool = False,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,
@@ -83,7 +85,6 @@ class SpecDecodeLLM:
         swap_space: int = 4,
         enforce_eager: bool = False,
         max_context_len_to_capture: int = 8192,
-        enable_chunked_prefill: bool = False,
         ** kwargs,
     ) -> None:
         if "disable_log_stats" not in kwargs:
@@ -92,6 +93,7 @@ class SpecDecodeLLM:
             target_model=target_model,
             draft_model=draft_model,
             draft_size=draft_size,
+            enable_chunked_prefill=enable_chunked_prefill,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
             trust_remote_code=trust_remote_code,
@@ -105,11 +107,11 @@ class SpecDecodeLLM:
             swap_space=swap_space,
             enforce_eager=enforce_eager,
             max_context_len_to_capture=max_context_len_to_capture,
-            enable_chunked_prefill=enable_chunked_prefill,
             ** kwargs,
         )
         self.llm_engine = SpecDecodeLLMEngine.from_engine_args(engine_args)
         self.request_counter = Counter()
+        self.collocate = collocate
 
     def get_tokenizer(
             self) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
@@ -127,7 +129,6 @@ class SpecDecodeLLM:
         sampling_params: Optional[SamplingParams] = None,
         prompt_token_ids: Optional[List[List[int]]] = None,
         use_tqdm: bool = True,
-        collocate: bool = False,
     ) -> List[RequestOutput]:
         """Generates the completions for the input prompts.
 
@@ -169,10 +170,8 @@ class SpecDecodeLLM:
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
             self._add_request(prompt, sampling_params, token_ids)
-        if collocate:
-            return self._run_engine_collocate(use_tqdm)
-        else:
-            return self._run_engine(use_tqdm)
+
+        return self._run_engine(use_tqdm)
 
     def _add_request(
         self,
@@ -192,30 +191,10 @@ class SpecDecodeLLM:
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
-            step_outputs = self.llm_engine.step()
-            for output in step_outputs:
-                if output.finished:
-                    outputs.append(output)
-                    if use_tqdm:
-                        pbar.update(1)
-        if use_tqdm:
-            pbar.close()
-
-        # Sort the outputs by request ID.
-        # This is necessary because some requests may be finished earlier than
-        # its previous requests.
-        outputs = sorted(outputs, key=lambda x: int(x.request_id))
-        return outputs
-
-    def _run_engine_collocate(self, use_tqdm: bool) -> List[RequestOutput]:
-        # Initialize tqdm.
-        if use_tqdm:
-            num_requests = self.llm_engine.get_num_unfinished_requests()
-            pbar = tqdm(total=num_requests, desc="Processed prompts")
-        # Run the engine.
-        outputs: List[RequestOutput] = []
-        while self.llm_engine.has_unfinished_requests():
-            step_outputs = self.llm_engine.collocate_step()
+            if self.collocate:
+                step_outputs = self.llm_engine.collocate_step()
+            else:
+                step_outputs = self.llm_engine.step()
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

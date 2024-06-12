@@ -93,7 +93,8 @@ class Sampler(nn.Module):
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
         # Sample the next tokens.
-        if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0):
+        if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0 or
+                all([l == 1 for l in sampling_metadata.target_lens])):
             sample_results = _sample(probs, logprobs, sampling_metadata)
             accept_cnts = None
 
