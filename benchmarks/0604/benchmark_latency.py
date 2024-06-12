@@ -9,12 +9,22 @@ import torch
 from tqdm import tqdm
 
 from vllm import SpecDecodeLLM, SamplingParams
+from dataset import sample_requests
 
 DOWNLOAD_DIR = '/mnt/sda/download'
 
 
 def main(args: argparse.Namespace):
     print(args)
+
+    if args.dataset is None:
+        # Synthesize a prompt with the given input length.
+        prompt = "hi" * (args.input_len - 1)
+        requests = [(prompt, args.input_len, args.output_len)
+                    for _ in range(args.num_prompts)]
+    else:
+        requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
+                                   args.output_len)
 
     # NOTE(woosuk): If the request cannot be processed in a single batch,
     # the engine will automatically process the request in multiple batches.
