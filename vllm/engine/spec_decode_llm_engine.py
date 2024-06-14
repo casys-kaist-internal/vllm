@@ -314,7 +314,7 @@ class SpecDecodeLLMEngine:
                         eos_token_id=self.tokenizer.eos_token_id))
         return current_worst_score >= highest_attainable_score
 
-    @nvtx_range("_process_sequence_group_outputs")
+    @ nvtx_range("_process_sequence_group_outputs")
     def _process_sequence_group_outputs(self, scheduled_seq_group: ScheduledSequenceGroup,
                                         outputs: SequenceGroupOutput) -> int:
         seq_group = scheduled_seq_group.seq_group
@@ -390,7 +390,7 @@ class SpecDecodeLLMEngine:
 
         return num_tokens_to_log_system_stats
 
-    @nvtx_range("_process_model_outputs")
+    @ nvtx_range("_process_model_outputs")
     def _process_model_outputs(
             self, output: SamplerOutput,
             scheduler_outputs: SpecDecodeSchedulerOutputs) -> List[RequestOutput]:
@@ -451,8 +451,8 @@ class SpecDecodeLLMEngine:
 
             idx += length
 
-    @ nvtx_range("step")
-    def step(self) -> List[RequestOutput]:
+    @ nvtx_range("default_step")
+    def default_step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
         This function performs one decoding iteration of the engine. It first
@@ -468,7 +468,7 @@ class SpecDecodeLLMEngine:
             return self._process_model_outputs([], scheduler_outputs)
 
         # Execute the model.
-        if self.scheduler.need_to_run_target_decode:
+        if scheduler_outputs.is_target:
             self._fill_draft_probs_tensor(
                 target_decode_seq_group_metadata_list)
 
@@ -573,6 +573,13 @@ class SpecDecodeLLMEngine:
         self.scheduler.free_finished_seq_groups()
 
         return target_result + draft_result
+
+    @ nvtx_range("step")
+    def step(self) -> List[RequestOutput]:
+        if self.spec_decode_config.collocate:
+            return self.collocate_step()
+        else:
+            return self.default_step()
 
     def _log_system_stats(
         self,

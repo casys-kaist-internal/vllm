@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
@@ -270,6 +271,7 @@ class SpecDecodeEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 7
+    collocate: bool = False
     enable_chunked_prefill: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
@@ -323,6 +325,10 @@ class SpecDecodeEngineArgs:
                             type=int,
                             default=7,
                             help='draft size')
+        parser.add_argument('--collocate',
+                            '-c',
+                            action='store_true',
+                            help='collocate target and draft models')
         parser.add_argument('--enable-chunked-prefill',
                             '-cp',
                             action='store_true',
@@ -513,14 +519,24 @@ class SpecDecodeEngineArgs:
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
                                            self.enable_chunked_prefill)
-        spec_decode_config = SpecDecodeConfig(self.draft_size)
+        spec_decode_config = SpecDecodeConfig(self.draft_size,
+                                              self.collocate)
+
+        # table = [["target_model", self.target_model],
+        #          ["draft_model", self.draft_model],
+        #          ["draft_size", self.draft_size],
+        #          ["collocate", self.collocate],
+        #          ["chunked_prefill", self.enable_chunked_prefill],
+        #          ]
+        # print(tabulate(table))
+
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
 
 @dataclass
 class AsyncSpecDecodeEngineArgs(SpecDecodeEngineArgs):
     """Arguments for asynchronous vLLM engine."""
-    engine_use_ray: bool = False
+    engine_use_ray: bool = True
     disable_log_requests: bool = False
     max_log_len: Optional[int] = None
 

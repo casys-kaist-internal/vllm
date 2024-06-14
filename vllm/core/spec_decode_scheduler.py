@@ -126,6 +126,10 @@ class SpecDecodeSchedulerOutputs:
         else:
             self.is_target = False
 
+        # print("prefill: ", len(self.prefill_scheduled_seq_groups))
+        # print("target: ", len(self.target_decode_scheduled_seq_groups))
+        # print("draft: ", len(self.draft_decode_scheduled_seq_groups))
+
     def is_empty(self) -> bool:
         # NOTE: We do not consider the ignored sequence groups.
         return (not self.prefill_scheduled_seq_groups and not self.target_decode_scheduled_seq_groups
@@ -201,7 +205,7 @@ class SpecDecodeScheduler:
                         return
 
     def has_unfinished_seqs(self) -> bool:
-        return self.waiting or self.need_to_run_draft_decode or self.need_to_run_target_decode or self.swapped
+        return self.waiting or self.balancing_queue or self.need_to_run_draft_decode or self.need_to_run_target_decode or self.need_to_run_target_prefill or self.swapped
 
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft_decode) + len(self.need_to_run_target_decode) + len(self.swapped)
@@ -238,6 +242,13 @@ class SpecDecodeScheduler:
             self.need_to_run_draft_decode += self.balancing_queue
             self.balancing_queue = []
 
+        # Assess current load
+        draft_load = len(self.need_to_run_draft_decode)
+        target_load = len(self.need_to_run_target_decode)
+        target_prefill_load = len(self.need_to_run_target_prefill)
+        total_load = draft_load + target_load + target_prefill_load
+        balance_point = total_load // 2
+
         for scheduled_seq_group in scheduled_seq_groups:
             seq_group = scheduled_seq_group.seq_group
             if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
@@ -250,7 +261,7 @@ class SpecDecodeScheduler:
 
             elif seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
                 self.need_to_run_target_prefill.remove(seq_group)
-                if len(self.need_to_run_draft_decode) < len(self.need_to_run_target_decode):
+                if len(self.need_to_run_draft_decode) < balance_point:
                     self.need_to_run_draft_decode.append(seq_group)
                 else:
                     self.balancing_queue.append(seq_group)

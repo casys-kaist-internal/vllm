@@ -61,10 +61,10 @@ class WorkerExecutor:
 
     # For async engine
     async def _run_draft_worker_sync(self, method: str, *args, **kwargs) -> Any:
+        loop = asyncio.get_event_loop()
         driver_executor = getattr(self.draft_worker, method)
-        coro = asyncio.get_event_loop().run_in_executor(
-            None, partial(driver_executor, *args, **kwargs))
-        return await coro
+        result = await loop.run_in_executor(None, partial(driver_executor, *args, **kwargs))
+        return result
 
     # Wait the blocking recv in separate thread
     async def _run_target_worker_sync(self, method: str, *args, **kwargs) -> Any:

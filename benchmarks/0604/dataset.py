@@ -49,11 +49,8 @@ def filter_and_process(prompts, prompt_token_ids, completion_token_ids, num_prom
         # Sample the requests.
         filtered_dataset = random.sample(filtered_dataset, num_prompts)
     else:
-        if len(filtered_dataset) > num_prompts:
+        if num_prompts > 0 and num_prompts < len(filtered_dataset):
             filtered_dataset = filtered_dataset[:num_prompts]
-        else:
-            raise ValueError(
-                f"Dataset too small: {len(filtered_dataset)}. Expected at least {num_prompts} samples.")
 
     return filtered_dataset
 
@@ -222,11 +219,6 @@ def main():
     print("Loading Finance dataset...")
     finance_data = load_finance(num_prompts, tokenizer, fixed_output_len)
     print("Finance Sample Data Length:", len(finance_data))
-
-    # Test Dummy dataset
-    print("Loading Dummy dataset...")
-    dummy_data = load_dummy(num_prompts, tokenizer, fixed_output_len)
-    print("Dummy Sample Data Length:", len(dummy_data))
 
 
 if __name__ == '__main__':

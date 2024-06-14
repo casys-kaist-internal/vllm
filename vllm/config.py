@@ -529,5 +529,8 @@ def _get_and_verify_max_len(
 
 class SpecDecodeConfig:
 
-    def __init__(self, draft_size: int) -> None:
+    def __init__(self,
+                 draft_size: int,
+                 collocate: bool) -> None:
         self.draft_size = draft_size
+        self.collocate = collocate

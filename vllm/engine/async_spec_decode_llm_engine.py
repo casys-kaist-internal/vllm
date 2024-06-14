@@ -190,10 +190,9 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
             return self._process_model_outputs([], scheduler_outputs)
 
         # Execute the model.
-        if self.scheduler.need_to_run_target_decode:
+        if scheduler_outputs.is_target:
             self._fill_draft_probs_tensor(
                 target_decode_seq_group_metadata_list)
-
             # Execute the target model in the child process
             output = await self.worker_executor._run_target_worker_sync(
                 "execute_model",
@@ -210,10 +209,9 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
         else:
             if self.spec_decode_config.draft_size == 0:
                 result = self._process_model_outputs([], scheduler_outputs)
-
             for _ in range(self.spec_decode_config.draft_size):
                 # Execute the draft model in the parent process
-                output = await self.worker_executor._run_draft_worker_sync(
+                output = self.worker_executor.run_draft_worker_sync(
                     "execute_model",
                     draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
                     blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -266,7 +264,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
                 [], draft_scheduler_outputs)
         else:
             for _ in range(self.spec_decode_config.draft_size):
-                draft_output = await self.worker_executor._run_draft_worker_sync(
+                draft_output = self.worker_executor.run_draft_worker_sync(
                     "execute_model",
                     draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
                     blocks_to_swap_in=draft_scheduler_outputs.blocks_to_swap_in,
@@ -324,7 +322,7 @@ class AsyncSpecDecodeLLMEngine:
 
     def __init__(self,
                  worker_use_ray: bool,
-                 engine_use_ray: bool,
+                 engine_use_ray: bool = True,
                  *args,
                  log_requests: bool = True,
                  max_log_len: Optional[int] = None,
@@ -373,10 +371,11 @@ class AsyncSpecDecodeLLMEngine:
             # order of the arguments.
             cache_config = args[1]
             parallel_config = args[2]
-            if parallel_config.tensor_parallel_size == 1:
-                num_gpus = cache_config.gpu_memory_utilization
-            else:
-                num_gpus = 1
+            # if parallel_config.tensor_parallel_size == 1:
+            #     num_gpus = cache_config.gpu_memory_utilization
+            # else:
+            #     num_gpus = 1
+            num_gpus = 1
             engine_class = ray.remote(num_gpus=num_gpus)(
                 self._engine_class).remote
         return engine_class(*args, **kwargs)
@@ -405,6 +404,7 @@ class AsyncSpecDecodeLLMEngine:
         else:
             request_outputs = await self.engine.step_async()
 
+        # print(request_outputs)
         # Put the outputs into the corresponding streams.
         for request_output in request_outputs:
             self._request_tracker.process_request_output(

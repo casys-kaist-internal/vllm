@@ -75,7 +75,6 @@ if __name__ == "__main__":
     parser.add_argument("--ssl-keyfile", type=str, default=None)
     parser.add_argument("--ssl-certfile", type=str, default=None)
     parser = AsyncSpecDecodeEngineArgs.add_cli_args(parser)
-    print("ASDFASDFASDF")
 
     args = parser.parse_args()
 
@@ -85,7 +84,7 @@ if __name__ == "__main__":
     uvicorn.run(app,
                 host=args.host,
                 port=args.port,
-                log_level="debug",
+                log_level="warning",
                 timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
                 ssl_keyfile=args.ssl_keyfile,
                 ssl_certfile=args.ssl_certfile)
