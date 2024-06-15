@@ -1,11 +1,12 @@
 """Sequence and its related classes."""
 import copy
 import enum
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple, OrderedDict
 import torch
 
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
+from vllm.utils import nvtx_range
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
@@ -13,7 +14,7 @@ SampleLogprobs = List[Dict[int, float]]
 
 class SpecDecodeStage(enum.Enum):
     """The stages of the speculative decoding process."""
-    PROMPT = enum.auto()
+    PREFILL = enum.auto()
     DRAFT_DECODE = enum.auto()
     TARGET_DECODE = enum.auto()
 
@@ -78,8 +79,9 @@ class SequenceData:
 
         self.draft_token_ids: List[int] = []
         self.draft_logprobs: List[float] = []
-        self.draft_probs: List[torch.Tensor] = []
-        self.draft_kv_cache_cnt = 0  # the numer of tokens that are cached with draft KV cache
+
+        self._num_computed_target_tokens = 0
+        self._num_computed_draft_tokens = 0
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -94,8 +96,14 @@ class SequenceData:
     def get_output_len(self) -> int:
         return len(self.output_token_ids)
 
+    def get_len_with_draft(self) -> int:
+        return len(self.output_token_ids) + len(self.prompt_token_ids) + len(self.draft_token_ids)
+
     def get_token_ids(self) -> List[int]:
         return self.prompt_token_ids + self.output_token_ids
+
+    def get_token_ids_with_draft(self) -> List[int]:
+        return self.prompt_token_ids + self.output_token_ids + self.draft_token_ids
 
     def get_last_token_id(self) -> int:
         if not self.output_token_ids:
@@ -108,11 +116,9 @@ class SequenceData:
         return self.output_token_ids[-count:]
 
     # Spec Decode
-    def append_draft_token_id(self, token_id: int, logprobs: float,
-                              probs: torch.Tensor) -> None:
+    def append_draft_token_id(self, token_id: int, logprobs: float) -> None:
         self.draft_token_ids.append(token_id)
         self.draft_logprobs.append(logprobs)
-        self.draft_probs.append(probs)
 
     def accept_draft_tokens(self, accept_cnt: int) -> None:
         for i in range(accept_cnt):
@@ -121,8 +127,9 @@ class SequenceData:
 
         self.draft_token_ids.clear()
         self.draft_logprobs.clear()
-        self.draft_probs.clear()
-        self.draft_kv_cache_cnt = self.get_len() - 1
+
+        self._num_computed_draft_tokens = self.get_len() - 1
+        self._num_computed_target_tokens = self.get_len() - 1
 
     def get_draft_len(self) -> int:
         return len(self.draft_token_ids)
@@ -130,33 +137,28 @@ class SequenceData:
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
 
-    def get_draft_probs(self) -> List[torch.Tensor]:
-        return self.draft_probs
+    def get_num_uncomputed_target_tokens(self) -> int:
+        """Return the number of prefill tokens that are not computed."""
+        # we use `get_len()` which includes prompt_len + output_len instead
+        # of prompt_len here. This is because during recompute we need to
+        # prefill for both prompt and output.
+        return self.get_len() - self._num_computed_target_tokens
 
-    def get_draft_prob_for_tokens(self) -> List[float]:
-        result = []
-        for i, draft_token_id in enumerate(self.draft_token_ids):
-            result.append(self.draft_probs[i][draft_token_id].item())
+    def get_num_uncomputed_draft_tokens(self) -> int:
+        return self.get_len_with_draft() - self._num_computed_draft_tokens
 
-        return result
+    def get_num_computed_draft_tokens(self) -> int:
+        return self._num_computed_draft_tokens
 
-    def get_uncached_draft_token_ids(self) -> List[int]:
-        all_tokens_including_draft = self.get_token_ids(
-        ) + self.get_draft_token_ids()
-        uncached_draft_token_ids = all_tokens_including_draft[
-            self.draft_kv_cache_cnt:]
+    def update_num_computed_target_tokens(self, num_computed_tokens):
+        self._num_computed_target_tokens += num_computed_tokens
 
-        return uncached_draft_token_ids
+    def update_num_computed_draft_tokens(self, num_computed_tokens):
+        self._num_computed_draft_tokens += num_computed_tokens
 
-    def update_draft_kv_cache_cnt(self, cnt: int) -> None:
-        self.draft_kv_cache_cnt += cnt
-
-    def get_uncached_draft_len(self) -> int:
-        all_tokens_including_draft_len = len(self.get_token_ids()) + len(
-            self.get_draft_token_ids())
-        uncached_draft_len = all_tokens_including_draft_len - self.draft_kv_cache_cnt
-
-        return uncached_draft_len
+    def reset_state_for_recompute(self) -> None:
+        self._num_computed_target_tokens = 0
+        self._num_computed_draft_tokens = 0
 
     def __repr__(self) -> str:
         return (f"SequenceData("
@@ -254,6 +256,9 @@ class Sequence:
     def get_token_ids(self) -> List[int]:
         return self.data.get_token_ids()
 
+    def get_token_ids_with_draft(self) -> List[int]:
+        return self.data.get_token_ids_with_draft()
+
     def get_last_token_id(self) -> int:
         return self.data.get_last_token_id()
 
@@ -294,13 +299,14 @@ class Sequence:
         return new_seq
 
     # Spec Decode
-    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
-                              probs: torch.Tensor) -> None:
+    @nvtx_range("append_draft_token_id")
+    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float]) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_draft_token_id(token_id, logprobs[token_id], probs)
+        self.data.append_draft_token_id(token_id, logprobs[token_id])
 
+    @nvtx_range("accept_draft_tokens")
     def accept_draft_tokens(self, accept_cnt: int) -> int:
         assert self.draft_size == self.get_draft_len()
         reject_cnt = self.draft_size - accept_cnt
@@ -340,6 +346,26 @@ class Sequence:
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
 
+    def get_num_uncomputed_target_tokens(self) -> int:
+        return self.data.get_num_uncomputed_target_tokens()
+
+    def get_num_uncomputed_draft_tokens(self) -> int:
+        return self.data.get_num_uncomputed_draft_tokens()
+
+    def get_num_computed_draft_tokens(self) -> int:
+        return self.data.get_num_computed_draft_tokens()
+
+    def update_num_computed_target_tokens(self,
+                                          num_computed_tokens: int) -> None:
+        self.data.update_num_computed_target_tokens(num_computed_tokens)
+
+    def update_num_computed_draft_tokens(self,
+                                         num_computed_tokens: int) -> None:
+        self.data.update_num_computed_draft_tokens(num_computed_tokens)
+
+    def reset_state_for_recompute(self) -> None:
+        self.data.reset_state_for_recompute()
+
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "
                 f"status={self.status.name}, "
@@ -368,14 +394,15 @@ class SequenceGroup:
         self.sampling_params = sampling_params
         self.arrival_time = arrival_time
         self.prompt_logprobs: Optional[PromptLogprobs] = None
+        self.spec_decode_stage = None
 
-    @property
+    @ property
     def prompt(self) -> str:
         # All sequences in the group should have the same prompt.
         # We use the prompt of an arbitrary sequence.
         return next(iter(self.seqs_dict.values())).prompt
 
-    @property
+    @ property
     def prompt_token_ids(self) -> List[int]:
         # All sequences in the group should have the same prompt.
         # We use the prompt of an arbitrary sequence.
@@ -467,9 +494,10 @@ class SequenceGroupMetadata:
         self,
         request_id: str,
         is_prompt: bool,
-        seq_data: Dict[int, SequenceData],
+        seq_data: OrderedDict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
+        token_chunk_size: int,
         spec_decode_stage: Optional[SpecDecodeStage] = None,
         draft_size: Optional[int] = 0,
     ) -> None:
@@ -478,6 +506,7 @@ class SequenceGroupMetadata:
         self.seq_data = seq_data
         self.sampling_params = sampling_params
         self.block_tables = block_tables
+        self.token_chunk_size = token_chunk_size
         self.spec_decode_stage = spec_decode_stage
         self.draft_size = draft_size
 
@@ -544,4 +573,4 @@ class SequenceGroupOutput:
 
 # For each sequence group, we generate a list of SequenceOutput object,
 # each of which contains one possible candidate for the next token.
-SamplerOutput = List[SequenceGroupOutput]
+SamplerOutput = Tuple[List[SequenceGroupOutput], torch.Tensor]

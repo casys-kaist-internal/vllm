@@ -32,6 +32,7 @@ class Sampler(nn.Module):
         super().__init__()
         self.vocab_size = vocab_size
 
+    @nvtx_range("sampler forward")
     def forward(
         self,
         embedding: torch.Tensor,
@@ -86,23 +87,20 @@ class Sampler(nn.Module):
         # We use float32 for probabilities and log probabilities.
         # Compute the probabilities.
         probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+
         # Compute the log probabilities.
         # Use log_softmax to ensure numerical stability.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
         # Sample the next tokens.
-        if sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT or sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+        if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0 or
+                all([l == 1 for l in sampling_metadata.target_lens])):
             sample_results = _sample(probs, logprobs, sampling_metadata)
             accept_cnts = None
 
-        elif sampling_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+        else:
             sample_results, accept_cnts, logprobs = _spec_decode_sample(
                 probs, sampling_metadata)
-
-        else:
-            raise ValueError(
-                f"Unsupported spec decode stage: {sampling_metadata.spec_decode_stage}"
-            )
 
         # Get the logprobs query results.
         prompt_logprobs, sample_logprobs = _get_logprobs(
@@ -353,6 +351,7 @@ def _beam_search_sample(
 # Note that we always sample with replacement.
 # probs will be modified in place, but this is fine, as we pass
 # in a copy already.
+@nvtx_range("_multinomial")
 def _multinomial(
     probs: torch.Tensor,
     num_samples: int,
@@ -443,6 +442,9 @@ def _spec_decode_sample(
     probs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
 ) -> Tuple[List[Tuple[List[int], List[int]]], torch.Tensor, torch.Tensor]:
+    # Divide probs into prefill and decode probs
+    prefill_probs = probs[:sampling_metadata.num_prompts]
+    decode_probs = probs[sampling_metadata.num_prompts:]
 
     # Target lens includes one additional token just before draft tokens and draft tokens.
     target_lens = sampling_metadata.target_lens
@@ -452,8 +454,8 @@ def _spec_decode_sample(
     sampled_draft_token_ids = sampling_metadata.sampled_draft_token_ids
 
     # target_probs: [seq_len, vocab_size] -> [seq_idx, target_lens, vocab_size]
-    target_probs = _reshape_and_pad(probs, target_lens, probs.size(-1))
-    del probs
+    target_probs = _reshape_and_pad(
+        decode_probs, target_lens, decode_probs.size(-1))
 
     # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     target_prob_for_sampled_draft_token = torch.gather(
@@ -461,7 +463,7 @@ def _spec_decode_sample(
 
     # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
     draft_probs = _reshape_and_pad(
-        sampling_metadata.draft_probs, target_lens_minus_one, target_probs.size(
+        sampling_metadata.draft_probs_tensor, target_lens_minus_one, target_probs.size(
             -1)
     )
 
@@ -472,7 +474,7 @@ def _spec_decode_sample(
     # accept_probs: [seq_idx, target_lens_minus_one]
     accept_prob = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
-    del target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
+    del probs, target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
@@ -496,7 +498,7 @@ def _spec_decode_sample(
     del accepted
 
     target_lens_tensor = torch.tensor(
-        target_lens_minus_one, device=accept_cnts.device)
+        target_lens_minus_one, device='cuda')
     all_accept_mask = (accept_cnts == target_lens_tensor)
 
     # make accept_cnt 0 for all accepted sequences.
@@ -523,6 +525,11 @@ def _spec_decode_sample(
         0)).long().to(all_accept_mask.device)
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
+
+    # concat prefill_probs and modified_rejection_prob
+    modified_rejection_prob = torch.cat(
+        [prefill_probs, modified_rejection_prob], dim=0)
+
     modified_rejection_logprobs = torch.log(modified_rejection_prob)
     del target_probs, draft_probs, target_lens_tensor
 
@@ -532,6 +539,7 @@ def _spec_decode_sample(
     return sample_results, accept_cnts, modified_rejection_logprobs
 
 
+@nvtx_range("_get_logprobs")
 def _get_logprobs(
     logprobs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
@@ -656,6 +664,10 @@ def _build_sampler_output(
     accept_cnts: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
+
+    # GPU -> CPU sync
+    accept_cnts = accept_cnts.tolist() if accept_cnts is not None else None
+
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
                                                   sample_results, prompt_logprobs,
@@ -666,19 +678,19 @@ def _build_sampler_output(
         for parent_id, next_token_id, logprobs in zip(parent_ids,
                                                       next_token_ids,
                                                       group_sample_logprobs):
-            if sampling_metadata.spec_decode_stage == SpecDecodeStage.PROMPT:
-                seq_outputs.append(
-                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
-            elif sampling_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+            if sampling_metadata.is_target:
+                if idx < sampling_metadata.num_prompts:
+                    seq_outputs.append(
+                        SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
+                else:
+                    decode_idx = idx - sampling_metadata.num_prompts
+                    accept_cnt = accept_cnts[decode_idx] if accept_cnts is not None else 0
+                    seq_outputs.append(
+                        SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnt))
+            else:
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, draft_probs=draft_probs[idx]))
-            elif sampling_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-                seq_outputs.append(
-                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnts[idx]))
-            else:
-                raise ValueError(
-                    f"Unsupported spec decode stage: {sampling_metadata.spec_decode_stage}"
-                )
+
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
     return sampler_output

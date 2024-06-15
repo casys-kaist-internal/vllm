@@ -8,11 +8,9 @@ import torch.nn as nn
 from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
-from vllm.model_executor.parallel_utils.communication_op import (
-    broadcast, broadcast_object_list)
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata, SpecDecodeStage
-from vllm.utils import in_wsl
+from vllm.utils import in_wsl, nvtx_range
 
 logger = init_logger(__name__)
 
@@ -30,12 +28,12 @@ class SpecDecodeModelRunner:
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
-        is_driver_worker: bool = False,
+        is_target: bool = True,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
-        self.is_driver_worker = is_driver_worker
+        self.is_target = is_target
 
         # model_config can be None in tests/samplers/test_sampler.py.
         # FIXME(woosuk): This is a hack to make the tests work. Refactor this.
@@ -71,18 +69,18 @@ class SpecDecodeModelRunner:
         self.graph_block_tables = np.zeros(
             (max(_BATCH_SIZES_TO_CAPTURE), max_num_blocks), dtype=np.int32)
 
-    def _prepare_prompt(
+    def _prepare_profile_input(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, List[int]]:
         assert len(seq_group_metadata_list) > 0
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
 
         prompt_lens: List[int] = []
         for seq_group_metadata in seq_group_metadata_list:
-            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.PROMPT
+            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.PREFILL
             seq_ids = list(seq_group_metadata.seq_data.keys())
             assert len(seq_ids) == 1
             seq_id = seq_ids[0]
@@ -92,19 +90,19 @@ class SpecDecodeModelRunner:
             prompt_len = len(prompt_tokens)
             prompt_lens.append(prompt_len)
 
-            input_tokens.append(prompt_tokens)
+            input_tokens.extend(prompt_tokens)
             # NOTE(woosuk): Here we assume that the first token in the prompt
             # is always the first token in the sequence.
-            input_positions.append(list(range(prompt_len)))
+            input_positions.extend(list(range(prompt_len)))
 
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.append([_PAD_SLOT_ID] * prompt_len)
+                slot_mapping.extend([_PAD_SLOT_ID] * prompt_len)
                 continue
 
             # Compute the slot mapping.
-            slot_mapping.append([])
+            single_slot_mapping = []
             block_table = seq_group_metadata.block_tables[seq_id]
             # Mask the [0, start_idx) tokens of the prompt with _PAD_SLOT_ID,
             # where start_idx is max(0, prompt_len - sliding_window).
@@ -116,30 +114,29 @@ class SpecDecodeModelRunner:
                 start_idx = max(0, prompt_len - self.sliding_window)
             for i in range(prompt_len):
                 if i < start_idx:
-                    slot_mapping[-1].append(_PAD_SLOT_ID)
+                    single_slot_mapping.append(_PAD_SLOT_ID)
                     continue
 
                 block_number = block_table[i // self.block_size]
                 block_offset = i % self.block_size
                 slot = block_number * self.block_size + block_offset
-                slot_mapping[-1].append(slot)
+                single_slot_mapping.append(slot)
 
-        max_prompt_len = max(prompt_lens)
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_prompt_len,
-                                             pad=0,
-                                             dtype=torch.long)
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_prompt_len,
-                                                pad=0,
-                                                dtype=torch.long)
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_prompt_len,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long)
+            slot_mapping.extend(single_slot_mapping)
+
+        input_tokens = torch.tensor(input_tokens,
+                                    dtype=torch.long,
+                                    device="cuda")
+        input_positions = torch.tensor(input_positions,
+                                       dtype=torch.long,
+                                       device="cuda")
+        slot_mapping = torch.tensor(slot_mapping,
+                                    dtype=torch.long,
+                                    device="cuda")
 
         input_metadata = InputMetadata(
-            is_prompt=True,
+            num_prefill_tokens=sum(prompt_lens),
+            num_decode_tokens=0,
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -148,130 +145,75 @@ class SpecDecodeModelRunner:
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
-    def _prepare_draft_decode(
+    @nvtx_range("_prepare_prefill")
+    def _prepare_prefill(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
-        assert len(seq_group_metadata_list) > 0
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
-        context_lens: List[int] = []
-        block_tables: List[List[int]] = []
-        draft_lens: List[int] = []
+    ) -> Tuple[List[int], List[int], List[int], List[int]]:
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
+        prompt_lens: List[int] = []
 
         for seq_group_metadata in seq_group_metadata_list:
-            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE
-
+            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.PREFILL
             seq_ids = list(seq_group_metadata.seq_data.keys())
-            for seq_id in seq_ids:
-                seq_data = seq_group_metadata.seq_data[seq_id]
-                draft_kv_cache_cnt = seq_data.draft_kv_cache_cnt
-                generation_tokens = seq_data.get_uncached_draft_token_ids()
-                seq_data.update_draft_kv_cache_cnt(len(generation_tokens))
-                draft_lens.append(len(generation_tokens))
+            assert len(seq_ids) == 1
+            seq_id = seq_ids[0]
 
-                for token in generation_tokens:
-                    input_tokens.append([token])
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            prompt_tokens = seq_data.get_token_ids()
 
-                position_start = draft_kv_cache_cnt
-                for i in range(len(generation_tokens)):
-                    position = position_start + i
-                    input_positions.append([position])
+            if self.scheduler_config.chunk_prefill_enabled:
+                prompt_tokens[:seq_group_metadata.token_chunk_size]
 
-                for i in range(len(generation_tokens)):
-                    context_len = draft_kv_cache_cnt + i + 1
-                    if self.sliding_window is not None:
-                        context_len = min(context_len, self.sliding_window)
-                    context_lens.append(context_len)
+            prompt_len = len(prompt_tokens)
+            prompt_lens.append(prompt_len)
 
-                block_table = seq_group_metadata.block_tables[seq_id]
+            input_tokens.extend(prompt_tokens)
+            # NOTE(woosuk): Here we assume that the first token in the prompt
+            # is always the first token in the sequence.
+            input_positions.extend(list(range(prompt_len)))
 
-                for position in range(position_start, position_start + len(generation_tokens)):
-                    block_number = block_table[position // self.block_size]
-                    block_offset = position % self.block_size
-                    slot = block_number * self.block_size + block_offset
-                    slot_mapping.append([slot])
+            if seq_group_metadata.block_tables is None:
+                # During memory profiling, the block tables are not initialized
+                # yet. In this case, we just use a dummy slot mapping.
+                slot_mapping.extend([_PAD_SLOT_ID] * prompt_len)
+                continue
 
-                    if self.sliding_window is not None:
-                        sliding_window_blocks = (self.sliding_window //
-                                                 self.block_size)
-                        block_table = block_table[-sliding_window_blocks:]
-                    block_tables.append(block_table)
+            # Compute the slot mapping.
+            single_slot_mapping = []
+            block_table = seq_group_metadata.block_tables[seq_id]
+            # Mask the [0, start_idx) tokens of the prompt with _PAD_SLOT_ID,
+            # where start_idx is max(0, prompt_len - sliding_window).
+            # For example, if the prompt len is 10, sliding window is 8, and
+            # block size is 4, the first two tokens are masked and the slot
+            # mapping will be [-1, -1, 2, 3, 4, 5, 6, 7, 0, 1].
+            start_idx = 0
+            if self.sliding_window is not None:
+                start_idx = max(0, prompt_len - self.sliding_window)
+            for i in range(prompt_len):
+                if i < start_idx:
+                    single_slot_mapping.append(_PAD_SLOT_ID)
+                    continue
 
-        batch_size = len(input_tokens)
-        max_context_len = max(context_lens)
-        use_captured_graph = (
-            not self.model_config.enforce_eager
-            and batch_size <= _BATCH_SIZES_TO_CAPTURE[-1]
-            and max_context_len <= self.max_context_len_to_capture)
-        if use_captured_graph:
-            # Pad the input tokens, positions, and slot mapping to match the
-            # batch size of the captured graph.
-            graph_batch_size = _get_graph_batch_size(batch_size)
-            assert graph_batch_size >= batch_size
-            for _ in range(graph_batch_size - batch_size):
-                input_tokens.append([])
-                input_positions.append([])
-                slot_mapping.append([])
-                context_lens.append(1)
-                block_tables.append([])
-            batch_size = graph_batch_size
+                block_number = block_table[i // self.block_size]
+                block_offset = i % self.block_size
+                slot = block_number * self.block_size + block_offset
+                single_slot_mapping.append(slot)
 
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long,
-                                             device="cuda")
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long,
-                                                device="cuda")
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long,
-                                             device="cuda")
-        context_lens = torch.tensor(context_lens,
-                                    dtype=torch.int,
-                                    device="cuda")
+            slot_mapping.extend(single_slot_mapping)
 
-        if use_captured_graph:
-            # The shape of graph_block_tables is
-            # [max batch size, max context len // block size].
-            input_block_tables = self.graph_block_tables[:batch_size]
-            for i, block_table in enumerate(block_tables):
-                if block_table:
-                    input_block_tables[i, :len(block_table)] = block_table
-            block_tables = torch.tensor(input_block_tables, device="cuda")
-        else:
-            block_tables = _make_tensor_with_pad(
-                block_tables,
-                max_len=max_context_len,
-                pad=0,
-                dtype=torch.int,
-                device="cuda",
-            )
+        return input_tokens, input_positions, slot_mapping, prompt_lens
 
-        input_metadata = InputMetadata(
-            is_prompt=False,
-            slot_mapping=slot_mapping,
-            max_context_len=max_context_len,
-            context_lens=context_lens,
-            block_tables=block_tables,
-            use_cuda_graph=use_captured_graph,
-        )
-        return input_tokens, input_positions, input_metadata, draft_lens
-
+    @nvtx_range("_prepare_target_decode")
     def _prepare_target_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
-        assert len(seq_group_metadata_list) > 0
-        input_tokens: List[List[int]] = []
-        input_positions: List[List[int]] = []
-        slot_mapping: List[List[int]] = []
+    ) -> Tuple[List[int], List[int], List[int], List[int], List[int], List[int]]:
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
         target_lens: List[int] = []
@@ -285,14 +227,12 @@ class SpecDecodeModelRunner:
                 generation_tokens = [
                     seq_data.get_last_token_id()] + seq_data.get_draft_token_ids()
                 target_lens.append(len(generation_tokens))
-
-                for token in generation_tokens:
-                    input_tokens.append([token])
+                input_tokens.extend(generation_tokens)
 
                 position_start = seq_data.get_len() - 1
                 for i in range(len(generation_tokens)):
                     position = position_start + i
-                    input_positions.append([position])
+                    input_positions.append(position)
 
                 for i in range(len(generation_tokens)):
                     context_len = seq_data.get_len() + i
@@ -306,7 +246,59 @@ class SpecDecodeModelRunner:
                     block_number = block_table[position // self.block_size]
                     block_offset = position % self.block_size
                     slot = block_number * self.block_size + block_offset
-                    slot_mapping.append([slot])
+                    slot_mapping.append(slot)
+
+                    if self.sliding_window is not None:
+                        sliding_window_blocks = (self.sliding_window //
+                                                 self.block_size)
+                        block_table = block_table[-sliding_window_blocks:]
+                    block_tables.append(block_table)
+
+        return input_tokens, input_positions, slot_mapping, context_lens, block_tables, target_lens
+
+    @nvtx_range("_prepare_draft_decode")
+    def _prepare_draft_decode(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+        assert len(seq_group_metadata_list) > 0
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
+        context_lens: List[int] = []
+        block_tables: List[List[int]] = []
+        draft_lens: List[int] = []
+
+        for seq_group_metadata in seq_group_metadata_list:
+            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE
+
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            for seq_id in seq_ids:
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                num_computed_draft_tokens = seq_data.get_num_computed_draft_tokens()
+                all_tokens = seq_data.get_token_ids_with_draft()
+                generation_tokens = all_tokens[num_computed_draft_tokens:]
+                draft_lens.append(len(generation_tokens))
+                input_tokens.extend(generation_tokens)
+
+                position_start = num_computed_draft_tokens
+                for i in range(len(generation_tokens)):
+                    position = position_start + i
+                    input_positions.append(position)
+
+                for i in range(len(generation_tokens)):
+                    context_len = num_computed_draft_tokens + i + 1
+                    if self.sliding_window is not None:
+                        context_len = min(context_len, self.sliding_window)
+                    context_lens.append(context_len)
+
+                block_table = seq_group_metadata.block_tables[seq_id]
+
+                for position in range(position_start, position_start + len(generation_tokens)):
+                    block_number = block_table[position // self.block_size]
+                    block_offset = position % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append(slot)
 
                     if self.sliding_window is not None:
                         sliding_window_blocks = (self.sliding_window //
@@ -326,28 +318,22 @@ class SpecDecodeModelRunner:
             graph_batch_size = _get_graph_batch_size(batch_size)
             assert graph_batch_size >= batch_size
             for _ in range(graph_batch_size - batch_size):
-                input_tokens.append([])
-                input_positions.append([])
-                slot_mapping.append([])
+                input_tokens.append(0)
+                input_positions.append(0)
+                slot_mapping.append(_PAD_SLOT_ID)
                 context_lens.append(1)
                 block_tables.append([])
             batch_size = graph_batch_size
 
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long,
-                                             device="cuda")
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long,
-                                                device="cuda")
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long,
-                                             device="cuda")
+        input_tokens = torch.tensor(input_tokens,
+                                    dtype=torch.long,
+                                    device="cuda")
+        input_positions = torch.tensor(input_positions,
+                                       dtype=torch.long,
+                                       device="cuda")
+        slot_mapping = torch.tensor(slot_mapping,
+                                    dtype=torch.long,
+                                    device="cuda")
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
                                     device="cuda")
@@ -370,21 +356,24 @@ class SpecDecodeModelRunner:
             )
 
         input_metadata = InputMetadata(
-            is_prompt=False,
+            num_prefill_tokens=0,
+            num_decode_tokens=sum(draft_lens),
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
         )
-        return input_tokens, input_positions, input_metadata, target_lens
+        return input_tokens, input_positions, input_metadata, draft_lens
 
+    @ nvtx_range("_prepare_sample")
     def _prepare_sample(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         prompt_lens: List[int],
         draft_lens: List[int],
         target_lens: List[int],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
@@ -392,19 +381,21 @@ class SpecDecodeModelRunner:
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
         sampled_draft_token_ids: List[List[int]] = []
-        draft_probs: List[torch.Tensor] = []
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
-        for i, seq_group_metadata in enumerate(seq_group_metadata_list):
+        prefill_idx = 0
+        target_decode_idx = 0
+        draft_decode_idx = 0
+        for seq_group_metadata in seq_group_metadata_list:
             seq_ids = list(seq_group_metadata.seq_data.keys())
             assert len(seq_ids) == 1
             seq_data = seq_group_metadata.seq_data[seq_ids[0]]
             sampling_params = seq_group_metadata.sampling_params
             seq_groups.append((seq_ids, sampling_params))
 
-            if seq_group_metadata.spec_decode_stage == SpecDecodeStage.PROMPT:
+            if seq_group_metadata.spec_decode_stage == SpecDecodeStage.PREFILL:
                 assert len(seq_ids) == 1
-                prompt_len = prompt_lens[i]
+                prompt_len = prompt_lens[prefill_idx]
                 if sampling_params.prompt_logprobs is not None:
                     # NOTE: prompt token positions do not need sample, skip
                     categorized_sample_indices_start_idx += prompt_len - 1
@@ -420,11 +411,12 @@ class SpecDecodeModelRunner:
                               selected_token_start_idx + prompt_len - 1))
                 selected_token_indices.append(selected_token_start_idx +
                                               prompt_len - 1)
-                selected_token_start_idx += max_prompt_len
+                selected_token_start_idx += prompt_len
+                prefill_idx += 1
 
             elif seq_group_metadata.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
                 num_seqs = len(seq_ids)
-                draft_len = draft_lens[i]
+                draft_len = draft_lens[draft_decode_idx]
                 selected_token_indices.append(
                     selected_token_start_idx + draft_len - 1)
                 selected_token_start_idx += draft_len
@@ -433,10 +425,13 @@ class SpecDecodeModelRunner:
                     range(categorized_sample_indices_start_idx,
                           categorized_sample_indices_start_idx + num_seqs))
                 categorized_sample_indices_start_idx += num_seqs
+                draft_decode_idx += 1
 
             elif seq_group_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+                assert draft_probs_tensor is not None
+
                 num_seqs = len(seq_ids)
-                target_len = target_lens[i]
+                target_len = target_lens[target_decode_idx]
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
                           selected_token_start_idx + target_len))
@@ -450,7 +445,7 @@ class SpecDecodeModelRunner:
                 draft_token_ids = seq_data.get_draft_token_ids()
                 assert len(draft_token_ids) == target_len - 1
                 sampled_draft_token_ids.append(draft_token_ids)
-                draft_probs.extend(seq_data.get_draft_probs())
+                target_decode_idx += 1
 
             else:
                 raise ValueError(f"Invalid spec decode stage: "
@@ -468,16 +463,16 @@ class SpecDecodeModelRunner:
         for seq_group_metadata in seq_group_metadata_list:
             seq_data.update(seq_group_metadata.seq_data)
 
-        if draft_probs:
+        if seq_group_metadata.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             sampled_draft_token_ids = _make_tensor_with_pad(sampled_draft_token_ids,
                                                             max_len=max(
                                                                 target_lens) - 1,
                                                             pad=0,
                                                             dtype=torch.long)
-            draft_probs = torch.stack(draft_probs, dim=0)
+            sampled_draft_token_ids.to(device="cuda", non_blocking=True)
         else:
             sampled_draft_token_ids = None
-            draft_probs = None
+            draft_probs_tensor = None
 
         sampling_metadata = SamplingMetadata(
             seq_groups=seq_groups,
@@ -488,51 +483,118 @@ class SpecDecodeModelRunner:
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
-            draft_probs=draft_probs
+            draft_probs_tensor=draft_probs_tensor
         )
         return sampling_metadata
 
-    def prepare_input_tensors(
+    @ nvtx_range("prepare_target_input_tensors")
+    def _prepare_target_input_tensors(
+        self,
+        prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, SamplingMetadata]:
+
+        # Prepare prefill input tensors
+        (prefill_input_tokens, prefill_input_positions,
+         prefill_slot_mapping, prefill_lens) = self._prepare_prefill(
+            prefill_seq_group_metadata_list)
+
+        # Prepare target decode input tensors
+        (target_input_tokens, target_input_positions,
+         target_slot_mapping, target_context_lens,
+         target_block_tables, target_lens) = self._prepare_target_decode(
+            target_decode_seq_group_metadata_list)
+
+        sampling_metadata = self._prepare_sample(prefill_seq_group_metadata_list + target_decode_seq_group_metadata_list,
+                                                 prefill_lens, [], target_lens, draft_probs_tensor)
+
+        # Combine prefill and target input tokens, input_positions, slot_mappings.
+        input_tokens = torch.tensor(
+            prefill_input_tokens + target_input_tokens, dtype=torch.long, device="cuda")
+        input_positions = torch.tensor(
+            prefill_input_positions + target_input_positions, dtype=torch.long, device="cuda")
+
+        slot_mapping = torch.tensor(
+            prefill_slot_mapping + target_slot_mapping, dtype=torch.long, device="cuda")
+
+        num_prefill_tokens = sum(prefill_lens)
+        num_decode_tokens = sum(target_lens)
+
+        if target_decode_seq_group_metadata_list:
+            context_lens = torch.tensor(
+                target_context_lens, dtype=torch.int, device="cuda")
+            block_tables = _make_tensor_with_pad(
+                target_block_tables,
+                max_len=max(target_context_lens),
+                pad=0,
+                dtype=torch.int,
+                device="cuda",
+            )
+
+            input_metadata = InputMetadata(
+                num_prefill_tokens=num_prefill_tokens,
+                num_decode_tokens=num_decode_tokens,
+                slot_mapping=slot_mapping,
+                max_context_len=max(target_context_lens),
+                context_lens=context_lens,
+                block_tables=block_tables,
+                use_cuda_graph=False,
+            )
+        else:
+            input_metadata = InputMetadata(
+                num_prefill_tokens=num_prefill_tokens,
+                num_decode_tokens=num_decode_tokens,
+                slot_mapping=slot_mapping,
+                max_context_len=None,
+                context_lens=None,
+                block_tables=None,
+                use_cuda_graph=False,
+            )
+
+        return input_tokens, input_positions, input_metadata, sampling_metadata
+
+    @ nvtx_range("prepare_draft_input_tensors")
+    def _prepare_draft_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
     ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, SamplingMetadata]:
-        spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
         # Prepare input tensors.
-        prompt_lens, draft_lens, target_lens = [], [], []
-        if spec_decode_stage == SpecDecodeStage.PROMPT:
-            (input_tokens, input_positions, input_metadata,
-                prompt_lens) = self._prepare_prompt(seq_group_metadata_list)
-        elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-            (input_tokens, input_positions, input_metadata,
-                draft_lens) = self._prepare_draft_decode(
-                seq_group_metadata_list)
-        elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-            (input_tokens, input_positions, input_metadata,
-                target_lens) = self._prepare_target_decode(
-                seq_group_metadata_list)
-        else:
-            raise ValueError(
-                f"Invalid spec decode stage: {spec_decode_stage}")
+        (input_tokens, input_positions, input_metadata,
+            draft_lens) = self._prepare_draft_decode(
+            seq_group_metadata_list)
 
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
-                                                 prompt_lens, draft_lens, target_lens)
+                                                 [], draft_lens, [],
+                                                 None)
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
 
     @ torch.inference_mode()
     def execute_model(
         self,
-        seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        draft_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[Tuple[torch.Tensor, torch.Tensor]],
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
-        input_tokens, input_positions, input_metadata, sampling_metadata = (
-            self.prepare_input_tensors(seq_group_metadata_list))
+        if self.is_target:
+            input_tokens, input_positions, input_metadata, sampling_metadata = (
+                self._prepare_target_input_tensors(prefill_seq_group_metadata_list,
+                                                   target_decode_seq_group_metadata_list,
+                                                   draft_probs_tensor))
+        else:
+            input_tokens, input_positions, input_metadata, sampling_metadata = (
+                self._prepare_draft_input_tensors(draft_decode_seq_group_metadata_list))
+
         # Execute the model.
         if input_metadata.use_cuda_graph:
             graph_batch_size = input_tokens.shape[0]
             model_executable = self.graph_runners[graph_batch_size]
         else:
             model_executable = self.model
+
         hidden_states = model_executable(
             input_ids=input_tokens,
             positions=input_positions,
@@ -546,39 +608,6 @@ class SpecDecodeModelRunner:
             sampling_metadata=sampling_metadata,
         )
         return output
-
-    @ torch.inference_mode()
-    def compute_hidden_states(
-        self,
-        seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-        kv_caches: List[Tuple[torch.Tensor, torch.Tensor]],
-    ) -> Tuple[torch.Tensor, SamplingMetadata]:
-        input_tokens, input_positions, input_metadata, sampling_metadata = (
-            self.prepare_input_tensors(seq_group_metadata_list))
-        # Execute the model.
-        if input_metadata.use_cuda_graph:
-            graph_batch_size = input_tokens.shape[0]
-            model_executable = self.graph_runners[graph_batch_size]
-        else:
-            model_executable = self.model
-        hidden_states = model_executable(
-            input_ids=input_tokens,
-            positions=input_positions,
-            kv_caches=kv_caches,
-            input_metadata=input_metadata,
-        )
-        return [hidden_states, sampling_metadata]
-
-    @ torch.inference_mode()
-    def execute_sampler(
-        self,
-        hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
-        return self.model.sample(
-            hidden_states=hidden_states,
-            sampling_metadata=sampling_metadata,
-        )
 
     @ torch.inference_mode()
     def profile_run(self) -> None:
@@ -601,14 +630,40 @@ class SpecDecodeModelRunner:
                 seq_data={group_id: seq_data},
                 sampling_params=sampling_params,
                 block_tables=None,
-                spec_decode_stage=SpecDecodeStage.PROMPT,
+                token_chunk_size=seq_len,
+                spec_decode_stage=SpecDecodeStage.PREFILL,
             )
             seqs.append(seq)
 
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [(None, None)] * num_layers
-        self.execute_model(seqs, kv_caches)
+
+        input_tokens, input_positions, input_metadata, prompt_len = (
+            self._prepare_profile_input(seqs))
+        sampling_metadata = self._prepare_sample(
+            seqs, prompt_len, [], [], None)
+
+        # Execute the model.
+        if input_metadata.use_cuda_graph:
+            graph_batch_size = input_tokens.shape[0]
+            model_executable = self.graph_runners[graph_batch_size]
+        else:
+            model_executable = self.model
+
+        hidden_states = model_executable(
+            input_ids=input_tokens,
+            positions=input_positions,
+            kv_caches=kv_caches,
+            input_metadata=input_metadata,
+        )
+
+        # Sample the next token.
+        output = self.model.sample(
+            hidden_states=hidden_states,
+            sampling_metadata=sampling_metadata,
+        )
+
         torch.cuda.synchronize()
         return
 
@@ -626,10 +681,10 @@ class SpecDecodeModelRunner:
 
         # Prepare dummy inputs. These will be reused for all batch sizes.
         max_batch_size = max(_BATCH_SIZES_TO_CAPTURE)
-        input_tokens = torch.zeros(max_batch_size, 1, dtype=torch.long).cuda()
-        input_positions = torch.zeros(max_batch_size, 1,
+        input_tokens = torch.zeros(max_batch_size, dtype=torch.long).cuda()
+        input_positions = torch.zeros(max_batch_size,
                                       dtype=torch.long).cuda()
-        slot_mapping = torch.empty(max_batch_size, 1, dtype=torch.long).cuda()
+        slot_mapping = torch.empty(max_batch_size, dtype=torch.long).cuda()
         slot_mapping.fill_(_PAD_SLOT_ID)
         context_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
@@ -639,7 +694,8 @@ class SpecDecodeModelRunner:
         for batch_size in reversed(_BATCH_SIZES_TO_CAPTURE):
             # Create dummy input_metadata.
             input_metadata = InputMetadata(
-                is_prompt=False,
+                num_prefill_tokens=0,
+                num_decode_tokens=batch_size,
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
@@ -745,24 +801,24 @@ class CUDAGraphRunner:
         return self.forward(*args, **kwargs)
 
 
-def _pad_to_max(x: List[int], max_len: int, pad: int) -> List[int]:
-    assert len(x) <= max_len
-    return x + [pad] * (max_len - len(x))
-
-
+@ nvtx_range("_make_tensor_with_pad")
 def _make_tensor_with_pad(
     x: List[List[int]],
     max_len: int,
     pad: int,
     dtype: torch.dtype,
-    device: Union[str, torch.device] = "cuda",
-    pin_memory: bool = False,
+    device: Optional[Union[str, torch.device]] = "cuda",
 ) -> torch.Tensor:
-    padded_x = [_pad_to_max(x_i, max_len, pad) for x_i in x]
-    return torch.tensor(padded_x,
-                        dtype=dtype,
-                        device=device,
-                        pin_memory=pin_memory and str(device) == "cpu")
+    """Make a padded tensor of a 2D inputs.
+
+    The padding is applied to the end of each inner list until it reaches
+    `max_len`.
+    """
+    padded_x = np.zeros([len(x), max_len], dtype=np.int32) + pad
+    for ind, blocktb in enumerate(x):
+        assert len(blocktb) <= max_len
+        padded_x[ind, :len(blocktb)] = blocktb
+    return torch.tensor(padded_x, dtype=dtype, device=device)
 
 
 def _get_graph_batch_size(batch_size: int) -> int:

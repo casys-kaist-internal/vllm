@@ -183,75 +183,115 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-        spec_decode_stage = seq_group_metadata_list[0].spec_decode_stage
+        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+         draft_decode_seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule()
 
-        if not scheduler_outputs.is_empty():
-            # Execute the model.
-            if spec_decode_stage == SpecDecodeStage.PROMPT:
-                all_outputs = await self._run_workers_async(
-                    "execute_target_model",
-                    driver_kwargs={
-                        "seq_group_metadata_list": seq_group_metadata_list,
-                        "blocks_to_swap_in": scheduler_outputs.blocks_to_swap_in,
-                        "blocks_to_swap_out": scheduler_outputs.blocks_to_swap_out,
-                        "blocks_to_copy": scheduler_outputs.blocks_to_copy,
-                    })
-            
-            elif spec_decode_stage == SpecDecodeStage.DRAFT:
-                all_outputs = await self._run_workers_async(
-                    "execute_draft_model",
-                    driver_kwargs={
-                        "seq_group_metadata_list": seq_group_metadata_list,
-                        "blocks_to_swap_in": scheduler_outputs.blocks_to_swap_in,
-                        "blocks_to_swap_out": scheduler_outputs.blocks_to_swap_out,
-                        "blocks_to_copy": scheduler_outputs.blocks_to_copy,
-                    })
-            
-            elif spec_decode_stage == SpecDecodeStage.TARGET:
-                all_outputs = await self._run_workers_async(
-                    "execute_target_model",
-                    driver_kwargs={
-                        "seq_group_metadata_list": seq_group_metadata_list,
-                        "blocks_to_swap_in": scheduler_outputs.blocks_to_swap_in,
-                        "blocks_to_swap_out": scheduler_outputs.blocks_to_swap_out,
-                        "blocks_to_copy": scheduler_outputs.blocks_to_copy,
-                    })
+        if scheduler_outputs.is_empty():
+            return self._process_model_outputs([], scheduler_outputs)
 
-            # Only the driver worker returns the sampling results.
-            output = all_outputs[0]
+        # Execute the model.
+        if scheduler_outputs.is_target:
+            self._fill_draft_probs_tensor(
+                target_decode_seq_group_metadata_list)
+            # Execute the target model in the child process
+            output = await self.worker_executor._run_target_worker_sync(
+                "execute_model",
+                prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                draft_probs_tensor=self.draft_probs_tensor,
+            )
+
+            result = self._process_model_outputs(output, scheduler_outputs)
+
         else:
-            output = []
+            if self.spec_decode_config.draft_size == 0:
+                result = self._process_model_outputs([], scheduler_outputs)
+            for _ in range(self.spec_decode_config.draft_size):
+                # Execute the draft model in the parent process
+                output = self.worker_executor.run_draft_worker_sync(
+                    "execute_model",
+                    draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                )
+                scheduler_outputs.blocks_to_swap_in = {}
+                scheduler_outputs.blocks_to_swap_out = {}
+                scheduler_outputs.blocks_to_copy = {}
 
-        return self._process_model_outputs(output, scheduler_outputs)
+                result = self._process_model_outputs(output, scheduler_outputs)
 
-    async def _run_workers_async(
-        self,
-        method: str,
-        *args,
-        driver_args: Optional[List[Any]] = None,
-        driver_kwargs: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> Any:
-        """Runs the given method on all workers."""
-        coros = []
+        self.scheduler.swap_target_draft_queues(scheduler_outputs)
+        self.scheduler.free_finished_seq_groups()
 
-        if driver_args is None:
-            driver_args = args
-        if driver_kwargs is None:
-            driver_kwargs = kwargs
+        return result
 
-        # Run the driver worker asynchronously.
-        driver_executor = getattr(self.driver_worker, method)
-        coros.append(asyncio.get_event_loop().run_in_executor(
-            None, partial(driver_executor, *driver_args, **driver_kwargs)))
+    async def collocate_step(self) -> List[RequestOutput]:
+        """Performs one decoding iteration and returns newly generated results.
 
-        # Run the ray workers asynchronously.
-        for worker in self.workers:
-            coros.append(worker.execute_method.remote(method, *args, **kwargs))
+        This function performs one decoding iteration of the engine. It first
+        schedules the sequences to be executed in the next iteration and the
+        token blocks to be swapped in/out/copy. Then, it executes the model
+        and updates the scheduler with the model outputs. Finally, it decodes
+        the sequences and returns the newly generated results.
+        """
+        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
+         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
 
-        all_outputs = await asyncio.gather(*coros)
-        return all_outputs
+        if target_scheduler_outputs.is_empty():
+            target_result = self._process_model_outputs(
+                [], target_scheduler_outputs)
+        else:
+            self._fill_draft_probs_tensor(
+                target_decode_seq_group_metadata_list)
+
+            # This is non blocking call so no need to call in seperate thread
+            self.worker_executor.run_target_worker_async(
+                "execute_model",
+                prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
+                blocks_to_swap_in=target_scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=target_scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=target_scheduler_outputs.blocks_to_copy,
+                draft_probs_tensor=self.draft_probs_tensor,
+            )
+
+        if draft_scheduler_outputs.is_empty():
+            draft_result = self._process_model_outputs(
+                [], draft_scheduler_outputs)
+        else:
+            for _ in range(self.spec_decode_config.draft_size):
+                draft_output = self.worker_executor.run_draft_worker_sync(
+                    "execute_model",
+                    draft_decode_seq_group_metadata_list=draft_decode_seq_group_metadata_list,
+                    blocks_to_swap_in=draft_scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=draft_scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=draft_scheduler_outputs.blocks_to_copy,
+                )
+                draft_scheduler_outputs.blocks_to_swap_in = {}
+                draft_scheduler_outputs.blocks_to_swap_out = {}
+                draft_scheduler_outputs.blocks_to_copy = {}
+
+                draft_result = self._process_model_outputs(
+                    draft_output, draft_scheduler_outputs)
+
+            self.scheduler.swap_and_balance_target_draft_queues(
+                draft_scheduler_outputs)
+
+        if not target_scheduler_outputs.is_empty():
+            # Wait for the target worker output
+            target_output = await self.worker_executor._get_target_worker_async_output()
+            target_result = self._process_model_outputs(
+                target_output, target_scheduler_outputs)
+            self.scheduler.swap_and_balance_target_draft_queues(
+                target_scheduler_outputs)
+
+        self.scheduler.free_finished_seq_groups()
+
+        return target_result + draft_result
 
 
 class AsyncSpecDecodeLLMEngine:
@@ -282,7 +322,7 @@ class AsyncSpecDecodeLLMEngine:
 
     def __init__(self,
                  worker_use_ray: bool,
-                 engine_use_ray: bool,
+                 engine_use_ray: bool = True,
                  *args,
                  log_requests: bool = True,
                  max_log_len: Optional[int] = None,
@@ -331,10 +371,11 @@ class AsyncSpecDecodeLLMEngine:
             # order of the arguments.
             cache_config = args[1]
             parallel_config = args[2]
-            if parallel_config.tensor_parallel_size == 1:
-                num_gpus = cache_config.gpu_memory_utilization
-            else:
-                num_gpus = 1
+            # if parallel_config.tensor_parallel_size == 1:
+            #     num_gpus = cache_config.gpu_memory_utilization
+            # else:
+            #     num_gpus = 1
+            num_gpus = 1
             engine_class = ray.remote(num_gpus=num_gpus)(
                 self._engine_class).remote
         return engine_class(*args, **kwargs)
@@ -363,6 +404,7 @@ class AsyncSpecDecodeLLMEngine:
         else:
             request_outputs = await self.engine.step_async()
 
+        # print(request_outputs)
         # Put the outputs into the corresponding streams.
         for request_output in request_outputs:
             self._request_tracker.process_request_output(

@@ -34,7 +34,7 @@ class SamplingMetadata:
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Optional[Dict[SamplingType, torch.Tensor]],
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
-        draft_probs: Optional[torch.Tensor] = None,
+        draft_probs_tensor: Optional[torch.Tensor] = None,
         perform_sampling: bool = True,
     ) -> None:
         self.seq_groups = seq_groups
@@ -45,19 +45,12 @@ class SamplingMetadata:
         self.selected_token_indices = selected_token_indices
         self.categorized_sample_indices = categorized_sample_indices
         self.sampled_draft_token_ids = sampled_draft_token_ids
-        self.draft_probs = draft_probs
+        self.draft_probs_tensor = draft_probs_tensor
         self.perform_sampling = perform_sampling
 
         self.num_prompts = len(prompt_lens) if prompt_lens is not None else 0
 
-        if prompt_lens:
-            self.spec_decode_stage = SpecDecodeStage.PROMPT
-        elif draft_lens:
-            self.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
-        elif target_lens:
-            self.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
-        else:
-            raise ValueError("Invalid sampling metadata.")
+        self.is_target = (len(draft_lens) == 0)
 
     def __repr__(self) -> str:
         return (
@@ -144,7 +137,32 @@ class SamplingTensors:
                 prompt_tokens.append(seq_data.prompt_token_ids)
                 output_tokens.append(seq_data.output_token_ids)
 
-            if sampling_metadata.spec_decode_stage != SpecDecodeStage.TARGET_DECODE:
+            if sampling_metadata.is_target:
+                if i < sampling_metadata.num_prompts:
+                    temperatures += [temperature] * len(seq_ids)
+                    top_ps += [top_p] * len(seq_ids)
+                    top_ks += [top_k] * len(seq_ids)
+                    min_ps += [min_p] * len(seq_ids)
+                    presence_penalties += [p] * len(seq_ids)
+                    frequency_penalties += [f] * len(seq_ids)
+                    repetition_penalties += [r] * len(seq_ids)
+                else:
+                    decode_idx = i - sampling_metadata.num_prompts
+                    temperatures += [temperature] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    top_ps += [top_p] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    top_ks += [top_k] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    min_ps += [min_p] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    presence_penalties += [p] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    frequency_penalties += [f] * \
+                        sampling_metadata.target_lens[decode_idx]
+                    repetition_penalties += [r] * \
+                        sampling_metadata.target_lens[decode_idx]
+            else:
                 temperatures += [temperature] * len(seq_ids)
                 top_ps += [top_p] * len(seq_ids)
                 top_ks += [top_k] * len(seq_ids)
@@ -152,15 +170,6 @@ class SamplingTensors:
                 presence_penalties += [p] * len(seq_ids)
                 frequency_penalties += [f] * len(seq_ids)
                 repetition_penalties += [r] * len(seq_ids)
-            else:
-                temperatures += [temperature] * \
-                    sampling_metadata.target_lens[i]
-                top_ps += [top_p] * sampling_metadata.target_lens[i]
-                top_ks += [top_k] * sampling_metadata.target_lens[i]
-                min_ps += [min_p] * sampling_metadata.target_lens[i]
-                presence_penalties += [p] * sampling_metadata.target_lens[i]
-                frequency_penalties += [f] * sampling_metadata.target_lens[i]
-                repetition_penalties += [r] * sampling_metadata.target_lens[i]
 
         sampling_tensors = SamplingTensors.from_lists(
             temperatures, top_ps, top_ks, min_ps, presence_penalties,

@@ -15,6 +15,7 @@ from vllm.model_executor.parallel_utils.parallel_state import (
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata, SequenceStatus
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.spec_decode_model_runner import SpecDecodeModelRunner
+from vllm.utils import nvtx_range
 
 
 class SpecDecodeWorker:
@@ -34,8 +35,7 @@ class SpecDecodeWorker:
         local_rank: int,
         rank: int,
         distributed_init_method: str,
-        # if it is the driver worker then it is the draft worker.
-        is_driver_worker: bool = False,
+        is_target: bool
     ) -> None:
         self.model_config = model_config
         self.parallel_config = parallel_config
@@ -44,12 +44,8 @@ class SpecDecodeWorker:
         self.local_rank = local_rank
         self.rank = rank
         self.distributed_init_method = distributed_init_method
-        self.is_driver_worker = is_driver_worker
-        if self.is_driver_worker:
-            assert self.rank == 0, "The driver worker must have rank 0."
-
         self.model_runner = SpecDecodeModelRunner(model_config, parallel_config,
-                                                  scheduler_config, is_driver_worker)
+                                                  scheduler_config, is_target)
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
         self.cache_config = None
@@ -118,6 +114,20 @@ class SpecDecodeWorker:
         consumed_memory = initial_free_gpu_memory - free_gpu_memory
         return consumed_memory, cache_block_size
 
+    @torch.inference_mode()
+    def profile_consumed_memory(
+        self,
+        block_size: int,
+    ) -> Tuple[int, int]:
+        # Execute a forward pass with dummy inputs to profile the memory usage
+        # of the model.
+        self.model_runner.profile_run()
+
+        cache_block_size = CacheEngine.get_cache_block_size(
+            block_size, self.model_config, self.parallel_config)
+
+        return cache_block_size
+
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
         self.cache_config = cache_config
         self.cache_engine = CacheEngine(self.cache_config, self.model_config,
@@ -133,6 +143,7 @@ class SpecDecodeWorker:
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
 
+    @nvtx_range("cache_swap")
     def cache_swap(
         self,
         blocks_to_swap_in: Dict[int, int],
@@ -162,13 +173,23 @@ class SpecDecodeWorker:
     @torch.inference_mode()
     def execute_model(
         self,
-        seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = None,
+        prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
+        ],
+        target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
+        ],
+        draft_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
+        ],
         blocks_to_swap_in: Optional[Dict[int, int]] = None,
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
+        draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
-        assert seq_group_metadata_list is not None
-        num_seq_groups = len(seq_group_metadata_list)
+        assert prefill_seq_group_metadata_list is not None or \
+            target_decode_seq_group_metadata_list is not None or \
+            draft_decode_seq_group_metadata_list is not None
+        num_seq_groups = len(prefill_seq_group_metadata_list) + \
+            len(target_decode_seq_group_metadata_list) + \
+            len(draft_decode_seq_group_metadata_list)
         assert blocks_to_swap_in is not None
         assert blocks_to_swap_out is not None
         assert blocks_to_copy is not None
@@ -181,8 +202,13 @@ class SpecDecodeWorker:
         if num_seq_groups == 0:
             return {}
 
-        output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+        output = self.model_runner.execute_model(prefill_seq_group_metadata_list,
+                                                 target_decode_seq_group_metadata_list,
+                                                 draft_decode_seq_group_metadata_list,
+                                                 self.gpu_cache, draft_probs_tensor)
+
+        del draft_probs_tensor
+
         return output
 
 

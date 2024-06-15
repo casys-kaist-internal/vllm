@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from tabulate import tabulate
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
@@ -270,6 +271,8 @@ class SpecDecodeEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 7
+    collocate: bool = False
+    enable_chunked_prefill: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -278,7 +281,7 @@ class SpecDecodeEngineArgs:
     dtype: str = 'auto'
     seed: int = 0
     max_model_len: Optional[int] = None
-    worker_use_ray: bool = True
+    worker_use_ray: bool = False
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
@@ -309,10 +312,27 @@ class SpecDecodeEngineArgs:
 
         # Model arguments
         parser.add_argument(
-            '--model',
+            '--target-model',
+            type=str,
+            default='facebook/opt-6.7b',
+            help='name or path of the huggingface model to use')
+        parser.add_argument(
+            '--draft-model',
             type=str,
             default='facebook/opt-125m',
             help='name or path of the huggingface model to use')
+        parser.add_argument('--draft-size',
+                            type=int,
+                            default=7,
+                            help='draft size')
+        parser.add_argument('--collocate',
+                            '-c',
+                            action='store_true',
+                            help='collocate target and draft models')
+        parser.add_argument('--enable-chunked-prefill',
+                            '-cp',
+                            action='store_true',
+                            help='enable chunked prefill')
         parser.add_argument(
             '--tokenizer',
             type=str,
@@ -479,7 +499,7 @@ class SpecDecodeEngineArgs:
             self.target_model, self.tokenizer, self.tokenizer_mode,
             self.trust_remote_code, self.download_dir, self.load_format,
             self.dtype, self.seed, self.revision, self.tokenizer_revision,
-            self.max_model_len, self.quantization, self.enforce_eager,
+            self.max_model_len, self.quantization, True,
             self.max_context_len_to_capture)
         draft_model_config = ModelConfig(
             self.draft_model, self.tokenizer, self.tokenizer_mode,
@@ -498,22 +518,32 @@ class SpecDecodeEngineArgs:
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
-                                           self.max_paddings)
-        spec_decode_config = SpecDecodeConfig(self.draft_size)
+                                           self.enable_chunked_prefill)
+        spec_decode_config = SpecDecodeConfig(self.draft_size,
+                                              self.collocate)
+
+        # table = [["target_model", self.target_model],
+        #          ["draft_model", self.draft_model],
+        #          ["draft_size", self.draft_size],
+        #          ["collocate", self.collocate],
+        #          ["chunked_prefill", self.enable_chunked_prefill],
+        #          ]
+        # print(tabulate(table))
+
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
 
 @dataclass
 class AsyncSpecDecodeEngineArgs(SpecDecodeEngineArgs):
     """Arguments for asynchronous vLLM engine."""
-    engine_use_ray: bool = False
+    engine_use_ray: bool = True
     disable_log_requests: bool = False
     max_log_len: Optional[int] = None
 
     @staticmethod
     def add_cli_args(
             parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        parser = EngineArgs.add_cli_args(parser)
+        parser = SpecDecodeEngineArgs.add_cli_args(parser)
         parser.add_argument('--engine-use-ray',
                             action='store_true',
                             help='use Ray to start the LLM engine in a '

@@ -79,7 +79,7 @@ class PagedAttention(nn.Module):
         Returns:
             shape = [batch_size, seq_len, num_heads * head_size]
         """
-        batch_size, seq_len, hidden_size = query.shape
+        # batch_size, seq_len, hidden_size = query.shape
         # Reshape the query, key, and value tensors.
         query = query.view(-1, self.num_heads, self.head_size)
         key = key.view(-1, self.num_kv_heads, self.head_size)
@@ -98,8 +98,25 @@ class PagedAttention(nn.Module):
                 input_metadata.slot_mapping.flatten(),
             )
 
-        if input_metadata.is_prompt:
-            # Prompt run.
+        num_prefill_tokens = input_metadata.num_prefill_tokens
+        num_decode_tokens = input_metadata.num_decode_tokens
+
+        assert key.shape[0] == num_prefill_tokens + num_decode_tokens
+        assert value.shape[0] == num_prefill_tokens + num_decode_tokens
+
+        output = torch.empty_like(query)
+        # Query for decode. KV is not needed because it is already cached.
+        decode_query = query[num_prefill_tokens:]
+        # QKV for prefill
+        query = query[:num_prefill_tokens]
+        key = key[:num_prefill_tokens]
+        value = value[:num_prefill_tokens]
+
+        assert query.shape[0] == num_prefill_tokens
+        assert decode_query.shape[0] == num_decode_tokens
+
+        # Prompt run.
+        if num_prefill_tokens > 0:
             if self.num_kv_heads != self.num_heads:
                 # As of Nov 2023, xformers only supports MHA. For MQA/GQA,
                 # project the key and value tensors to the desired number of
@@ -122,15 +139,14 @@ class PagedAttention(nn.Module):
             if input_metadata.attn_bias is None:
                 if self.alibi_slopes is None:
                     attn_bias = BlockDiagonalCausalMask.from_seqlens(
-                        [seq_len] * batch_size)
+                        [num_prefill_tokens])
                     if self.sliding_window is not None:
                         attn_bias = attn_bias.make_local_attention(
                             self.sliding_window)
                     input_metadata.attn_bias = attn_bias
                 else:
                     input_metadata.attn_bias = _make_alibi_bias(
-                        self.alibi_slopes, self.num_kv_heads, batch_size,
-                        seq_len, query.dtype)
+                        self.alibi_slopes, self.num_kv_heads, query.dtype, num_prefill_tokens)
 
             # TODO(woosuk): Too many view operations. Let's try to reduce them
             # in the future for code readability.
@@ -139,9 +155,9 @@ class PagedAttention(nn.Module):
                 key = key.unsqueeze(0)
                 value = value.unsqueeze(0)
             else:
-                query = query.unflatten(0, (batch_size, seq_len))
-                key = key.unflatten(0, (batch_size, seq_len))
-                value = value.unflatten(0, (batch_size, seq_len))
+                query = query.unflatten(0, (1, num_prefill_tokens))
+                key = key.unflatten(0, (1, num_prefill_tokens))
+                value = value.unflatten(0, (1, num_prefill_tokens))
 
             out = xops.memory_efficient_attention_forward(
                 query,
@@ -153,12 +169,14 @@ class PagedAttention(nn.Module):
                 op=xops.fmha.MemoryEfficientAttentionFlashAttentionOp[0] if
                 (is_hip()) else None,
             )
-            output = out.view_as(query)
-        else:
-            # Decoding run.
+            out = out.view_as(output[:num_prefill_tokens])
+            output[:num_prefill_tokens] = out
+
+        # Decoding run.
+        if num_decode_tokens > 0:
             if key_cache is not None and value_cache is not None:
-                output = _paged_attention(
-                    query,
+                output[num_prefill_tokens:] = _paged_attention(
+                    decode_query,
                     key_cache,
                     value_cache,
                     input_metadata,
@@ -172,41 +190,43 @@ class PagedAttention(nn.Module):
                 output = torch.zeros_like(query)
 
         # Reshape the output tensor.
-        return output.view(batch_size, seq_len, hidden_size)
+        return output.view(-1, self.num_heads * self.head_size)
 
 
 def _make_alibi_bias(
     alibi_slopes: torch.Tensor,
     num_kv_heads: int,
-    batch_size: int,
-    seq_len: int,
     dtype: torch.dtype,
+    seq_lens: List[int],
 ) -> LowerTriangularMaskWithTensorBias:
-    bias = torch.arange(seq_len, dtype=dtype, device="cuda")
-    # NOTE(zhuohan): HF uses
-    #     `bias = bias[None, :].repeat(prompt_len, 1)`
-    # here. We find that both biases give the same results, but
-    # the bias below more accurately follows the original ALiBi
-    # paper.
-    bias = bias[None, :] - bias[:, None]
+    attn_biases = []
+    for seq_len in seq_lens:
+        bias = torch.arange(seq_len, dtype=dtype)
+        # NOTE(zhuohan): HF uses
+        #     `bias = bias[None, :].repeat(seq_len, 1)`
+        # here. We find that both biases give the same results, but
+        # the bias below more accurately follows the original ALiBi
+        # paper.
+        # Calculate a matrix where each element represents ith element- jth
+        # element.
+        bias = bias[None, :] - bias[:, None]
 
-    # When using custom attention bias, xformers requires the bias to
-    # be sliced from a tensor whose length is a multiple of 8.
-    padded_len = (seq_len + 7) // 8 * 8
-    num_heads = alibi_slopes.shape[0]
-    bias = torch.empty(
-        batch_size,
-        num_heads,
-        seq_len,
-        padded_len,
-        device=alibi_slopes.device,
-        dtype=dtype,
-    )[:, :, :, :seq_len].copy_(bias)
-    bias.mul_(alibi_slopes[:, None, None])
-    if num_heads != num_kv_heads:
-        bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
-    attn_bias = LowerTriangularMaskWithTensorBias(bias)
-    return attn_bias
+        padded_len = (seq_len + 7) // 8 * 8
+        num_heads = alibi_slopes.shape[0]
+        bias = torch.empty(
+            1,  # batch size
+            num_heads,
+            seq_len,
+            padded_len,
+            device=alibi_slopes.device,
+            dtype=dtype,
+        )[:, :, :, :seq_len].copy_(bias)
+        bias.mul_(alibi_slopes[:, None, None])
+        if num_heads != num_kv_heads:
+            bias = bias.unflatten(1, (num_kv_heads, num_heads // num_kv_heads))
+        attn_biases.append(LowerTriangularMaskWithTensorBias(bias))
+
+    return attn_biases
 
 
 def _paged_attention(

@@ -506,7 +506,7 @@ class LLMEngine:
         all_finished_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                               reverse=True)
+            reverse=True)
         for seq, parent, is_new in all_finished_seqs[:beam_width]:
             if is_new:
                 # A newly generated child sequence finishes and has a high
@@ -534,7 +534,7 @@ class LLMEngine:
         running_child_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                                reverse=True)
+            reverse=True)
 
         # Check if we can stop the beam search.
         if len(running_child_seqs) == 0:
@@ -725,7 +725,7 @@ class LLMEngine:
              read_offset=seq.read_offset,
              skip_special_tokens=prms.skip_special_tokens,
              spaces_between_special_tokens=prms.spaces_between_special_tokens,
-         )
+        )
         if seq.tokens is None:
             seq.tokens = new_tokens
         else:
