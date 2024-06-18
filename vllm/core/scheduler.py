@@ -183,9 +183,9 @@ class Scheduler:
                         self.scheduler_config.max_num_seqs):
                     break
 
-                num_paddings = num_batched_tokens - sum(new_seq_lens)
-                if num_paddings > self.scheduler_config.max_paddings:
-                    break
+                # num_paddings = num_batched_tokens - sum(new_seq_lens)
+                # if num_paddings > self.scheduler_config.max_paddings:
+                #     break
                 seq_lens = new_seq_lens
 
                 seq_group = self.waiting.pop(0)
