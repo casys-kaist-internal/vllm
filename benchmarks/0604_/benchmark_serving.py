@@ -17,11 +17,6 @@ from vllm.outputs import RequestOutput
 # (prompt len, output len, latency)
 REQUEST_LATENCY: List[Tuple[int, int, float]] = []
 
-<<<<<<< HEAD
-=======
-DOWNLOAD_DIR = '/mnt/sda/download'
-
->>>>>>> 0.2.7
 
 def get_requests_with_time(
     input_requests: List[Tuple[str, int, int]],
@@ -128,10 +123,6 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         max_model_len=args.max_model_len,
         enforce_eager=args.enforce_eager,
-<<<<<<< HEAD
-=======
-        download_dir=DOWNLOAD_DIR,
->>>>>>> 0.2.7
     )
 
     def warmup():

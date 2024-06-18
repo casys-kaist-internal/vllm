@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Define the configurations
-request_rates=(1 2)
-draft_sizes=(0 1)
-chunk_prefills=(false)
-collocates=(false)
+# Define the different configurations
+# request_rates=(4 8 12 16 20 24 28 32)
+request_rates=(1 1.5 2 2.5 3 3.5 4 4.5 5 5.5 6 6.5 7 7.5 8)
+# draft_sizes=(0 1 2 3 4 5 6 7)
+draft_sizes=(0 4 7)
+chunk_prefills=(false true)
+collocates=(false true)
 datasets=("finance")
 
 # Path to the Python script
@@ -31,7 +33,6 @@ extract_values() {
 
 total_runs=$(( ${#datasets[@]} * ${#request_rates[@]} * ${#draft_sizes[@]} * ${#chunk_prefills[@]} * ${#collocates[@]} ))
 current_run=0
-
 # Run the benchmark for each combination of parameters
 for dataset in "${datasets[@]}"; do
     for request_rate in "${request_rates[@]}"; do
@@ -47,7 +48,7 @@ for dataset in "${datasets[@]}"; do
                     output=$(python $python_script --dataset $dataset --request-rate $request_rate --draft-size $draft_size $chunk_prefill_flag)
                     extract_values "$output"
                     echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
-                    ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$throughput,$latency"
+                    ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate, $throughput, $latency"
                     ((current_run++))
                     ./slack "[${current_run}/${total_runs}]"
                 else
@@ -59,7 +60,7 @@ for dataset in "${datasets[@]}"; do
                         output=$(python $python_script --dataset $dataset --request-rate $request_rate --draft-size $draft_size $chunk_prefill_flag $collocate_flag)
                         extract_values "$output"
                         echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
-                        ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$throughput,$latency"
+                        ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate, $throughput, $latency"
                         ((current_run++))
                         ./slack "[${current_run}/${total_runs}]"
                     done
@@ -68,3 +69,4 @@ for dataset in "${datasets[@]}"; do
         done
     done
 done
+

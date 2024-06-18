@@ -6,9 +6,6 @@ import random
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from datasets import load_dataset
 
-# DATASET_DIR = "/home/noppanat/workspace/datasets"
-# RANDOM_SAMPLE = False
-
 DOWNLOAD_DIR = '/mnt/sda/download'
 RANDOM_SAMPLE = False
 
@@ -75,7 +72,6 @@ def load_humaneval(num_prompts: int,
 def load_alpaca(num_prompts: int,
                 tokenizer: PreTrainedTokenizerBase,
                 fixed_output_len: Optional[int] = None):
-
     dataset = load_dataset('tatsu-lab/alpaca', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len, input_key='input')
 
@@ -118,17 +114,14 @@ def load_sharegpt(num_prompts: int,
 
 def load_apps(num_prompts: int,
               tokenizer: PreTrainedTokenizerBase,
-              fixed_output_len: Optional[int] = None)
-
-
-dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
-return process_dataset(dataset, 'question', 'solutions', num_prompts, tokenizer, fixed_output_len)
+              fixed_output_len: Optional[int] = None):
+    dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
+    return process_dataset(dataset, 'question', 'solutions', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_dialogue(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
-
     dataset = load_dataset('facebook/empathetic_dialogues',
                            cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'prompt', 'utterance', num_prompts, tokenizer, fixed_output_len)
@@ -138,7 +131,6 @@ def load_chatbot(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
-
         'alespalla/chatbot_instruction_prompts', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'prompt', 'response', num_prompts, tokenizer, fixed_output_len)
 
@@ -147,7 +139,6 @@ def load_finance(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
-
         'gbharti/finance-alpaca', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len)
 

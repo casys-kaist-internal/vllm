@@ -7,8 +7,6 @@ from transformers import (AutoTokenizer)
 from dataset import sample_requests
 from tabulate import tabulate
 
-DOWNLOAD_DIR = '/mnt/sda/download'
-
 
 def run(
     requests: List[Tuple[str, int, int]],
@@ -43,7 +41,6 @@ def run(
         dtype=dtype,
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
-        download_dir=DOWNLOAD_DIR,
     )
 
     # Add the requests to the engine.
