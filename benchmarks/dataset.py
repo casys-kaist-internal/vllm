@@ -9,6 +9,9 @@ MAX_LENGTH = 1000
 
 # Ensure DOWNLOAD_DIR exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# MAX_LENGTH = 1000
+
+# DATASET_DIR = "/home/noppanat/workspace/datasets"
 
 
 def process_dataset(dataset, prompt_key, completion_key, tokenizer, input_key=None):

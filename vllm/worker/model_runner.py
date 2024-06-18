@@ -139,7 +139,8 @@ class ModelRunner:
                                              dtype=torch.long)
 
         input_metadata = InputMetadata(
-            is_prompt=True,
+            num_prefill_tokens=sum(prompt_lens),
+            num_decode_tokens=0,
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
@@ -244,7 +245,8 @@ class ModelRunner:
             )
 
         input_metadata = InputMetadata(
-            is_prompt=False,
+            num_prefill_tokens=0,   # TODO(noppanat): fix this
+            num_decode_tokens=batch_size, # TODO(noppanat): fix this
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -317,6 +319,8 @@ class ModelRunner:
         sampling_metadata = SamplingMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
+            draft_lens=[],    # TODO(noppanat): fix this
+            target_lens=[],   # TODO(noppanat): fix this
             prompt_lens=prompt_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
@@ -353,8 +357,13 @@ class ModelRunner:
                 input_tokens.size(),
                 "input_positions_size":
                 input_positions.size(),
-                "is_prompt":
-                input_metadata.is_prompt,
+                # TODO(noppanat): fix this
+                # "is_prompt":
+                # input_metadata.is_prompt,
+                "num_prefill_tokens":
+                input_metadata.num_prefill_tokens,
+                "num_decode_tokens":
+                input_metadata.num_decode_tokens,
                 "slot_mapping_size":
                 get_size_or_none(input_metadata.slot_mapping),
                 "max_context_len":
@@ -418,7 +427,8 @@ class ModelRunner:
                 device="cuda")
             broadcast(selected_token_indices, src=0)
             input_metadata = InputMetadata(
-                is_prompt=py_data["is_prompt"],
+                num_prefill_tokens=py_data["num_prefill_tokens"],   # TODO(noppanat): fix this
+                num_decode_tokens=py_data["num_decode_tokens"],   # TODO(noppanat): fix this
                 slot_mapping=slot_mapping,
                 max_context_len=py_data["max_context_len"],
                 context_lens=context_lens,
@@ -429,6 +439,8 @@ class ModelRunner:
                 seq_groups=None,
                 seq_data=None,
                 prompt_lens=None,
+                draft_lens=[],  # TODO(noppanat): fix this
+                target_lens=[], # TODO(noppanat): fix this
                 selected_token_indices=selected_token_indices,
                 categorized_sample_indices=None,
                 perform_sampling=False,
@@ -485,6 +497,7 @@ class ModelRunner:
                 seq_data={group_id: seq_data},
                 sampling_params=sampling_params,
                 block_tables=None,
+                token_chunk_size=0, # NOTE(noppanat): unused
             )
             seqs.append(seq)
 
@@ -522,7 +535,8 @@ class ModelRunner:
         for batch_size in reversed(_BATCH_SIZES_TO_CAPTURE):
             # Create dummy input_metadata.
             input_metadata = InputMetadata(
-                is_prompt=False,
+                num_prefill_tokens=0,   # TODO(noppanat): fix this
+                num_decode_tokens=batch_size,   # TODO(noppanat): fix this
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],

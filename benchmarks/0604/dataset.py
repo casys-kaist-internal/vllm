@@ -6,6 +6,7 @@ import random
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from datasets import load_dataset
 
+<<<<<<< HEAD
 # DATASET_DIR = "/home/noppanat/workspace/datasets"
 # RANDOM_SAMPLE = False
 
@@ -15,6 +16,11 @@ RANDOM_SAMPLE = False
 # Ensure DOWNLOAD_DIR exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+=======
+DATASET_DIR = "/home/noppanat/workspace/datasets"
+RANDOM_SAMPLE = False
+
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
 
 def process_dataset(dataset, prompt_key, completion_key, num_prompts, tokenizer, fixed_output_len, input_key=None):
     prompts = [data[prompt_key] +
@@ -61,35 +67,55 @@ def filter_and_process(prompts, prompt_token_ids, completion_token_ids, num_prom
 def load_gsm8k(num_prompts: int,
                tokenizer: PreTrainedTokenizerBase,
                fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
     dataset = load_dataset('gsm8k', 'main', cache_dir=DOWNLOAD_DIR)['train']
+=======
+    dataset = load_dataset('gsm8k', 'main')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'question', 'answer', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_humaneval(num_prompts: int,
                    tokenizer: PreTrainedTokenizerBase,
                    fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
     dataset = load_dataset('openai_humaneval', cache_dir=DOWNLOAD_DIR)['test']
+=======
+    dataset = load_dataset('openai_humaneval')['test']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'prompt', 'canonical_solution', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_alpaca(num_prompts: int,
                 tokenizer: PreTrainedTokenizerBase,
                 fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
 
     dataset = load_dataset('tatsu-lab/alpaca', cache_dir=DOWNLOAD_DIR)['train']
+=======
+    dataset = load_dataset('tatsu-lab/alpaca')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len, input_key='input')
 
 
 def load_mt_bench(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
     dataset = load_dataset('philschmid/mt-bench',
                            cache_dir=DOWNLOAD_DIR)['train']
+=======
+    dataset = load_dataset('philschmid/mt-bench')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
     completions = []
+<<<<<<< HEAD
     with open(f'{DOWNLOAD_DIR}/gpt-4.jsonl', 'r') as file:
+=======
+    with open(f'{DATASET_DIR}/gpt-4.jsonl', 'r') as file:
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
         for line in file:
             json_object = json.loads(line)
             completions.append(json_object['choices'][0]['turns'][0])
@@ -101,7 +127,11 @@ def load_mt_bench(num_prompts: int,
 def load_sharegpt(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
     with open(f'{DOWNLOAD_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+=======
+    with open(f'{DATASET_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
         dataset = json.load(f)
 
     dataset = [data for data in dataset if len(data["conversations"]) >= 2]
@@ -118,19 +148,29 @@ def load_sharegpt(num_prompts: int,
 
 def load_apps(num_prompts: int,
               tokenizer: PreTrainedTokenizerBase,
+<<<<<<< HEAD
               fixed_output_len: Optional[int] = None)
 
 
 dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
 return process_dataset(dataset, 'question', 'solutions', num_prompts, tokenizer, fixed_output_len)
+=======
+              fixed_output_len: Optional[int] = None):
+    dataset = load_dataset('codeparrot/apps')['train']
+    return process_dataset(dataset, 'question', 'solutions', num_prompts, tokenizer, fixed_output_len)
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
 
 
 def load_dialogue(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
+<<<<<<< HEAD
 
     dataset = load_dataset('facebook/empathetic_dialogues',
                            cache_dir=DOWNLOAD_DIR)['train']
+=======
+    dataset = load_dataset('facebook/empathetic_dialogues')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'prompt', 'utterance', num_prompts, tokenizer, fixed_output_len)
 
 
@@ -138,8 +178,12 @@ def load_chatbot(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
+<<<<<<< HEAD
 
         'alespalla/chatbot_instruction_prompts', cache_dir=DOWNLOAD_DIR)['train']
+=======
+        'alespalla/chatbot_instruction_prompts')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'prompt', 'response', num_prompts, tokenizer, fixed_output_len)
 
 
@@ -147,8 +191,12 @@ def load_finance(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
+<<<<<<< HEAD
 
         'gbharti/finance-alpaca', cache_dir=DOWNLOAD_DIR)['train']
+=======
+        'gbharti/finance-alpaca')['train']
+>>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len)
 
 
