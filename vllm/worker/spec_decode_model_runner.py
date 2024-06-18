@@ -325,18 +325,27 @@ class SpecDecodeModelRunner:
                 block_tables.append([])
             batch_size = graph_batch_size
 
-        input_tokens = torch.tensor(input_tokens,
-                                    dtype=torch.long,
-                                    device="cuda")
-        input_positions = torch.tensor(input_positions,
-                                       dtype=torch.long,
-                                       device="cuda")
-        slot_mapping = torch.tensor(slot_mapping,
-                                    dtype=torch.long,
-                                    device="cuda")
-        context_lens = torch.tensor(context_lens,
-                                    dtype=torch.int,
-                                    device="cuda")
+        # input_tokens = torch.tensor(input_tokens,
+        #                             dtype=torch.long,
+        #                             device="cuda")
+        # input_positions = torch.tensor(input_positions,
+        #                                dtype=torch.long,
+        #                                device="cuda")
+        # slot_mapping = torch.tensor(slot_mapping,
+        #                             dtype=torch.long,
+        #                             device="cuda")
+        # context_lens = torch.tensor(context_lens,
+        #                             dtype=torch.int,
+        #                             device="cuda")
+
+        input_tokens = _async_h2d(
+            input_tokens, dtype=torch.long, pin_memory=True)
+        input_positions = _async_h2d(
+            input_positions, dtype=torch.long, pin_memory=True)
+        slot_mapping = _async_h2d(
+            slot_mapping, dtype=torch.long, pin_memory=True)
+        context_lens = _async_h2d(
+            context_lens, dtype=torch.int, pin_memory=True)
 
         if use_captured_graph:
             # The shape of graph_block_tables is

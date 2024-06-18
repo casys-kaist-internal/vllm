@@ -3,6 +3,7 @@ import torch.multiprocessing as mp
 from typing import Any
 import asyncio
 from functools import partial
+import torch
 
 from vllm.worker.spec_decode_worker import SpecDecodeWorker
 from vllm.utils import get_ip, get_open_port, nvtx_range
@@ -84,24 +85,27 @@ class WorkerExecutor:
 
 
 def init_worker(pipe, target_model_config, parallel_config, scheduler_config, spec_decode_config):
-    target_worker = SpecDecodeWorker(
-        copy.deepcopy(target_model_config),
-        copy.deepcopy(parallel_config),
-        copy.deepcopy(scheduler_config),
-        copy.deepcopy(spec_decode_config),
-        local_rank=0,
-        rank=0,
-        distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
-        is_target=True
-    )
-    target_worker.init_model()
-    target_worker.load_model()
+    target_stream = torch.cuda.Stream()
 
-    while True:
-        method, args, kwargs = pipe.recv()
+    with torch.cuda.stream(target_stream):
+        target_worker = SpecDecodeWorker(
+            copy.deepcopy(target_model_config),
+            copy.deepcopy(parallel_config),
+            copy.deepcopy(scheduler_config),
+            copy.deepcopy(spec_decode_config),
+            local_rank=0,
+            rank=0,
+            distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
+            is_target=True
+        )
+        target_worker.init_model()
+        target_worker.load_model()
 
-        if method == "shutdown":
-            break
+        while True:
+            method, args, kwargs = pipe.recv()
 
-        result = getattr(target_worker, method)(*args, **kwargs)
-        pipe.send(result)
+            if method == "shutdown":
+                break
+
+            result = getattr(target_worker, method)(*args, **kwargs)
+            pipe.send(result)

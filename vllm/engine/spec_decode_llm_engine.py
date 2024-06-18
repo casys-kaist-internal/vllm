@@ -128,6 +128,8 @@ class SpecDecodeLLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
+        self.total_tokens = 0
+
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
             self.parallel_config)
@@ -426,6 +428,9 @@ class SpecDecodeLLMEngine:
                 scheduled_seq_group.seq_group)
             request_outputs.append(request_output)
 
+        self.total_tokens += (num_prompt_tokens_to_log +
+                              num_generation_tokens_to_log)
+
         if self.log_stats:
             # Log the system stats.
             self._log_system_stats(
@@ -705,3 +710,9 @@ class SpecDecodeLLMEngine:
                 and any(token == self.tokenizer.eos_token_id for token in last_tokens)):
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
+
+    def reset_total_tokens(self) -> None:
+        self.total_tokens = 0
+
+    def get_total_tokens(self) -> int:
+        return self.total_tokens

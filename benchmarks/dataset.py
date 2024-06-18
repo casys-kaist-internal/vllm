@@ -54,7 +54,7 @@ def load_mt_bench(tokenizer: PreTrainedTokenizerBase):
     prompt_token_ids = tokenizer(prompts).input_ids
 
     completions = []
-    with open(f'/gpt-4.jsonl', 'r') as file:
+    with open(f'{DATASET_DIR}/gpt-4.jsonl', 'r') as file:
         for line in file:
             json_object = json.loads(line)
             completions.append(json_object['choices'][0]['turns'][0])
