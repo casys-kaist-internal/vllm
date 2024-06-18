@@ -25,7 +25,9 @@ from vllm.utils import Counter, random_uuid
 
 from ...conftest import cleanup
 
-DOWNLOAD_DIR = "../models/" # NOTE(noppanat): Change this to the correct path
+# DOWNLOAD_DIR = "../models/" # NOTE(noppanat): Change this to the correct path
+# NOTE(noppanat): Change this to the correct path
+DOWNLOAD_DIR = "/mnt/sda/download"
 
 
 class AsyncLLM:
@@ -192,7 +194,8 @@ class AsyncSpecDecodeLLM:
             **kwargs,
         )
         self.request_counter = Counter()
-        self.llm_engine = AsyncSpecDecodeLLMEngine.from_engine_args(engine_args)
+        self.llm_engine = AsyncSpecDecodeLLMEngine.from_engine_args(
+            engine_args)
 
     def generate(
         self,
@@ -255,7 +258,7 @@ def baseline_llm_generator(request, common_llm_kwargs, per_test_common_llm_kwarg
 def test_llm_generator(request, common_llm_kwargs, per_test_common_llm_kwargs,
                        baseline_llm_kwargs, test_llm_kwargs, seed):
     return create_llm_generator("test", request, common_llm_kwargs,
-                                per_test_common_llm_kwargs, baseline_llm_kwargs, 
+                                per_test_common_llm_kwargs, baseline_llm_kwargs,
                                 test_llm_kwargs, seed)
 
 
@@ -290,9 +293,11 @@ def create_llm_generator(baseline_or_test, request, common_llm_kwargs,
             f'Creating {baseline_or_test=} LLM for {test_name=}. {(baseline_kwargs if baseline_or_test == "baseline" else test_kwargs)=}'
         )
         if baseline_or_test == "baseline":
-            llm = AsyncLLM(**baseline_kwargs) if use_async else LLM(**baseline_kwargs)
+            llm = AsyncLLM(
+                **baseline_kwargs) if use_async else LLM(**baseline_kwargs)
         elif baseline_or_test == "test":
-            llm = AsyncSpecDecodeLLM(**test_kwargs) if use_async else SpecDecodeLLM(**test_kwargs)
+            llm = AsyncSpecDecodeLLM(
+                **test_kwargs) if use_async else SpecDecodeLLM(**test_kwargs)
         else:
             raise ValueError("Invalid baseline_or_test value.")
         set_random_seed(seed)
@@ -372,12 +377,20 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
         temperature=temperature,
     )
 
+    print("running spec_decode")
+
     spec_batch_tokens, spec_batch_token_ids = get_output_from_llm_generator(
         test_llm_generator, prompts, sampling_params)
+
+    print(f'{spec_batch_tokens}')
+
+    print("running baseline")
 
     (baseline_batch_tokens,
      baseline_batch_token_ids) = get_output_from_llm_generator(
          baseline_llm_generator, prompts, sampling_params)
+
+    print(f'{baseline_batch_tokens}')
 
     assert len(baseline_batch_token_ids) == len(prompts)
     assert len(spec_batch_token_ids) == len(prompts)

@@ -92,19 +92,19 @@ class ModelRunner:
             prompt_len = len(prompt_tokens)
             prompt_lens.append(prompt_len)
 
-            input_tokens.append(prompt_tokens)
+            input_tokens.extend(prompt_tokens)
             # NOTE(woosuk): Here we assume that the first token in the prompt
             # is always the first token in the sequence.
-            input_positions.append(list(range(prompt_len)))
+            input_positions.extend(list(range(prompt_len)))
 
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.append([_PAD_SLOT_ID] * prompt_len)
+                slot_mapping.extend([_PAD_SLOT_ID] * prompt_len)
                 continue
 
             # Compute the slot mapping.
-            slot_mapping.append([])
+            single_slot_mapping = []
             block_table = seq_group_metadata.block_tables[seq_id]
             # Mask the [0, start_idx) tokens of the prompt with _PAD_SLOT_ID,
             # where start_idx is max(0, prompt_len - sliding_window).
@@ -116,27 +116,25 @@ class ModelRunner:
                 start_idx = max(0, prompt_len - self.sliding_window)
             for i in range(prompt_len):
                 if i < start_idx:
-                    slot_mapping[-1].append(_PAD_SLOT_ID)
+                    single_slot_mapping.append(_PAD_SLOT_ID)
                     continue
 
                 block_number = block_table[i // self.block_size]
                 block_offset = i % self.block_size
                 slot = block_number * self.block_size + block_offset
-                slot_mapping[-1].append(slot)
+                single_slot_mapping.append(slot)
 
-        max_prompt_len = max(prompt_lens)
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_prompt_len,
-                                             pad=0,
-                                             dtype=torch.long)
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_prompt_len,
-                                                pad=0,
-                                                dtype=torch.long)
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_prompt_len,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long)
+            slot_mapping.extend(single_slot_mapping)
+
+        input_tokens = torch.tensor(input_tokens,
+                                    dtype=torch.long,
+                                    device="cuda")
+        input_positions = torch.tensor(input_positions,
+                                       dtype=torch.long,
+                                       device="cuda")
+        slot_mapping = torch.tensor(slot_mapping,
+                                    dtype=torch.long,
+                                    device="cuda")
 
         input_metadata = InputMetadata(
             num_prefill_tokens=sum(prompt_lens),
@@ -167,11 +165,11 @@ class ModelRunner:
             for seq_id in seq_ids:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 generation_token = seq_data.get_last_token_id()
-                input_tokens.append([generation_token])
+                input_tokens.extend([generation_token])
 
                 seq_len = seq_data.get_len()
                 position = seq_len - 1
-                input_positions.append([position])
+                input_positions.extend([position])
 
                 context_len = seq_len if self.sliding_window is None else min(
                     seq_len, self.sliding_window)
@@ -181,7 +179,7 @@ class ModelRunner:
                 block_number = block_table[position // self.block_size]
                 block_offset = position % self.block_size
                 slot = block_number * self.block_size + block_offset
-                slot_mapping.append([slot])
+                slot_mapping.append(slot)
 
                 if self.sliding_window is not None:
                     sliding_window_blocks = (self.sliding_window //
@@ -208,21 +206,15 @@ class ModelRunner:
                 block_tables.append([])
             batch_size = graph_batch_size
 
-        input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
-                                             pad=0,
-                                             dtype=torch.long,
-                                             device="cuda")
-        input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
-                                                pad=0,
-                                                dtype=torch.long,
-                                                device="cuda")
-        slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
-                                             pad=_PAD_SLOT_ID,
-                                             dtype=torch.long,
-                                             device="cuda")
+        input_tokens = torch.tensor(input_tokens,
+                                    dtype=torch.long,
+                                    device="cuda")
+        input_positions = torch.tensor(input_positions,
+                                       dtype=torch.long,
+                                       device="cuda")
+        slot_mapping = torch.tensor(slot_mapping,
+                                    dtype=torch.long,
+                                    device="cuda")
         context_lens = torch.tensor(context_lens,
                                     dtype=torch.int,
                                     device="cuda")
@@ -246,7 +238,7 @@ class ModelRunner:
 
         input_metadata = InputMetadata(
             num_prefill_tokens=0,   # TODO(noppanat): fix this
-            num_decode_tokens=batch_size, # TODO(noppanat): fix this
+            num_decode_tokens=batch_size,  # TODO(noppanat): fix this
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
@@ -427,8 +419,10 @@ class ModelRunner:
                 device="cuda")
             broadcast(selected_token_indices, src=0)
             input_metadata = InputMetadata(
-                num_prefill_tokens=py_data["num_prefill_tokens"],   # TODO(noppanat): fix this
-                num_decode_tokens=py_data["num_decode_tokens"],   # TODO(noppanat): fix this
+                # TODO(noppanat): fix this
+                num_prefill_tokens=py_data["num_prefill_tokens"],
+                # TODO(noppanat): fix this
+                num_decode_tokens=py_data["num_decode_tokens"],
                 slot_mapping=slot_mapping,
                 max_context_len=py_data["max_context_len"],
                 context_lens=context_lens,
@@ -440,7 +434,7 @@ class ModelRunner:
                 seq_data=None,
                 prompt_lens=None,
                 draft_lens=[],  # TODO(noppanat): fix this
-                target_lens=[], # TODO(noppanat): fix this
+                target_lens=[],  # TODO(noppanat): fix this
                 selected_token_indices=selected_token_indices,
                 categorized_sample_indices=None,
                 perform_sampling=False,
@@ -497,7 +491,7 @@ class ModelRunner:
                 seq_data={group_id: seq_data},
                 sampling_params=sampling_params,
                 block_tables=None,
-                token_chunk_size=0, # NOTE(noppanat): unused
+                token_chunk_size=0,  # NOTE(noppanat): unused
             )
             seqs.append(seq)
 
@@ -522,10 +516,10 @@ class ModelRunner:
 
         # Prepare dummy inputs. These will be reused for all batch sizes.
         max_batch_size = max(_BATCH_SIZES_TO_CAPTURE)
-        input_tokens = torch.zeros(max_batch_size, 1, dtype=torch.long).cuda()
-        input_positions = torch.zeros(max_batch_size, 1,
+        input_tokens = torch.zeros(max_batch_size, dtype=torch.long).cuda()
+        input_positions = torch.zeros(max_batch_size,
                                       dtype=torch.long).cuda()
-        slot_mapping = torch.empty(max_batch_size, 1, dtype=torch.long).cuda()
+        slot_mapping = torch.empty(max_batch_size, dtype=torch.long).cuda()
         slot_mapping.fill_(_PAD_SLOT_ID)
         context_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
