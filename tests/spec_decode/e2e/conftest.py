@@ -1,7 +1,7 @@
 import asyncio
 import time
 from itertools import cycle
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytest
 import ray
@@ -14,18 +14,18 @@ if (not is_hip()):
                         nvmlInit)
 
 from vllm import LLM
-from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.arg_utils import AsyncEngineArgs, AsyncSpecDecodeEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
-from vllm.lora.request import LoRARequest
+from vllm.engine.async_spec_decode_llm_engine import AsyncSpecDecodeLLMEngine
+from vllm.entrypoints.spec_decode_llm import SpecDecodeLLM
 from vllm.model_executor.utils import set_random_seed
-from vllm.multimodal import MultiModalData
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import Logprob
-from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, random_uuid
 
 from ...conftest import cleanup
+
+DOWNLOAD_DIR = "../models/" # NOTE(noppanat): Change this to the correct path
 
 
 class AsyncLLM:
@@ -44,7 +44,6 @@ class AsyncLLM:
         model: str,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
-        skip_tokenizer_init: bool = False,
         trust_remote_code: bool = False,
         tensor_parallel_size: int = 1,
         dtype: str = "auto",
@@ -55,8 +54,7 @@ class AsyncLLM:
         gpu_memory_utilization: float = 0.9,
         swap_space: int = 4,
         enforce_eager: bool = False,
-        max_seq_len_to_capture: int = 8192,
-        disable_custom_all_reduce: bool = False,
+        max_context_len_to_capture: int = 8192,
         **kwargs,
     ) -> None:
         if "disable_log_stats" not in kwargs:
@@ -65,7 +63,6 @@ class AsyncLLM:
             model=model,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
-            skip_tokenizer_init=skip_tokenizer_init,
             trust_remote_code=trust_remote_code,
             tensor_parallel_size=tensor_parallel_size,
             dtype=dtype,
@@ -76,18 +73,15 @@ class AsyncLLM:
             gpu_memory_utilization=gpu_memory_utilization,
             swap_space=swap_space,
             enforce_eager=enforce_eager,
-            max_seq_len_to_capture=max_seq_len_to_capture,
-            # For now use ray for the distributed back-end, since
-            # we rely on the use of engine_use_ray=True to avoid
-            # reinitializing CUDA in the same process (driver worker)
+            max_context_len_to_capture=max_context_len_to_capture,
+            # Async engine args
             engine_use_ray=True,
-            distributed_executor_backend="ray",
-            disable_custom_all_reduce=disable_custom_all_reduce,
+            disable_log_requests=True,
+            max_log_len=None,
             **kwargs,
         )
         self.request_counter = Counter()
-        self.llm_engine = AsyncLLMEngine.from_engine_args(
-            engine_args, usage_context=UsageContext.LLM_CLASS)
+        self.llm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     def generate(
         self,
@@ -96,8 +90,117 @@ class AsyncLLM:
                                         List[SamplingParams]]] = None,
         prompt_token_ids: Optional[List[List[int]]] = None,
         use_tqdm: bool = True,
-        lora_request: Optional[LoRARequest] = None,
-        multi_modal_data: Optional[MultiModalData] = None,
+    ) -> List[RequestOutput]:
+
+        if prompts is None:
+            raise ValueError("prompts must be provided.")
+        if isinstance(prompts, str):
+            # Convert a single prompt to a list.
+            prompts = [prompts]
+
+        if prompts is not None:
+            num_requests = len(prompts)
+
+        if sampling_params is None:
+            # Use default sampling params.
+            sampling_params = SamplingParams()
+
+        elif isinstance(sampling_params,
+                        list) and len(sampling_params) != num_requests:
+            raise ValueError("The lengths of prompts and "
+                             "sampling_params must be the same.")
+
+        async def get_output(prompt, sampling_param) -> RequestOutput:
+            request_id = random_uuid()
+            results_generator = self.llm_engine.generate(
+                prompt, sampling_param, request_id)
+            final_output = None
+            async for request_output in results_generator:
+                final_output = request_output
+            assert final_output is not None
+            return final_output
+
+        outputs: List[RequestOutput] = []
+        try:
+            for i in range(num_requests):
+                prompt = prompts[i] if prompts is not None else None
+                res = asyncio.run(get_output(prompt, sampling_params))
+                outputs.append(res)
+        finally:
+            ray.shutdown()
+        return outputs
+
+
+class AsyncSpecDecodeLLM:
+    """AsyncSpecDecodeLLM
+
+    Note: Current SpecDecodeLLM class doesn't support async mode, for test purpose,
+    we implement async one in here. Maybe we could move to
+    vllm/entrypoints/spec_decode_llm.py in future.
+
+    Below AsyncSpecDecodeLLM is directly borrow from vllm/entrypoints/spec_decode_llm.py with changes
+    to make to work in async mode.
+    """
+
+    def __init__(
+        self,
+        target_model: str,
+        draft_model: str,
+        draft_size: int,
+        collocate: bool = False,
+        enable_chunked_prefill: bool = False,
+        tokenizer: Optional[str] = None,
+        tokenizer_mode: str = "auto",
+        trust_remote_code: bool = False,
+        tensor_parallel_size: int = 1,
+        dtype: str = "auto",
+        quantization: Optional[str] = None,
+        revision: Optional[str] = None,
+        tokenizer_revision: Optional[str] = None,
+        seed: int = 0,
+        gpu_memory_utilization: float = 0.9,
+        swap_space: int = 4,
+        enforce_eager: bool = False,
+        max_context_len_to_capture: int = 8192,
+        ** kwargs,
+    ) -> None:
+        if "disable_log_stats" not in kwargs:
+            kwargs["disable_log_stats"] = True
+        engine_args = AsyncSpecDecodeEngineArgs(
+            target_model=target_model,
+            draft_model=draft_model,
+            draft_size=draft_size,
+            collocate=collocate,
+            enable_chunked_prefill=enable_chunked_prefill,
+            tokenizer=tokenizer,
+            tokenizer_mode=tokenizer_mode,
+            trust_remote_code=trust_remote_code,
+            tensor_parallel_size=tensor_parallel_size,
+            dtype=dtype,
+            quantization=quantization,
+            revision=revision,
+            tokenizer_revision=tokenizer_revision,
+            seed=seed,
+            gpu_memory_utilization=gpu_memory_utilization,
+            swap_space=swap_space,
+            enforce_eager=enforce_eager,
+            max_context_len_to_capture=max_context_len_to_capture,
+            # Async engine args
+            engine_use_ray=False,
+            disable_log_requests=True,
+            max_log_len=None,
+            **kwargs,
+        )
+        self.request_counter = Counter()
+        self.llm_engine = AsyncSpecDecodeLLMEngine.from_engine_args(engine_args)
+
+    def generate(
+        self,
+        prompts: Optional[Union[str, List[str]]] = None,
+        sampling_params: Optional[Union[SamplingParams,
+                                        List[SamplingParams]]] = None,
+        prompt_token_ids: Optional[List[List[int]]] = None,
+        use_tqdm: bool = True,
     ) -> List[RequestOutput]:
 
         if prompts is None:
@@ -140,30 +243,32 @@ class AsyncLLM:
 
 
 @pytest.fixture
-def baseline_llm_generator(request, common_llm_kwargs,
-                           per_test_common_llm_kwargs, baseline_llm_kwargs,
+def baseline_llm_generator(request, common_llm_kwargs, per_test_common_llm_kwargs,
+                           baseline_llm_kwargs, test_llm_kwargs,
                            seed):
     return create_llm_generator("baseline", request, common_llm_kwargs,
-                                per_test_common_llm_kwargs,
-                                baseline_llm_kwargs, seed)
+                                per_test_common_llm_kwargs, baseline_llm_kwargs,
+                                test_llm_kwargs, seed)
 
 
 @pytest.fixture
 def test_llm_generator(request, common_llm_kwargs, per_test_common_llm_kwargs,
-                       test_llm_kwargs, seed):
+                       baseline_llm_kwargs, test_llm_kwargs, seed):
     return create_llm_generator("test", request, common_llm_kwargs,
-                                per_test_common_llm_kwargs, test_llm_kwargs,
-                                seed)
+                                per_test_common_llm_kwargs, baseline_llm_kwargs, 
+                                test_llm_kwargs, seed)
 
 
 def create_llm_generator(baseline_or_test, request, common_llm_kwargs,
-                         per_test_common_llm_kwargs, distinct_llm_kwargs,
-                         seed):
-    kwargs = {
+                         per_test_common_llm_kwargs, baseline_llm_kwargs,
+                         test_llm_kwargs, seed):
+    common_kwargs = {
         **common_llm_kwargs,
         **per_test_common_llm_kwargs,
-        **distinct_llm_kwargs,
+        "download_dir": DOWNLOAD_DIR,
     }
+    baseline_kwargs = common_kwargs | baseline_llm_kwargs
+    test_kwargs = common_kwargs | test_llm_kwargs
     test_name = request.node.name
 
     def generator_inner():
@@ -175,12 +280,21 @@ def create_llm_generator(baseline_or_test, request, common_llm_kwargs,
         )
 
         use_async = False
-        if "use_async" in kwargs:
-            use_async = kwargs.pop("use_async")
+        if "use_async" in baseline_kwargs:
+            use_async = baseline_kwargs.pop("use_async")
+        if "use_async" in test_kwargs:
+            use_async = test_kwargs.pop("use_async")
         print(f'{use_async=}')
 
-        print(f'Creating {baseline_or_test=} LLM for {test_name=}. {kwargs=}')
-        llm = AsyncLLM(**kwargs) if use_async else LLM(**kwargs)
+        print(
+            f'Creating {baseline_or_test=} LLM for {test_name=}. {(baseline_kwargs if baseline_or_test == "baseline" else test_kwargs)=}'
+        )
+        if baseline_or_test == "baseline":
+            llm = AsyncLLM(**baseline_kwargs) if use_async else LLM(**baseline_kwargs)
+        elif baseline_or_test == "test":
+            llm = AsyncSpecDecodeLLM(**test_kwargs) if use_async else SpecDecodeLLM(**test_kwargs)
+        else:
+            raise ValueError("Invalid baseline_or_test value.")
         set_random_seed(seed)
 
         yield llm
@@ -195,25 +309,12 @@ def create_llm_generator(baseline_or_test, request, common_llm_kwargs,
     return generator_outer
 
 
-def maybe_assert_ngram_worker(llm):
-    # Verify the proposer worker is ngram if ngram is specified.
-    if (not isinstance(llm, AsyncLLM)
-            and llm.llm_engine.speculative_config is not None
-            and llm.llm_engine.speculative_config.ngram_prompt_lookup_max > 0):
-        from vllm.spec_decode.ngram_worker import NGramWorker
-        assert isinstance(
-            llm.llm_engine.model_executor.driver_worker.proposer_worker,
-            NGramWorker)
-
-
 def get_output_from_llm_generator(
         llm_generator, prompts,
         sampling_params) -> Tuple[List[str], List[List[int]]]:
     tokens: List[str] = []
     token_ids: List[List[int]] = []
     for llm in llm_generator():
-        maybe_assert_ngram_worker(llm)
-
         outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
         token_ids = [output.outputs[0].token_ids for output in outputs]
         tokens = [output.outputs[0].text for output in outputs]
@@ -224,7 +325,7 @@ def get_output_from_llm_generator(
 
 def get_logprobs_from_llm_generator(
         llm_generator, prompts,
-        sampling_params) -> List[List[Dict[int, Logprob]]]:
+        sampling_params) -> List[List[Dict[int, float]]]:
     """Returns a dict of (token_id: Logprob) for each generated position, for
     each sequence in the batch.
     """

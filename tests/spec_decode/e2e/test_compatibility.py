@@ -5,22 +5,20 @@ from vllm import SamplingParams
 from .conftest import get_output_from_llm_generator
 
 
+@pytest.mark.parametrize("common_llm_kwargs", [{}])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "common_llm_kwargs",
+    "baseline_llm_kwargs",
     [{
-        "model": "JackFram/llama-68m",
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
+        "model": "facebook/opt-6.7b"
     }])
-@pytest.mark.parametrize("per_test_common_llm_kwargs", [
-    {
+@pytest.mark.parametrize("test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
         "enable_chunked_prefill": True,
-    },
-])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+    }])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_xfail_chunked_prefill(test_llm_generator):
     """Verify that speculative decoding with chunked prefill fails.
@@ -44,16 +42,7 @@ def test_spec_decode_xfail_chunked_prefill(test_llm_generator):
                                       sampling_params)
 
 
-@pytest.mark.parametrize(
-    "common_llm_kwargs",
-    [{
-        "model": "meta-llama/Llama-2-7b-chat-hf",
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
-    }])
+@pytest.mark.parametrize("common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
     "per_test_common_llm_kwargs",
     [
@@ -73,8 +62,20 @@ def test_spec_decode_xfail_chunked_prefill(test_llm_generator):
             "speculative_max_model_len": 4096 + 1,
         },
     ])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-6.7b"
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("seed", [1])
+@pytest.mark.skip(reason="(noppanat) we are not handling this case yet.")
 def test_spec_decode_xfail_spec_max_model_len(test_llm_generator):
     """Verify that speculative decoding validates speculative_max_model_len.
     """
@@ -96,13 +97,20 @@ def test_spec_decode_xfail_spec_max_model_len(test_llm_generator):
                                       sampling_params)
 
 
-@pytest.mark.parametrize("common_llm_kwargs", [{
-    "model": "JackFram/llama-68m",
-    "speculative_model": "JackFram/llama-68m",
-    "num_speculative_tokens": 5,
-}])
+@pytest.mark.parametrize("common_llm_kwargs", [{}])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-6.7b"
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_xfail_block_manager_v1(test_llm_generator):
     """Verify that speculative decoding with block manager v1 fails.

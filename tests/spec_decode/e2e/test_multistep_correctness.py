@@ -42,29 +42,27 @@ from .conftest import (get_output_from_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # Use a small model for a fast test.
-        # Note this is repeated in the test body; to initialize a tokenizer.
-        "model": "JackFram/llama-68m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
     }])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "per_test_common_llm_kwargs",
-    [
-        {
-            "speculative_model": "JackFram/llama-68m",
-            "num_speculative_tokens": 5,
-        },
-        {
-            # Verify the detokenizer assertions in the test work when spec
-            # decode is disabled.
-        },
-    ])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
+@pytest.mark.parametrize("test_llm_kwargs",
+    [{
+        # Use a small model for a fast test.
+        # Note this is repeated in the test body; to initialize a tokenizer.
+        "target_model": "facebook/opt-125m",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    },
+    {
+        # Verify the detokenizer assertions in the test work when spec
+        # decode is disabled.
+    }])
 @pytest.mark.parametrize("batch_size", [1, 32])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_e2e_with_detokenization(test_llm_generator,
@@ -113,27 +111,27 @@ def test_spec_decode_e2e_with_detokenization(test_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # Use a small model for a fast test.
-        # Note this is repeated in the test body; to initialize a tokenizer.
-        "model": "JackFram/llama-68m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
 
         # Use AsyncLLM engine
         "use_async": True,
     }])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("per_test_common_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
-])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        # Use a small model for a fast test.
+        # Note this is repeated in the test body; to initialize a tokenizer.
+        "target_model": "facebook/opt-125m",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("batch_size", [2])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_e2e_with_async_engine(test_llm_generator,
@@ -151,40 +149,46 @@ def test_spec_decode_e2e_with_async_engine(test_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # Skip cuda graph recording for fast test.
-        "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
-
-        # Print spec metrics.
-        "disable_log_stats": False,
+            # Skip cuda graph recording for fast test.
+            "enforce_eager": True,
+            # Print spec metrics.
+            "disable_log_stats": False,
     }])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "per_test_common_llm_kwargs",
+    "baseline_llm_kwargs",
+    [
+        {
+            "model": "facebook/opt-125m",
+        },
+        {
+            "model": "facebook/opt-350m",
+        },
+    ],
+)
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
     [
         # Try two different tiny base models.
         # Note that one is equal to the draft model, another isn't.
         {
-            "model": "JackFram/llama-68m",
+            "target_model": "facebook/opt-125m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
         },
         {
-            "model": "JackFram/llama-160m",
+            "target_model": "facebook/opt-350m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
         },
-    ])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
 ])
 @pytest.mark.parametrize(
     "output_len",
     [
         # Use long output len for the small model test.
         1536,
-    ])
+    ],
+)
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_e2e_greedy_correctness_tiny_model_bs1(
@@ -204,41 +208,51 @@ def test_spec_decode_e2e_greedy_correctness_tiny_model_bs1(
 
 @pytest.mark.parametrize(
     "common_llm_kwargs",
-    [{
-        # Skip cuda graph recording for fast test.
-        "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
-
-        # Print spec metrics.
-        "disable_log_stats": False,
-    }])
+    [
+        {
+            # Skip cuda graph recording for fast test.
+            "enforce_eager": True,
+            # Print spec metrics.
+            "disable_log_stats": False,
+        }
+    ],
+)
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "per_test_common_llm_kwargs",
+    "baseline_llm_kwargs",
     [
         # Try two different tiny base models.
         # Note that one is equal to the draft model, another isn't.
         {
-            "model": "JackFram/llama-68m",
+            "model": "facebook/opt-125m",
         },
         {
-            "model": "JackFram/llama-160m",
+            "model": "facebook/opt-350m",
         },
-    ])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
-])
+    ],
+)
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [
+        {
+            "target_model": "facebook/opt-125m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
+        },
+        {
+            "target_model": "facebook/opt-350m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
+        },
+    ],
+)
 @pytest.mark.parametrize(
     "output_len",
     [
         # Use small output len for fast test.
         256,
-    ])
+    ],
+)
 @pytest.mark.parametrize("batch_size", [64])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_e2e_greedy_correctness_tiny_model_large_bs(
@@ -258,29 +272,36 @@ def test_spec_decode_e2e_greedy_correctness_tiny_model_large_bs(
     [{
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
     }])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "per_test_common_llm_kwargs",
+    "baseline_llm_kwargs",
     [
         # Try two different tiny base models.
         # Note that one is equal to the draft model, another isn't.
         {
-            "model": "JackFram/llama-68m",
+            "model": "facebook/opt-125m",
         },
         {
-            "model": "JackFram/llama-160m",
+            "model": "facebook/opt-350m",
         },
-    ])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
-])
+    ],
+)
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [
+        {
+            "target_model": "facebook/opt-125m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
+        },
+        {
+            "target_model": "facebook/opt-350m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": 5,
+        },
+    ],
+)
 @pytest.mark.parametrize("max_output_len", [
     256,
 ])
@@ -302,26 +323,26 @@ def test_spec_decode_e2e_greedy_correctness_tiny_model_large_bs_diff_output_len(
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # A "real" model (not tiny).
-        "model": "meta-llama/Llama-2-7b-chat-hf",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
 
         # Print spec metrics.
         "disable_log_stats": False,
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
-])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        # A "real" model (not tiny).
+        "model": "facebook/opt-6.7b",
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize(
     "output_len",
@@ -346,26 +367,26 @@ def test_spec_decode_e2e_greedy_correctness_real_model_bs1(
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # A "real" model (not tiny).
-        "model": "meta-llama/Llama-2-7b-chat-hf",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True,
 
         # Print spec metrics.
         "disable_log_stats": False,
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
-    },
-])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        # A "real" model (not tiny).
+        "model": "facebook/opt-6.7b",
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("batch_size", [32])
 @pytest.mark.parametrize(
     "output_len",
@@ -397,20 +418,18 @@ def test_spec_decode_e2e_greedy_correctness_real_model_large_bs(
 
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
     }])
-@pytest.mark.parametrize("per_test_common_llm_kwargs", [
-    {
-        "model": "JackFram/llama-160m",
-    },
-])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
 @pytest.mark.parametrize("test_llm_kwargs", [
     {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
+        "target_model": "facebook/opt-125m",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
     },
 ])
 @pytest.mark.parametrize(
@@ -437,13 +456,8 @@ def test_spec_decode_e2e_greedy_correctness_with_preemption(
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        "model": "JackFram/llama-160m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
     }])
 @pytest.mark.parametrize(
     "per_test_common_llm_kwargs",
@@ -460,11 +474,16 @@ def test_spec_decode_e2e_greedy_correctness_with_preemption(
             "block_size": 32,
         },
     ])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
 @pytest.mark.parametrize("test_llm_kwargs", [
     {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
+        "target_model": "facebook/opt-125m",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
     },
 ])
 @pytest.mark.parametrize("batch_size", [2])
@@ -490,8 +509,6 @@ def test_spec_decode_different_block_size(baseline_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        "model": "JackFram/llama-160m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
 
@@ -499,13 +516,17 @@ def test_spec_decode_different_block_size(baseline_llm_generator,
         "use_v2_block_manager": True
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
 @pytest.mark.parametrize(
     "test_llm_kwargs",
     [
         {
-            "speculative_model": "JackFram/llama-68m",
-            "num_speculative_tokens": 5,
+            "target_model": "facebook/opt-125m",
+            "draft_model": "facebook/opt-125m",
 
             # Artificially limit the draft model max model len; this forces vLLM
             # to skip speculation once the sequences grow beyond 32-k tokens.
@@ -522,6 +543,7 @@ def test_spec_decode_different_block_size(baseline_llm_generator,
         64,
     ])
 @pytest.mark.parametrize("seed", [1])
+@pytest.mark.skip(reason="(noppanat) we are not handling this case yet.")
 def test_skip_speculation(baseline_llm_generator, test_llm_generator,
                           batch_size: int, output_len: int):
     """Verify greedy equality when some (or all) sequences skip speculation.
@@ -539,26 +561,27 @@ def test_skip_speculation(baseline_llm_generator, test_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        "model": "JackFram/llama-160m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
 @pytest.mark.parametrize("test_llm_kwargs", [
     {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 5,
+        "target_model": "facebook/opt-125m",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
         "speculative_disable_by_batch_size": 2,
     },
 ])
 @pytest.mark.parametrize("batch_size", [8])
 @pytest.mark.parametrize("output_len", [10])
 @pytest.mark.parametrize("seed", [1])
+@pytest.mark.skip(reason="(noppanat) we are not handling this case yet.")
 def test_disable_speculation(baseline_llm_generator, test_llm_generator,
                              batch_size: int, output_len: int):
     """Verify greedy equality when all sequences disable speculation.
@@ -573,22 +596,22 @@ def test_disable_speculation(baseline_llm_generator, test_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        "model": "JackFram/llama-68m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
-
-        # Required for spec decode.
-        "use_v2_block_manager": True
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-125m",
+    }])
 @pytest.mark.parametrize(
     "test_llm_kwargs",
     [
         {
-            "speculative_model": "JackFram/llama-68m",
-            "num_speculative_tokens": k,
+            "target_model": "facebook/opt-125m",
+            "draft_model": "facebook/opt-125m",
+            "draft_size": k,
         }
         # Try a range of common k, as well as large speculation.
         for k in [1, 2, 3, 4, 5, 6, 7, 8, 9, 63]

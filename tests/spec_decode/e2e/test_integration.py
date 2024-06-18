@@ -10,24 +10,21 @@ from .conftest import run_greedy_equality_correctness_test
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        # Required for spec decode.
-        "use_v2_block_manager": True,
-
         # Verify equality when cuda graphs allowed.
         "enforce_eager": False,
-        "model": "JackFram/llama-68m",
     }])
+@pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
-    "per_test_common_llm_kwargs",
-    [
-        {
-            # Identical models.
-            "speculative_model": "JackFram/llama-68m",
-            "num_speculative_tokens": 5,
-        },
-    ])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [{}])
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-6.7b",
+    }])
+@pytest.mark.parametrize("test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 5,
+    }])
 @pytest.mark.parametrize("batch_size", [8])
 @pytest.mark.parametrize("output_len", [32])
 @pytest.mark.parametrize("seed", [1])

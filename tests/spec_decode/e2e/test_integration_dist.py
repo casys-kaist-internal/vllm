@@ -15,16 +15,13 @@ from .conftest import run_greedy_equality_correctness_test
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-        "model": "JackFram/llama-68m",
-
         # Skip cuda graph recording for fast test.
         "enforce_eager": True,
 
         # Required for spec decode.
-        "use_v2_block_manager": True,
         "tensor_parallel_size": 2,
 
-        # Use AsyncLLM engine, so that the engine runs in its own process.
+        # Use AsyncSpecDecodeLLM engine, so that the engine runs in its own process.
         # Otherwise, since vLLM does not follow true SPMD, the test runner
         # process will have both the engine and the rank0 worker. NCCL is not
         # cleaned up properly, and its server host thread leaks, causing the
@@ -32,18 +29,18 @@ from .conftest import run_greedy_equality_correctness_test
         "use_async": True,
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
-@pytest.mark.parametrize("baseline_llm_kwargs", [{}])
-@pytest.mark.parametrize("test_llm_kwargs", [
-    {
-        "speculative_model": "JackFram/llama-68m",
-        "num_speculative_tokens": 3,
-    },
-    {
-        "speculative_model": "[ngram]",
-        "num_speculative_tokens": 5,
-        "ngram_prompt_lookup_max": 3,
-    },
-])
+@pytest.mark.parametrize(
+    "baseline_llm_kwargs",
+    [{
+        "model": "facebook/opt-6.7b"
+    }])
+@pytest.mark.parametrize(
+    "test_llm_kwargs",
+    [{
+        "target_model": "facebook/opt-6.7b",
+        "draft_model": "facebook/opt-125m",
+        "draft_size": 3,
+    }])
 @pytest.mark.parametrize("batch_size", [2])
 @pytest.mark.parametrize(
     "output_len",

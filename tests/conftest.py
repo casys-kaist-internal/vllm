@@ -1,3 +1,5 @@
+import contextlib
+import gc
 import os
 from typing import List, Optional, Tuple
 
@@ -6,7 +8,9 @@ import torch
 from transformers import AutoModelForCausalLM
 
 from vllm import LLM, SamplingParams
+from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
 from vllm.transformers_utils.tokenizer import get_tokenizer
+from vllm.utils import is_cpu
 
 _TEST_DIR = os.path.dirname(__file__)
 _TEST_PROMPTS = [os.path.join(_TEST_DIR, "prompts", "example.txt")]
@@ -19,6 +23,17 @@ def _read_prompts(filename: str) -> str:
         prompt = f.readline()
         prompts.append(prompt)
     return prompts
+
+
+def cleanup():
+    # TODO(noppanat): Implement vllm/distributed
+    destroy_model_parallel()
+    # destroy_distributed_environment()
+    with contextlib.suppress(AssertionError):
+        torch.distributed.destroy_process_group()
+    gc.collect()
+    if not is_cpu():
+        torch.cuda.empty_cache()
 
 
 @pytest.fixture

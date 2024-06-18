@@ -5,6 +5,7 @@ import uuid
 from platform import uname
 from typing import List
 from contextlib import contextmanager
+from functools import lru_cache
 
 import psutil
 import torch
@@ -29,6 +30,15 @@ class Counter:
 
     def reset(self) -> None:
         self.counter = 0
+
+
+@lru_cache(maxsize=None)
+def is_cpu() -> bool:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return "cpu" in version("vllm")
+    except PackageNotFoundError:
+        return False
 
 
 def is_hip() -> bool:
