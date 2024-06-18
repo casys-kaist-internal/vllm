@@ -128,6 +128,8 @@ class SpecDecodeLLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
+        self.total_tokens = 0
+
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
             self.parallel_config)
@@ -253,6 +255,10 @@ class SpecDecodeLLMEngine:
             request_id: The ID(s) of the request to abort.
         """
         self.scheduler.abort_seq_group(request_id)
+
+    def abort_all_requests(self) -> None:
+        """Aborts all requests."""
+        self.scheduler.abort_all_seq_groups()
 
     def get_target_model_config(self) -> ModelConfig:
         """Gets the model configuration."""
@@ -425,6 +431,9 @@ class SpecDecodeLLMEngine:
             request_output = RequestOutput.from_seq_group(
                 scheduled_seq_group.seq_group)
             request_outputs.append(request_output)
+
+        self.total_tokens += (num_prompt_tokens_to_log +
+                              num_generation_tokens_to_log)
 
         if self.log_stats:
             # Log the system stats.
@@ -705,3 +714,9 @@ class SpecDecodeLLMEngine:
                 and any(token == self.tokenizer.eos_token_id for token in last_tokens)):
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
+
+    def reset_total_tokens(self) -> None:
+        self.total_tokens = 0
+
+    def get_total_tokens(self) -> int:
+        return self.total_tokens

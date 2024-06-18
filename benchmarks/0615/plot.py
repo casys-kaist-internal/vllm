@@ -4,9 +4,6 @@ import matplotlib.pyplot as plt
 # Load the data from the CSV file
 df = pd.read_csv('benchmark_results.csv')
 
-# Define the request rate threshold
-max_request_rate = 128  # Change this value as needed
-
 # Define the label conditions
 conditions = [
     (df['draft_size'] == 0) & (df['chunk_prefill']
@@ -50,8 +47,6 @@ df['label'] = 'unlabeled'
 for condition, label in zip(conditions, labels):
     df.loc[condition, 'label'] = label
 
-# Filter data based on the request rate threshold
-df = df[df['request_rate'] < max_request_rate]
 
 # Loop through unique datasets
 for dataset in df['dataset'].unique():
@@ -64,8 +59,8 @@ for dataset in df['dataset'].unique():
     for label in subset_df['label'].unique():
         if 'cp' not in label:
             subset = subset_df[subset_df['label'] == label]
-            ax1.plot(subset['request_rate'],
-                     subset['avg_per_token_latency'], marker='o', label=label)
+            ax1.plot(subset['throughput'],
+                     subset['latency'], marker='o', label=label)
 
     ax1.set_title(
         f'Avg Per Token Latency vs Request Rate (Without Chunk Prefill) - {dataset}')
@@ -78,7 +73,7 @@ for dataset in df['dataset'].unique():
     for label in subset_df['label'].unique():
         if 'cp' in label:
             subset = subset_df[subset_df['label'] == label]
-            ax2.plot(subset['request_rate'], subset['avg_per_token_latency'],
+            ax2.plot(subset['throughput'], subset['latency'],
                      marker='o', label=label.replace('_cp', ''))
 
     ax2.set_title(

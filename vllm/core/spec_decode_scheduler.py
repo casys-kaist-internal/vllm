@@ -204,6 +204,14 @@ class SpecDecodeScheduler:
                     if not request_ids:
                         return
 
+    def abort_all_seq_groups(self) -> None:
+        self.abort_seq_group(
+            [
+                seq_group.request_id
+                for seq_group in self.waiting + self.need_to_run_draft_decode + self.need_to_run_target_decode + self.need_to_run_target_prefill + self.balancing_queue + self.swapped
+            ]
+        )
+
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.balancing_queue or self.need_to_run_draft_decode or self.need_to_run_target_decode or self.need_to_run_target_prefill or self.swapped
 
