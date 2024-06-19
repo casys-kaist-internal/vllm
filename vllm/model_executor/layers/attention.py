@@ -139,7 +139,7 @@ class PagedAttention(nn.Module):
             if input_metadata.attn_bias is None:
                 if self.alibi_slopes is None:
                     attn_bias = BlockDiagonalCausalMask.from_seqlens(
-                        [num_prefill_tokens])
+                        input_metadata.prefill_lens)
                     if self.sliding_window is not None:
                         attn_bias = attn_bias.make_local_attention(
                             self.sliding_window)
@@ -184,6 +184,7 @@ class PagedAttention(nn.Module):
                     self.scale,
                     self.alibi_slopes,
                 )
+                # output[num_prefill_tokens:] = decode_query  # debug
             else:
                 # This happens during the initial memory profiling run for
                 # CUDA graphs.

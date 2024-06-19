@@ -138,6 +138,7 @@ class SpecDecodeModelRunner:
             num_prefill_tokens=sum(prompt_lens),
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
+            prefill_lens=prompt_lens,
             max_context_len=None,
             context_lens=None,
             block_tables=None,
@@ -192,6 +193,7 @@ class SpecDecodeModelRunner:
             start_idx = 0
             if self.sliding_window is not None:
                 start_idx = max(0, prompt_len - self.sliding_window)
+
             for i in range(prompt_len):
                 if i < start_idx:
                     single_slot_mapping.append(_PAD_SLOT_ID)
@@ -356,9 +358,10 @@ class SpecDecodeModelRunner:
                     input_block_tables[i, :len(block_table)] = block_table
             block_tables = torch.tensor(input_block_tables, device="cuda")
         else:
+            max_block_table_len = max([len(t) for t in block_tables])
             block_tables = _make_tensor_with_pad(
                 block_tables,
-                max_len=max_context_len,
+                max_len=max_block_table_len,
                 pad=0,
                 dtype=torch.int,
                 device="cuda",
@@ -369,6 +372,7 @@ class SpecDecodeModelRunner:
             num_decode_tokens=sum(draft_lens),
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
+            prefill_lens=[],
             context_lens=context_lens,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
@@ -533,9 +537,10 @@ class SpecDecodeModelRunner:
         if target_decode_seq_group_metadata_list:
             context_lens = torch.tensor(
                 target_context_lens, dtype=torch.int, device="cuda")
+            max_block_table_len = max([len(t) for t in target_block_tables])
             block_tables = _make_tensor_with_pad(
                 target_block_tables,
-                max_len=max(target_context_lens),
+                max_len=max_block_table_len,
                 pad=0,
                 dtype=torch.int,
                 device="cuda",
@@ -546,6 +551,7 @@ class SpecDecodeModelRunner:
                 num_decode_tokens=num_decode_tokens,
                 slot_mapping=slot_mapping,
                 max_context_len=max(target_context_lens),
+                prefill_lens=prefill_lens,
                 context_lens=context_lens,
                 block_tables=block_tables,
                 use_cuda_graph=False,
@@ -555,6 +561,7 @@ class SpecDecodeModelRunner:
                 num_prefill_tokens=num_prefill_tokens,
                 num_decode_tokens=num_decode_tokens,
                 slot_mapping=slot_mapping,
+                prefill_lens=prefill_lens,
                 max_context_len=None,
                 context_lens=None,
                 block_tables=None,
@@ -708,6 +715,7 @@ class SpecDecodeModelRunner:
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
+                prefill_lens=[],
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
             )

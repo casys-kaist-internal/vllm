@@ -623,7 +623,6 @@ class LLMEngine:
         """
         seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
 
-        # print(seq_group_metadata_list)
         if not scheduler_outputs.is_empty():
             # Execute the model.
             all_outputs = self._run_workers(

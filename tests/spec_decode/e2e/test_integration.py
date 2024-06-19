@@ -17,14 +17,14 @@ from .conftest import run_greedy_equality_correctness_test
 @pytest.mark.parametrize(
     "baseline_llm_kwargs",
     [{
-        "model": "facebook/opt-6.7b",
+        "model": "JackFram/llama-68m",
     }])
 @pytest.mark.parametrize("test_llm_kwargs",
-    [{
-        "target_model": "facebook/opt-6.7b",
-        "draft_model": "facebook/opt-125m",
-        "draft_size": 5,
-    }])
+                         [{
+                             "target_model": "JackFram/llama-68m",
+                             "draft_model": "JackFram/llama-68m",
+                             "draft_size": 5,
+                         }])
 @pytest.mark.parametrize("batch_size", [8])
 @pytest.mark.parametrize("output_len", [32])
 @pytest.mark.parametrize("seed", [1])

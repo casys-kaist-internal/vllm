@@ -522,14 +522,6 @@ class SpecDecodeEngineArgs:
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.collocate)
 
-        # table = [["target_model", self.target_model],
-        #          ["draft_model", self.draft_model],
-        #          ["draft_size", self.draft_size],
-        #          ["collocate", self.collocate],
-        #          ["chunked_prefill", self.enable_chunked_prefill],
-        #          ]
-        # print(tabulate(table))
-
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
 

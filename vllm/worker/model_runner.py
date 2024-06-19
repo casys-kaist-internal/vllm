@@ -142,6 +142,7 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            prefill_lens=prompt_lens,
             block_tables=None,
             use_cuda_graph=False,
         )
@@ -244,6 +245,7 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            prefill_lens=[],
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
         )
@@ -430,6 +432,7 @@ class ModelRunner:
                 num_decode_tokens=py_data["num_decode_tokens"],
                 slot_mapping=slot_mapping,
                 max_context_len=py_data["max_context_len"],
+                prefill_len=py_data["prefill_len"],
                 context_lens=context_lens,
                 block_tables=block_tables,
                 use_cuda_graph=py_data["use_cuda_graph"],
@@ -539,6 +542,7 @@ class ModelRunner:
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
+                prefill_lens=[],
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
             )

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 
 import torch
 
@@ -20,6 +20,7 @@ class InputMetadata:
         num_decode_tokens: int,
         slot_mapping: torch.Tensor,
         max_context_len: Optional[int],
+        prefill_lens: Optional[List[int]],
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
         use_cuda_graph: bool,
@@ -28,6 +29,7 @@ class InputMetadata:
         self.num_decode_tokens = num_decode_tokens
         self.max_context_len = max_context_len
         self.slot_mapping = slot_mapping
+        self.prefill_lens = prefill_lens
         self.context_lens = context_lens
         self.block_tables = block_tables
         self.use_cuda_graph = use_cuda_graph

@@ -636,9 +636,6 @@ class SpecDecodeScheduler:
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target_decode, self.need_to_run_draft_decode, self.swapped, and self.waiting.
 
-        # print("len(need_to_run_target_decode): ", len(self.need_to_run_target_decode))
-        # print("len(need_to_run_draft_decode): ", len(self.need_to_run_draft_decode))
-
         scheduler_outputs = self._schedule()
 
         prefill_seq_group_metadata_list = self._create_seq_group_metadata_list(

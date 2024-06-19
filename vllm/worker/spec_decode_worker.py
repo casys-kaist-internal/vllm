@@ -173,12 +173,12 @@ class SpecDecodeWorker:
     @torch.inference_mode()
     def execute_model(
         self,
-        prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
-        ],
-        target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
-        ],
-        draft_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]] = [
-        ],
+        prefill_seq_group_metadata_list:
+        Optional[List[SequenceGroupMetadata]] = [],
+        target_decode_seq_group_metadata_list:
+        Optional[List[SequenceGroupMetadata]] = [],
+        draft_decode_seq_group_metadata_list:
+        Optional[List[SequenceGroupMetadata]] = [],
         blocks_to_swap_in: Optional[Dict[int, int]] = None,
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
