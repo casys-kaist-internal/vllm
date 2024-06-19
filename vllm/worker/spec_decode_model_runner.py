@@ -450,6 +450,7 @@ class SpecDecodeModelRunner:
                           selected_token_start_idx + target_len))
                 selected_token_start_idx += target_len
 
+                # categorized_sample_indices[sampling_params.sampling_type].extend(
                 categorized_sample_indices[sampling_params.sampling_type].extend(
                     range(categorized_sample_indices_start_idx,
                           categorized_sample_indices_start_idx + num_seqs))

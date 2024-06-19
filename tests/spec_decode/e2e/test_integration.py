@@ -17,12 +17,12 @@ from .conftest import run_greedy_equality_correctness_test
 @pytest.mark.parametrize(
     "baseline_llm_kwargs",
     [{
-        "model": "JackFram/llama-68m",
+        "model": "facebook/opt-13b",
     }])
 @pytest.mark.parametrize("test_llm_kwargs",
                          [{
-                             "target_model": "JackFram/llama-68m",
-                             "draft_model": "JackFram/llama-68m",
+                             "target_model": "facebook/opt-13b",
+                             "draft_model": "facebook/opt-125m",
                              "draft_size": 5,
                              "disable_bonus_token": False
                          }])

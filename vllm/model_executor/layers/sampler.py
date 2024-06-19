@@ -479,7 +479,7 @@ def _spec_decode_sample(
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
 
     random_prob = torch.rand_like(accept_prob)
-    # random_prob = torch.full_like(accept_prob, 0.5) # for testing
+    # random_prob = torch.full_like(accept_prob, 0.5)  # for testing
 
     # accept is 0 and reject is 1
     accepted = torch.where(
@@ -713,13 +713,15 @@ def _reshape_and_pad(
     return padded_x
 
 
-@nvtx_range("_get_modified_rejection_prob")
-def _get_modified_rejection_prob(
-    target_prob: torch.Tensor,
-    draft_prob: torch.Tensor
-) -> torch.Tensor:
+def _get_modified_rejection_prob(target_prob: torch.Tensor, draft_prob: torch.Tensor) -> torch.Tensor:
+    min_val = _smallest_positive_value(target_prob.dtype)
     target_prob.sub_(draft_prob)
-    target_prob.clamp_(min=0)
+    target_prob.clamp_(min=min_val)
     x_max_sum = target_prob.sum(dim=-1, keepdim=True)
     target_prob.div_(x_max_sum)
     return target_prob
+
+
+def _smallest_positive_value(dtype) -> float:
+    """Return the smallest positive normal value representable by the dtype."""
+    return torch.finfo(dtype).tiny
