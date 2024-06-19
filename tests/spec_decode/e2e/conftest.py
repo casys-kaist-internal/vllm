@@ -354,27 +354,27 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
     """
     temperature = 0.0
 
-    # prompts = [
-    #     "The future of AI is",
-    #     "The president of the United States is",
-    #     "Hello, my name is",
-    #     "The capital of France is",
-    #     "San Francisco is know for its",
-    #     "Facebook was created in 2004 by",
-    #     "Curious George is a",
-    #     "Python 3.11 brings improvements to its",
-    # ]
-
     prompts = [
-        "The",
-        "The",
-        "The",
-        "The",
-        "The",
-        "The",
-        "The",
-        "The",
+        "The future of AI is",
+        "The president of the United States is",
+        "Hello, my name is",
+        "The capital of France is",
+        "San Francisco is know for its",
+        "Facebook was created in 2004 by",
+        "Curious George is a",
+        "Python 3.11 brings improvements to its",
     ]
+
+    # prompts = [
+    #     "The",
+    #     "The",
+    #     "The",
+    #     "The",
+    #     "The",
+    #     "The",
+    #     "The",
+    #     "The",
+    # ]
 
     prompts = [prompt for prompt, _ in zip(cycle(prompts), range(batch_size))]
 

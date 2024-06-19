@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
-_BONUS_TOKEN = False
 
 
 class SpecDecodeLLMEngine:
@@ -368,7 +367,15 @@ class SpecDecodeLLMEngine:
             check_stop_cnt = sample.accept_cnt
 
             # modified_rejection token for not all accept case and bonus token for all accept case
-            if _BONUS_TOKEN:
+            if self.spec_decode_config.disable_bonus_token:
+                if seq.draft_size != sample.accept_cnt:
+                    seq.append_token_id(sample.output_token, sample.logprobs)
+                    num_tokens_to_log_system_stats += 1
+                    check_stop_cnt += 1
+                    seq.update_num_computed_target_tokens(1)
+                    seq.update_num_computed_draft_tokens(1)
+
+            else:
                 seq.append_token_id(sample.output_token, sample.logprobs)
                 seq.update_num_computed_target_tokens(1)
                 num_tokens_to_log_system_stats += 1
@@ -377,14 +384,6 @@ class SpecDecodeLLMEngine:
                 # If all accept, the bonus token don't have draft kv cache yet.
                 # So only update num_computed_draft_tokens if not all accept
                 if seq.draft_size != sample.accept_cnt:
-                    seq.update_num_computed_draft_tokens(1)
-
-            else:
-                if seq.draft_size != sample.accept_cnt:
-                    seq.append_token_id(sample.output_token, sample.logprobs)
-                    num_tokens_to_log_system_stats += 1
-                    check_stop_cnt += 1
-                    seq.update_num_computed_target_tokens(1)
                     seq.update_num_computed_draft_tokens(1)
 
             self.draft_probs_dict[seq.seq_id].clear()

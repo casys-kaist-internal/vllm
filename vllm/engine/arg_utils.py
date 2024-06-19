@@ -273,6 +273,7 @@ class SpecDecodeEngineArgs:
     draft_size: int = 7
     collocate: bool = False
     enable_chunked_prefill: bool = False
+    disable_bonus_token: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -333,6 +334,9 @@ class SpecDecodeEngineArgs:
                             '-cp',
                             action='store_true',
                             help='enable chunked prefill')
+        parser.add_argument('--disable-bonus-token',
+                            action='store_true',
+                            help='disable bonus token')
         parser.add_argument(
             '--tokenizer',
             type=str,
@@ -520,7 +524,8 @@ class SpecDecodeEngineArgs:
                                            target_model_config.max_model_len,
                                            self.enable_chunked_prefill)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
-                                              self.collocate)
+                                              self.collocate,
+                                              self.disable_bonus_token)
 
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
