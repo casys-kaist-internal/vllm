@@ -99,7 +99,8 @@ def main(
     key_cache.uniform_(-scale, scale)
 
     value_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size, block_size)
-    value_cache = torch.empty(size=value_cache_shape, dtype=dtype, device="cuda")
+    value_cache = torch.empty(size=value_cache_shape,
+                              dtype=dtype, device="cuda")
     value_cache.uniform_(-scale, scale)
 
     # for each value_cache block
@@ -142,7 +143,8 @@ def main(
     validation_output = torch.empty_like(query)
 
     if version == "v2":
-        num_partitions = (max_context_len + PARTITION_SIZE - 1) // PARTITION_SIZE
+        num_partitions = (max_context_len +
+                          PARTITION_SIZE - 1) // PARTITION_SIZE
 
         # (hj) : num_seqs -> sum_query_lens
         tmp_output = torch.empty(
@@ -276,7 +278,7 @@ def main(
         for head in range(0, num_query_heads):
             # Check if error exists in this subsectino
             # if not all_close(output[:, head], validation_output[:, head]):
-            # If nan exists in output, 
+            # If nan exists in output,
             if torch.isnan(output[:, head]).any():
                 print("---Head---: ", head)
                 for s in range(num_seqs):
@@ -297,7 +299,8 @@ def main(
                         if not all_close(out, val):
                             for i in range(len(r1)):
                                 if not all_close(out[i], val[i]):
-                                    print(f"{out_l[i]} \t {val_l[i]} <--- Error")
+                                    print(
+                                        f"{out_l[i]} \t {val_l[i]} <--- Error")
                                 else:
                                     print(f"{r1[i]:<10} {r2[i]:<10}")
                         else:
@@ -418,8 +421,10 @@ def main(
         num_iters = 4
     else:
         num_iters = 100
-    original_latency = run_benchmark(target=KernelVersion.ORIGINAL, num_iters=num_iters)
-    target_latency = run_benchmark(target=KernelVersion.TARGET, num_iters=num_iters)
+    original_latency = run_benchmark(
+        target=KernelVersion.ORIGINAL, num_iters=num_iters)
+    target_latency = run_benchmark(
+        target=KernelVersion.TARGET, num_iters=num_iters)
     # tensor_core_latency = run_benchmark(
     #     target=KernelVersion.TENSOR_CORE, num_iters=num_iters
     # )
@@ -427,11 +432,11 @@ def main(
     print(f"Original kernel running time\t: {original_latency:.3f} ms")
     print(f"Target kernel running time  \t: {target_latency:.3f} ms")
     # print(f"TC kernel running time      \t: {tensor_core_latency:.3f} ms")
-    print(f"Speedup                     \t: {original_latency / target_latency:.3f}")
+    print(
+        f"Speedup                     \t: {original_latency / target_latency:.3f}")
     # print(
     #     f"Speedup TC                  \t: {original_latency / tensor_core_latency:.3f}"
     # )
-
 
 
 if __name__ == "__main__":
@@ -440,8 +445,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--version", type=str,
                         choices=["v1", "v2"], default="v2")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--context-len", type=int, default=36)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--context-len", type=int, default=128)
     parser.add_argument("--num-query-heads", type=int, default=32)
     parser.add_argument("--num-kv-heads", type=int, default=16)
     parser.add_argument(
@@ -481,10 +486,12 @@ if __name__ == "__main__":
 
     if args.context_len == -1:
         context_lens = gen_context_len(
-            [random.randint(256, 1024) for _ in range(args.batch_size)], query_lens
+            [random.randint(256, 1024)
+             for _ in range(args.batch_size)], query_lens
         )
     else:
-        context_lens = gen_context_len([args.context_len] * args.batch_size, query_lens)
+        context_lens = gen_context_len(
+            [args.context_len] * args.batch_size, query_lens)
 
     # Failed with query_len :  2  context_len :  65  num_seqs :  1
 
@@ -525,10 +532,12 @@ if __name__ == "__main__":
             ]:
                 for num_seqs in [1, 32, 150]:  # Realistically will not go up to 150
                     # query_lens = [query_len] * num_seqs
-                    query_lens = [random.randint(1, 8) for _ in range(num_seqs)]
+                    query_lens = [random.randint(1, 8)
+                                  for _ in range(num_seqs)]
                     # context_lens = gen_context_len([context_len] * num_seqs, query_lens)
                     context_lens = gen_context_len(
-                        [random.randint(256, 4096) for _ in range(num_seqs)], query_lens
+                        [random.randint(256, 4096)
+                         for _ in range(num_seqs)], query_lens
                     )
                     average_query_len = sum(query_lens) / num_seqs
                     average_context_len = sum(context_lens) / num_seqs

@@ -273,6 +273,7 @@ class SpecDecodeEngineArgs:
     draft_size: int = 7
     collocate: bool = False
     enable_chunked_prefill: bool = False
+    target_attention: bool = False
     disable_bonus_token: bool = False
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
@@ -334,6 +335,9 @@ class SpecDecodeEngineArgs:
                             '-cp',
                             action='store_true',
                             help='enable chunked prefill')
+        parser.add_argument('--target-attention',
+                            action='store_true',
+                            help='use target attention')
         parser.add_argument('--disable-bonus-token',
                             action='store_true',
                             help='disable bonus token')
@@ -525,6 +529,7 @@ class SpecDecodeEngineArgs:
                                            self.enable_chunked_prefill)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.collocate,
+                                              self.target_attention,
                                               self.disable_bonus_token)
 
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config

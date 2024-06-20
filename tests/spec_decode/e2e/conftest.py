@@ -352,7 +352,7 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
     the test LLM. It asserts greedy equality, e.g. that the outputs are exactly
     the same when temperature is zero.
     """
-    temperature = 0.0001
+    temperature = 0
 
     prompts = [
         "The future of AI is",

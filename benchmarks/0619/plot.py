@@ -47,33 +47,41 @@ df['label'] = 'unlabeled'
 for condition, label in zip(conditions, labels):
     df.loc[condition, 'label'] = label
 
-# Create subplots
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), sharey=True)
 
-# Plot data without chunk prefill
-for label in df['label'].unique():
-    if 'cp' not in label:
-        subset = df[df['label'] == label]
-        ax1.plot(subset['request_rate'],
-                 subset['avg_per_token_latency'], marker='o', label=label)
+# Loop through unique datasets
+for dataset in df['dataset'].unique():
+    subset_df = df[df['dataset'] == dataset]
 
-ax1.set_title('Avg Per Token Latency vs Request Rate (Without Chunk Prefill)')
-ax1.set_xlabel('Arrival Rate (reqs/s)')
-ax1.set_ylabel('Avg Per Token Latency (s/token)')
-ax1.legend()
-ax1.grid(True)
+    # Create subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), sharey=True)
 
-# Plot data with chunk prefill
-for label in df['label'].unique():
-    if 'cp' in label:
-        subset = df[df['label'] == label]
-        ax2.plot(subset['request_rate'], subset['avg_per_token_latency'],
-                 marker='o', label=label.replace('_cp', ''))
+    # Plot data without chunk prefill
+    for label in subset_df['label'].unique():
+        if 'cp' not in label:
+            subset = subset_df[subset_df['label'] == label]
+            ax1.plot(subset['throughput'],
+                     subset['latency'], marker='o', label=label)
 
-ax2.set_title('Avg Per Token Latency vs Request Rate (With Chunk Prefill)')
-ax2.set_xlabel('Arrival Rate (reqs/s)')
-ax2.legend()
-ax2.grid(True)
+    ax1.set_title(
+        f'Avg Per Token Latency vs Request Rate (Without Chunk Prefill) - {dataset}')
+    ax1.set_xlabel('Arrival Rate (reqs/s)')
+    ax1.set_ylabel('Avg Per Token Latency (s/token)')
+    ax1.legend()
+    ax1.grid(True)
 
-plt.savefig('result.png')
-plt.close()
+    # Plot data with chunk prefill
+    for label in subset_df['label'].unique():
+        if 'cp' in label:
+            subset = subset_df[subset_df['label'] == label]
+            ax2.plot(subset['throughput'], subset['latency'],
+                     marker='o', label=label.replace('_cp', ''))
+
+    ax2.set_title(
+        f'Avg Per Token Latency vs Request Rate (With Chunk Prefill) - {dataset}')
+    ax2.set_xlabel('Arrival Rate (reqs/s)')
+    ax2.legend()
+    ax2.grid(True)
+
+    # Save the plot for this dataset
+    plt.savefig(f'benchmark_results_{dataset}.png')
+    plt.close(fig)

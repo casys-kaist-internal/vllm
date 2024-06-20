@@ -33,6 +33,7 @@ class SamplingMetadata:
         target_lens: Optional[List[int]],
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Optional[Dict[SamplingType, torch.Tensor]],
+        target_modify_greedy_indices: Optional[torch.Tensor] = None,
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
         draft_probs_tensor: Optional[torch.Tensor] = None,
         perform_sampling: bool = True,
@@ -44,6 +45,7 @@ class SamplingMetadata:
         self.target_lens = target_lens
         self.selected_token_indices = selected_token_indices
         self.categorized_sample_indices = categorized_sample_indices
+        self.target_modify_greedy_indices = target_modify_greedy_indices
         self.sampled_draft_token_ids = sampled_draft_token_ids
         self.draft_probs_tensor = draft_probs_tensor
         self.perform_sampling = perform_sampling

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig
+from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
 from vllm.sampling_params import SamplingParams, SamplingType
@@ -28,11 +28,13 @@ class SpecDecodeModelRunner:
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
+        spec_decode_config: SpecDecodeConfig,
         is_target: bool = True,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
+        self.spec_decode_config = spec_decode_config
         self.is_target = is_target
 
         # model_config can be None in tests/samplers/test_sampler.py.
@@ -139,10 +141,12 @@ class SpecDecodeModelRunner:
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
             prefill_lens=prompt_lens,
+            target_lens=None,
             max_context_len=None,
             context_lens=None,
             block_tables=None,
             use_cuda_graph=False,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
@@ -372,10 +376,12 @@ class SpecDecodeModelRunner:
             num_decode_tokens=sum(draft_lens),
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
-            prefill_lens=[],
+            prefill_lens=None,
+            target_lens=None,
             context_lens=context_lens,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
+            use_target_attention=False,
         )
         return input_tokens, input_positions, input_metadata, draft_lens
 
@@ -394,6 +400,7 @@ class SpecDecodeModelRunner:
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
         sampled_draft_token_ids: List[List[int]] = []
+        target_modify_greedy_indices: List[int] = []
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
         prefill_idx = 0
@@ -448,6 +455,12 @@ class SpecDecodeModelRunner:
                 selected_token_indices.extend(
                     range(selected_token_start_idx,
                           selected_token_start_idx + target_len))
+
+                if sampling_params.sampling_type == SamplingType.GREEDY:
+                    target_modify_greedy_indices.extend(
+                        range(selected_token_start_idx,
+                              selected_token_start_idx + target_len))
+
                 selected_token_start_idx += target_len
 
                 # categorized_sample_indices[sampling_params.sampling_type].extend(
@@ -468,6 +481,9 @@ class SpecDecodeModelRunner:
         selected_token_indices = _async_h2d(selected_token_indices,
                                             dtype=torch.long,
                                             pin_memory=not self.in_wsl)
+        target_modify_greedy_indices = _async_h2d(target_modify_greedy_indices,
+                                                  dtype=torch.long,
+                                                  pin_memory=not self.in_wsl)
         categorized_sample_indices = {
             t: _async_h2d(seq_ids, dtype=torch.int, pin_memory=not self.in_wsl)
             for t, seq_ids in categorized_sample_indices.items()
@@ -496,6 +512,7 @@ class SpecDecodeModelRunner:
             target_lens=target_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
+            target_modify_greedy_indices=target_modify_greedy_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
             draft_probs_tensor=draft_probs_tensor
         )
@@ -535,6 +552,9 @@ class SpecDecodeModelRunner:
         num_prefill_tokens = sum(prefill_lens)
         num_decode_tokens = sum(target_lens)
 
+        target_lens = torch.tensor(
+            target_lens, dtype=torch.int, device="cuda")
+
         if target_decode_seq_group_metadata_list:
             context_lens = torch.tensor(
                 target_context_lens, dtype=torch.int, device="cuda")
@@ -553,9 +573,12 @@ class SpecDecodeModelRunner:
                 slot_mapping=slot_mapping,
                 max_context_len=max(target_context_lens),
                 prefill_lens=prefill_lens,
+                target_lens=target_lens,
                 context_lens=context_lens,
                 block_tables=block_tables,
                 use_cuda_graph=False,
+                # Target decode can use target attention
+                use_target_attention=self.spec_decode_config.target_attention,
             )
         else:
             input_metadata = InputMetadata(
@@ -563,10 +586,12 @@ class SpecDecodeModelRunner:
                 num_decode_tokens=num_decode_tokens,
                 slot_mapping=slot_mapping,
                 prefill_lens=prefill_lens,
+                target_lens=target_lens,
                 max_context_len=None,
                 context_lens=None,
                 block_tables=None,
                 use_cuda_graph=False,
+                use_target_attention=False,  # Prefill does not use target attention
             )
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
@@ -716,9 +741,11 @@ class SpecDecodeModelRunner:
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
-                prefill_lens=[],
+                prefill_lens=None,
+                target_lens=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
+                use_target_attention=False,
             )
 
             graph_runner = CUDAGraphRunner(self.model)

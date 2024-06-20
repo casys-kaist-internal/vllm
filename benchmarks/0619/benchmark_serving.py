@@ -2,20 +2,23 @@
 import argparse
 import random
 import time
+import os
 from tqdm import tqdm
 import numpy as np
 from typing import List, Optional, Tuple
 from transformers import (AutoTokenizer)
 from dataset import sample_requests
 from tabulate import tabulate
-from heapq import heappush, heappop
 import torch
+import matplotlib.pyplot as plt
+from itertools import cycle
 
 from vllm import SpecDecodeLLM, SamplingParams
 from vllm.outputs import RequestOutput
 
-# (prompt len, output len, latency)
-REQUEST_LATENCY: List[Tuple[int, int, float]] = []
+
+DOWNLOAD_DIR = '/mnt/sda/download'
+BENCHMARK_DURATION_IN_MINUTES = 0.5
 
 
 def get_requests_with_time(
@@ -26,7 +29,7 @@ def get_requests_with_time(
     requests_with_time = []
     current_time = 0.0
 
-    for request in input_requests:
+    for request in cycle(input_requests):
         requests_with_time.append((current_time, request))
 
         if request_rate == float("inf"):
@@ -37,33 +40,41 @@ def get_requests_with_time(
         # Accumulate the interval to get the next request time.
         current_time += interval
 
+        if current_time > (BENCHMARK_DURATION_IN_MINUTES + 1) * 60:
+            break
+
     return requests_with_time
 
 
 def run(
         llm: SpecDecodeLLM,
-        num_requests: int,
         requests: List[Tuple[str, int, int]],
-        request_rate: float):
+        request_rate: float,
+        temperature: float) -> Tuple[dict, int]:
     requests_with_time = get_requests_with_time(requests, request_rate)
-    requests_with_time.sort()  # Ensure the list is sorted by time
-    pbar = tqdm(total=num_requests)
 
     outputs: List[RequestOutput] = []
     start_time = time.perf_counter()
-    request_times = {}  # Dictionary to store request start times
+    # request_id -> [request_start_time, ttft, e2e_latency]
+    result = {}
+
+    llm.llm_engine.reset_total_tokens()
 
     request_index = 0
-    while len(outputs) < num_requests:
+    while True:
         current_time = time.perf_counter() - start_time
 
+        # run for 1 mins
+        if current_time > BENCHMARK_DURATION_IN_MINUTES * 60:
+            break
+
         # Add requests to the engine if their scheduled time has passed
-        while request_index < num_requests and requests_with_time[request_index][0] <= current_time:
+        while requests_with_time[request_index][0] <= current_time:
             request_start_time, (prompt, prompt_len,
                                  output_len) = requests_with_time[request_index]
             sampling_params = SamplingParams(
                 n=1,
-                temperature=0.0,
+                temperature=temperature,
                 top_p=1.0,
                 use_beam_search=False,
                 ignore_eos=True,
@@ -72,24 +83,113 @@ def run(
             request_id = llm._add_request(prompt=prompt,
                                           prompt_token_ids=None,
                                           sampling_params=sampling_params)
-            request_times[request_id] = (
-                request_start_time, prompt_len, output_len)
+            # Record start time
+            result[request_id] = [request_start_time]
             request_index += 1
 
         step_outputs = llm.llm_engine.step()
-        # print("batch size", len(step_outputs))
-        for output in step_outputs:
-            if output.finished:
-                request_end_time = time.perf_counter() - start_time
-                request_id = output.request_id
-                request_start_time, prompt_len, output_len = request_times[request_id]
-                request_latency = request_end_time - request_start_time
-                REQUEST_LATENCY.append(
-                    (prompt_len, output_len, request_latency))
-                outputs.append(output)
-                pbar.update(1)
 
-    pbar.close()
+        for output in step_outputs:
+            if len(output.outputs[0].token_ids) == 1 and len(result[output.request_id]) == 1:
+                ttft = (time.perf_counter() - start_time) - \
+                    result[output.request_id][0]
+                result[output.request_id].append(ttft)
+
+            if output.finished:
+                e2e_latency = (time.perf_counter() - start_time) - \
+                    result[output.request_id][0]
+                result[output.request_id].append(e2e_latency)
+                result[output.request_id].append(len(output.prompt_token_ids))
+                result[output.request_id].append(
+                    len(output.outputs[0].token_ids))
+                outputs.append(output)
+
+    total_tokens = llm.llm_engine.get_total_tokens()
+
+    # remove request_id from result if not exist in outputs
+    for request_id in list(result.keys()):
+        if request_id not in [output.request_id for output in outputs]:
+            del result[request_id]
+
+    llm.llm_engine.abort_all_requests()
+
+    return result, total_tokens
+
+
+def analyze_results(request_rate: int, result: dict):
+    ttfts = []  # Time to first token
+    tpots = []  # Time per output tokens
+    tpts = []  # Time per tokens
+
+    for request_id, values in result.items():
+        request_start_time, ttft, e2e_latency, prompt_len, output_len = values
+        ttfts.append(ttft)
+        tpot = (e2e_latency - ttft) / (output_len - 1)
+        tpots.append(tpot)
+        tpt = e2e_latency / (prompt_len + output_len)
+        tpts.append(tpt)
+
+    # Compute the latency statistics.
+    ttfts = np.array(ttfts)
+    tpots = np.array(tpots)
+    tpts = np.array(tpts)
+
+    return ttfts, tpots, tpts
+
+
+# def plot_metrics(request_rates, ttfts, tpots, tpts):
+#     percentiles = [50, 90, 99]
+
+#     metrics = {
+#         "Time to First Token": ttfts,
+#         "Time per Output Token": tpots,
+#         "Time per Token": tpts
+#     }
+
+#     fig, axs = plt.subplots(3, 3, figsize=(18, 15))
+
+#     for i, (metric_name, metric_data) in enumerate(metrics.items()):
+#         for j, percentile in enumerate(percentiles):
+#             percentile_values = []
+#             for metric_data_per_request_rate in metric_data:
+#                 percentile_values.append(np.percentile(
+#                     metric_data_per_request_rate, percentile))
+#             ax = axs[i, j]
+#             assert len(request_rates) == len(percentile_values)
+#             ax.plot(request_rates, percentile_values, marker='o',
+#                     label=f"{percentile}th Percentile")
+#             ax.set_title(f"{metric_name} - {percentile}th Percentile")
+#             ax.set_xlabel("Request Rate (reqs/s)")
+#             ax.set_ylabel("Latency (s)")
+#             ax.grid(True)
+#             ax.legend()
+
+#     # figure main title
+#     fig.suptitle(
+#         f"Benchmark Results\nRun Time: {BENCHMARK_DURATION_IN_MINUTES} minutes")
+#     plt.tight_layout()
+#     plt.savefig(f"{dir_name}/benchmark_results.png")
+#     plt.show()
+
+
+# def plot_latency_throughput(request_rates, latencies, throughputs):
+#     fig, ax = plt.subplots()
+#     ax.plot(throughputs, latencies, marker='o')
+#     ax.set_title(
+#         f"Latency vs Throughput\nRun Time: {BENCHMARK_DURATION_IN_MINUTES} minutes")
+#     ax.set_xlabel("Throughput (token/s)")
+#     ax.set_ylabel("Latency (s/token)")
+
+#     # Determine offset based on the range of the data
+#     x_offset = (max(throughputs) - min(throughputs)) * 0.02
+#     y_offset = (max(latencies) - min(latencies)) * 0.02
+
+#     for i, request_rate in enumerate(request_rates):
+#         ax.text(throughputs[i] + x_offset, latencies[i],
+#                 f"{request_rate} req/s", fontsize=9)
+
+#     plt.tight_layout()
+#     plt.savefig(f"{dir_name}/latency_throughput.png")
 
 
 def main(args: argparse.Namespace):
@@ -101,11 +201,8 @@ def main(args: argparse.Namespace):
              ["draft_size", args.draft_size],
              ["collocate", args.collocate],
              ["chunked_prefill", args.chunked_prefill],
-             ["dataset", args.dataset],
-             ["input_len", args.input_len],
-             ["output_len", args.output_len],
-             ["num_prompts", args.num_prompts],
-             ["request_rate", args.request_rate],]
+             ["target_attention", args.target_attention],
+             ["dataset", args.dataset]]
 
     print(tabulate(table))
 
@@ -115,6 +212,7 @@ def main(args: argparse.Namespace):
         draft_size=args.draft_size,
         collocate=args.collocate,
         enable_chunked_prefill=args.chunked_prefill,
+        target_attention=args.target_attention,
         tokenizer=args.tokenizer,
         quantization=args.quantization,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -123,12 +221,13 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         max_model_len=args.max_model_len,
         enforce_eager=args.enforce_eager,
+        download_dir=DOWNLOAD_DIR,
     )
 
     def warmup():
         sampling_params = SamplingParams(
             n=1,
-            temperature=0.0,
+            temperature=args.temperature,
             top_p=1.0,
             use_beam_search=False,
             ignore_eos=True,
@@ -150,28 +249,42 @@ def main(args: argparse.Namespace):
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
 
-    requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
-                               args.output_len)
-    benchmark_start_time = time.perf_counter()
-    run(llm, args.num_prompts, requests, args.request_rate)
-    benchmark_end_time = time.perf_counter()
+    requests = sample_requests(args.dataset, 0, tokenizer,
+                               args.output_len)  # 0 indicates all requests
 
-    benchmark_time = benchmark_end_time - benchmark_start_time
-    print(f"Total time: {benchmark_time:.3f} s")
-    print(f"Throughput: {args.num_prompts / benchmark_time:.3f} requests/s")
+    all_ttfts = []
+    all_tpots = []
+    all_tpts = []
+    throughputs = []
+    latencies = []
 
-    # Compute the latency statistics.
-    avg_latency = np.mean([latency for _, _, latency in REQUEST_LATENCY])
-    print(f"Average latency: {avg_latency:.3f} s")
-    avg_per_token_latency = np.mean([
-        latency / (prompt_len + output_len)
-        for prompt_len, output_len, latency in REQUEST_LATENCY
-    ])
-    print(f"Average latency per token: {avg_per_token_latency:.3f} s")
-    avg_per_output_token_latency = np.mean(
-        [latency / output_len for _, output_len, latency in REQUEST_LATENCY])
-    print("Average latency per output token: "
-          f"{avg_per_output_token_latency:.3f} s")
+    # print(f"Running benchmark with request rate: {request_rate} reqs/s")
+
+    start_time = time.perf_counter()
+    result, total_tokens = run(
+        llm, requests, args.request_rate, args.temperature)
+    elapsed_time = time.perf_counter() - start_time
+    ttfts, tpots, tpts = analyze_results(args.request_rate, result)
+
+    throughput = total_tokens / elapsed_time
+    throughputs.append(throughput)
+    latencies.append(np.mean(tpts))
+
+    all_ttfts.append(ttfts)
+    all_tpots.append(tpots)
+    all_tpts.append(tpts)
+
+    p50_ttft = np.percentile(ttfts, 50)
+    p99_ttft = np.percentile(ttfts, 99)
+    p50_tpot = np.percentile(tpots, 50)
+    p99_tpot = np.percentile(tpots, 99)
+    p50_tpt = np.percentile(tpts, 50)
+    p99_tpt = np.percentile(tpts, 99)
+
+    print(f"result, {p50_ttft:.3f}, {p99_ttft:.3f}, {p50_tpot:.3f}, {p99_tpot:.3f}, {p50_tpt:.3f}, {p99_tpt:.3f}, {throughput:.3f}, {np.mean(tpts):.3f}")
+
+    # plot_metrics(request_rates, all_ttfts, all_tpots, all_tpts)
+    # plot_latency_throughput(request_rates, latencies, throughputs)
 
     llm.llm_engine.worker_executor.shutdown()
 
@@ -194,13 +307,17 @@ if __name__ == "__main__":
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-13b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
-    parser.add_argument('--draft-size', type=int, default=7)
+    parser.add_argument('--draft-size', type=int, default=0)
+    parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--collocate',
                         '-c',
                         action='store_true')
     parser.add_argument('--chunked-prefill',
                         '-cp',
                         action='store_true')
+    parser.add_argument("--target-attention",
+                        action="store_true",
+                        help="Use target attention.")
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',

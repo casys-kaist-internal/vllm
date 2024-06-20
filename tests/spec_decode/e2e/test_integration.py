@@ -24,7 +24,8 @@ from .conftest import run_greedy_equality_correctness_test
                              "target_model": "facebook/opt-13b",
                              "draft_model": "facebook/opt-125m",
                              "draft_size": 5,
-                             "disable_bonus_token": False
+                             "disable_bonus_token": False,
+                             "target_attention": True,
                          }])
 @pytest.mark.parametrize("batch_size", [8])
 @pytest.mark.parametrize("output_len", [128])

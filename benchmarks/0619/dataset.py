@@ -6,8 +6,11 @@ import random
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from datasets import load_dataset
 
-DATASET_DIR = "/home/noppanat/workspace/datasets"
+DOWNLOAD_DIR = '/mnt/sda/download'
 RANDOM_SAMPLE = False
+
+# Ensure DOWNLOAD_DIR exists
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
 def process_dataset(dataset, prompt_key, completion_key, num_prompts, tokenizer, fixed_output_len, input_key=None):
@@ -55,33 +58,34 @@ def filter_and_process(prompts, prompt_token_ids, completion_token_ids, num_prom
 def load_gsm8k(num_prompts: int,
                tokenizer: PreTrainedTokenizerBase,
                fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('gsm8k', 'main')['train']
+    dataset = load_dataset('gsm8k', 'main', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'question', 'answer', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_humaneval(num_prompts: int,
                    tokenizer: PreTrainedTokenizerBase,
                    fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('openai_humaneval')['test']
+    dataset = load_dataset('openai_humaneval', cache_dir=DOWNLOAD_DIR)['test']
     return process_dataset(dataset, 'prompt', 'canonical_solution', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_alpaca(num_prompts: int,
                 tokenizer: PreTrainedTokenizerBase,
                 fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('tatsu-lab/alpaca')['train']
+    dataset = load_dataset('tatsu-lab/alpaca', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len, input_key='input')
 
 
 def load_mt_bench(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('philschmid/mt-bench')['train']
+    dataset = load_dataset('philschmid/mt-bench',
+                           cache_dir=DOWNLOAD_DIR)['train']
     prompts = [data['turns'][0] for data in dataset]
     prompt_token_ids = tokenizer(prompts).input_ids
 
     completions = []
-    with open(f'{DATASET_DIR}/gpt-4.jsonl', 'r') as file:
+    with open(f'{DOWNLOAD_DIR}/gpt-4.jsonl', 'r') as file:
         for line in file:
             json_object = json.loads(line)
             completions.append(json_object['choices'][0]['turns'][0])
@@ -93,7 +97,7 @@ def load_mt_bench(num_prompts: int,
 def load_sharegpt(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
-    with open(f'{DATASET_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
+    with open(f'{DOWNLOAD_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json') as f:
         dataset = json.load(f)
 
     dataset = [data for data in dataset if len(data["conversations"]) >= 2]
@@ -111,14 +115,15 @@ def load_sharegpt(num_prompts: int,
 def load_apps(num_prompts: int,
               tokenizer: PreTrainedTokenizerBase,
               fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('codeparrot/apps')['train']
+    dataset = load_dataset('codeparrot/apps', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'question', 'solutions', num_prompts, tokenizer, fixed_output_len)
 
 
 def load_dialogue(num_prompts: int,
                   tokenizer: PreTrainedTokenizerBase,
                   fixed_output_len: Optional[int] = None):
-    dataset = load_dataset('facebook/empathetic_dialogues')['train']
+    dataset = load_dataset('facebook/empathetic_dialogues',
+                           cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'prompt', 'utterance', num_prompts, tokenizer, fixed_output_len)
 
 
@@ -126,7 +131,7 @@ def load_chatbot(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
-        'alespalla/chatbot_instruction_prompts')['train']
+        'alespalla/chatbot_instruction_prompts', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'prompt', 'response', num_prompts, tokenizer, fixed_output_len)
 
 
@@ -134,7 +139,7 @@ def load_finance(num_prompts: int,
                  tokenizer: PreTrainedTokenizerBase,
                  fixed_output_len: Optional[int] = None):
     dataset = load_dataset(
-        'gbharti/finance-alpaca')['train']
+        'gbharti/finance-alpaca', cache_dir=DOWNLOAD_DIR)['train']
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len)
 
 

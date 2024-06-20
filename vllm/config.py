@@ -532,7 +532,9 @@ class SpecDecodeConfig:
     def __init__(self,
                  draft_size: int,
                  collocate: bool,
+                 target_attention: bool,
                  disable_bonus_token: bool) -> None:
         self.draft_size = draft_size
+        self.target_attention = target_attention
         self.collocate = collocate
         self.disable_bonus_token = disable_bonus_token

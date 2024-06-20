@@ -398,6 +398,10 @@ def _sample(
                                           is_prompts, sample_indices)
         if sampling_type == SamplingType.GREEDY:
             greedy_samples = torch.argmax(logprobs[sample_indices], dim=-1)
+            # Needed for spec decoding greedy verification test.
+            _modify_greedy_probs_inplace(probs,
+                                         sample_indices,
+                                         greedy_samples)
         elif sampling_type == SamplingType.RANDOM:
             max_best_of = 1
             for seq_group, is_prompt in zip(seq_groups, is_prompts):
@@ -441,6 +445,15 @@ def _spec_decode_sample(
     probs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
 ) -> Tuple[List[Tuple[List[int], List[int]]], torch.Tensor, torch.Tensor]:
+    # Needed for spec decoding greedy verification test.
+    # check empty tensor
+    if sampling_metadata.target_modify_greedy_indices is not None:
+        greedy_samples = torch.argmax(
+            probs[sampling_metadata.target_modify_greedy_indices], dim=-1)
+        _modify_greedy_probs_inplace(probs,
+                                     sampling_metadata.target_modify_greedy_indices,
+                                     greedy_samples)
+
     # Divide probs into prefill and decode probs
     prefill_probs = probs[:sampling_metadata.num_prompts]
     decode_probs = probs[sampling_metadata.num_prompts:]
@@ -456,19 +469,24 @@ def _spec_decode_sample(
     target_probs = _reshape_and_pad(
         decode_probs, target_lens, decode_probs.size(-1))
 
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
+    draft_probs = _reshape_and_pad(
+        sampling_metadata.draft_probs_tensor,
+        target_lens_minus_one, target_probs.size(-1)
+    )
+
     # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
-    # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
-    draft_probs = _reshape_and_pad(
-        sampling_metadata.draft_probs_tensor, target_lens_minus_one, target_probs.size(
-            -1)
-    )
-
     # draft_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # print("target_probs_for_sampled_draft_token",
+    #       target_prob_for_sampled_draft_token)
+    # print("draft_probs_for_sampled_draft_token",
+    #       draft_prob_for_sampled_draft_token)
 
     # accept_probs: [seq_idx, target_lens_minus_one]
     accept_prob = target_prob_for_sampled_draft_token.div_(
@@ -478,8 +496,9 @@ def _spec_decode_sample(
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
 
+    # print("accept_probs", accept_prob)
+
     random_prob = torch.rand_like(accept_prob)
-    # random_prob = torch.full_like(accept_prob, 0.5)  # for testing
 
     # accept is 0 and reject is 1
     accepted = torch.where(
@@ -494,6 +513,7 @@ def _spec_decode_sample(
 
     # accept_cnts: [seq_idx]
     accept_cnts = torch.sum(accepted, dim=1)
+    # print("accept_cnts", accept_cnts)
     del accepted
 
     target_lens_tensor = torch.tensor(
@@ -506,8 +526,8 @@ def _spec_decode_sample(
 
     # target_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
     # draft_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
-    indices = torch.arange(masked_accept_cnt.size(
-        0)).long().to(masked_accept_cnt.device)
+    # indices = torch.arange(masked_accept_cnt.size(0), device='cuda')
+    indices = torch.arange(target_probs.size(0), device='cuda')
     target_prob_at_reject_idx = target_probs[indices,
                                              masked_accept_cnt, :].squeeze(1)
     draft_prob_at_reject_idx = draft_probs[indices, masked_accept_cnt, :].squeeze(
@@ -520,8 +540,7 @@ def _spec_decode_sample(
     del target_prob_at_reject_idx, draft_prob_at_reject_idx
 
     # recover to original probability for all accepted sequences
-    indices = torch.arange(all_accept_mask.size(
-        0)).long().to(all_accept_mask.device)
+    # indices = torch.arange(all_accept_mask.size(0), device='cuda')
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
 
@@ -533,7 +552,8 @@ def _spec_decode_sample(
     del target_probs, draft_probs, target_lens_tensor
 
     sample_results = _sample(modified_rejection_prob,
-                             modified_rejection_logprobs, sampling_metadata)
+                             modified_rejection_logprobs,
+                             sampling_metadata)
 
     return sample_results, accept_cnts, modified_rejection_logprobs
 
@@ -725,3 +745,53 @@ def _get_modified_rejection_prob(target_prob: torch.Tensor, draft_prob: torch.Te
 def _smallest_positive_value(dtype) -> float:
     """Return the smallest positive normal value representable by the dtype."""
     return torch.finfo(dtype).tiny
+
+
+def _modify_greedy_probs_inplace(probs: torch.Tensor,
+                                 sample_indices: torch.Tensor,
+                                 greedy_samples: torch.Tensor) -> None:
+    """Modify the probability distributions of the greedily-sampled tokens such
+        that each sampled token has a "probability" of 1.0. This is required by
+        speculative decoding, which depends on the sampling method being encoded
+        within the probability distribution for correctness.
+
+        # Why do we only need to do this for greedy sampling?
+
+        vLLM's sampler performs the following steps for greedy or multinomial
+        (random) sampling:
+            1. Get logits from model.
+            2. Modify logits according to per-sequence sampling parameters.
+                - Multiply by temperature, top-k and top-p masking, penalize tokens
+                    according to their frequency, etc.
+            3. Sample a token.
+                - Random sampling simply samples from the modified probability
+                    distribution.
+                - Greedy sampling performs `argmax` to obtain the token with the
+                    highest likelihood.
+
+        Ignoring greedy sampling for a moment, we find that the computed probability
+        distribution has the following property: we can sample from it independently
+        and find that the token sampled by the Sampler has a frequency corresponding
+        to how often we see it in our sampling. In other words, for tokens sampled
+        with vLLM's random SamplingType, the computed probability distribution
+        encodes the sampling methodology completely.
+
+        Greedy sampling does not normally have this property. vLLM modifies logits
+        according to sampling params, then performs `argmax`, then returns the
+        sampled token and the computed probability distribution. If we sample from
+        the distribution, we'll find the likelihood of the greedily-sampled token
+        is not always 1.0.
+
+        Since lossless speculative decoding requires that the sampling methodology
+        be encoded within the probability distribution, we are motivated to modify
+        the probability distribution such that the sampled token has probability 1
+        when speculative decoding is used.
+
+        NOTE: Alternatively, we could use an extremely low temperature to achieve
+        greedy sampling using multinomial computation and unite the codepaths. This
+        has implications on the overall design of the sampler, e.g. how to record
+        accurate logprobs for the user, so this improvement is deferred to later.
+        """
+    # NOTE: logprobs are not modified so they can be returned to the user.
+    probs[sample_indices, :] = 0
+    probs[sample_indices, greedy_samples] = 1.0

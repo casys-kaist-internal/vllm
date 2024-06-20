@@ -7,6 +7,8 @@ from transformers import (AutoTokenizer)
 from dataset import sample_requests
 from tabulate import tabulate
 
+DOWNLOAD_DIR = '/mnt/sda/download'
+
 
 def run(
     requests: List[Tuple[str, int, int]],
@@ -41,6 +43,7 @@ def run(
         dtype=dtype,
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
+        download_dir=DOWNLOAD_DIR,
     )
 
     # Add the requests to the engine.
@@ -127,9 +130,9 @@ if __name__ == "__main__":
                         help="Output length for each request. Overrides the "
                         "output length from the dataset.")
     parser.add_argument('--target-model', type=str,
-                        default='facebook/opt-6.7b')
+                        default='facebook/opt-125m')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
-    parser.add_argument('--draft-size', type=int, default=7)
+    parser.add_argument('--draft-size', type=int, default=4)
     parser.add_argument('--collocate',
                         '-c',
                         action='store_true')

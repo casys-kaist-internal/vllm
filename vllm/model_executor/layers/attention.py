@@ -254,7 +254,9 @@ def _paged_attention(
     # TODO(woosuk): Tune this heuristic.
     # For context len > 8192, use V2 kernel to avoid shared memory shortage.
     use_v1 = input_metadata.max_context_len <= 8192 and (
-        max_num_partitions == 1 or num_seqs * num_heads > 512)
+        max_num_partitions == 1 or num_seqs * num_heads > 512) and (
+            not input_metadata.use_target_attention
+    )
     if use_v1:
         # Run PagedAttention V1.
         ops.paged_attention_v1(
@@ -298,7 +300,7 @@ def _paged_attention(
                 scale,
                 input_metadata.block_tables,
                 input_metadata.context_lens,
-                input_metadata.query_lens,
+                input_metadata.target_lens,
                 block_size,
                 input_metadata.max_context_len,
                 alibi_slopes,
@@ -319,9 +321,11 @@ def _paged_attention(
                 block_size,
                 input_metadata.max_context_len,
                 alibi_slopes,
-        )    # if torch.isnan(tmp_output).any():
+            )
+
+    # if torch.isnan(tmp_output).any():
     #     raise RuntimeError("NaN detected in PagedAttention tmp_output.")
-    
+
     # if torch.isnan(output).any():
     #     raise RuntimeError("NaN detected in PagedAttention output.")
 

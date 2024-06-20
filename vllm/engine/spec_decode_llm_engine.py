@@ -257,6 +257,10 @@ class SpecDecodeLLMEngine:
         """
         self.scheduler.abort_seq_group(request_id)
 
+    def abort_all_requests(self) -> None:
+        """Aborts all requests."""
+        self.scheduler.abort_all_seq_groups()
+
     def get_target_model_config(self) -> ModelConfig:
         """Gets the model configuration."""
         return self.target_model_config
@@ -361,6 +365,7 @@ class SpecDecodeLLMEngine:
             scheduled_seq_group.token_chunk_size = 1
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            # print("accept: ", sample.accept_cnt)
             free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
             self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
             num_tokens_to_log_system_stats += sample.accept_cnt

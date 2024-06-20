@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from vllm import SpecDecodeLLM, SamplingParams
 
-DOWNLOAD_DIR = '/home/noppanat/workspace/models'
+DOWNLOAD_DIR = '/mnt/sda/download'
 
 
 def main(args: argparse.Namespace):
