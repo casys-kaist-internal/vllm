@@ -283,21 +283,46 @@ def _paged_attention(
             dtype=torch.float32,
             device=output.device,
         )
-        max_logits = torch.empty_like(exp_sums)
-        ops.paged_attention_v2(
-            output,
-            exp_sums,
-            max_logits,
-            tmp_output,
-            query,
-            key_cache,
-            value_cache,
-            num_kv_heads,
-            scale,
-            input_metadata.block_tables,
-            input_metadata.context_lens,
-            block_size,
-            input_metadata.max_context_len,
-            alibi_slopes,
-        )
+        max_logits = torch.zeros_like(exp_sums)
+        if input_metadata.use_target_attention:
+            # Run PagedAttention V2.
+            ops.paged_attention_v2_target(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                num_kv_heads,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                input_metadata.query_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+            )
+        else:
+            ops.paged_attention_v2(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                num_kv_heads,
+                scale,
+                input_metadata.block_tables,
+                input_metadata.context_lens,
+                block_size,
+                input_metadata.max_context_len,
+                alibi_slopes,
+        )    # if torch.isnan(tmp_output).any():
+    #     raise RuntimeError("NaN detected in PagedAttention tmp_output.")
+    
+    # if torch.isnan(output).any():
+    #     raise RuntimeError("NaN detected in PagedAttention output.")
+
     return output
