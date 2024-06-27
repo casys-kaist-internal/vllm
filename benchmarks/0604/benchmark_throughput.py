@@ -7,18 +7,19 @@ from transformers import (AutoTokenizer)
 from dataset import sample_requests
 from tabulate import tabulate
 
-<<<<<<< HEAD
+<< << << < HEAD
 DOWNLOAD_DIR = '/mnt/sda/download'
 
-=======
->>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
+== == == =
+>>>>>> > d2cfb260cea73fe03489e3564ed33f92d1767df1
+
 
 def run(
     requests: List[Tuple[str, int, int]],
     target_model: str,
     draft_model: str,
     draft_size: int,
-    collocate: bool,
+    colocate: bool,
     chunked_prefill: bool,
     tokenizer: str,
     quantization: Optional[str],
@@ -36,7 +37,7 @@ def run(
         target_model=target_model,
         draft_model=draft_model,
         draft_size=draft_size,
-        collocate=collocate,
+        colocate=colocate,
         enable_chunked_prefill=chunked_prefill,
         tokenizer=tokenizer,
         quantization=quantization,
@@ -46,10 +47,10 @@ def run(
         dtype=dtype,
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
-<<<<<<< HEAD
+        << << << < HEAD
         download_dir=DOWNLOAD_DIR,
-=======
->>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
+        == == == =
+        >>>>>> > d2cfb260cea73fe03489e3564ed33f92d1767df1
     )
 
     # Add the requests to the engine.
@@ -86,7 +87,7 @@ def main(args: argparse.Namespace):
     table = [["target_model", args.target_model],
              ["draft_model", args.draft_model],
              ["draft_size", args.draft_size],
-             ["collocate", args.collocate],
+             ["colocate", args.colocate],
              ["chunked_prefill", args.chunked_prefill],
              ["dataset", args.dataset],
              ["input_len", args.input_len],
@@ -108,7 +109,7 @@ def main(args: argparse.Namespace):
                                    args.output_len)
 
     elapsed_time = run(requests, args.target_model, args.draft_model,
-                       args.draft_size, args.collocate, args.chunked_prefill,
+                       args.draft_size, args.colocate, args.chunked_prefill,
                        args.tokenizer, args.quantization, args.tensor_parallel_size,
                        args.seed, args.n, args.use_beam_search,
                        args.trust_remote_code, args.dtype,
@@ -139,7 +140,7 @@ if __name__ == "__main__":
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
-    parser.add_argument('--collocate',
+    parser.add_argument('--colocate',
                         '-c',
                         action='store_true')
     parser.add_argument('--chunked-prefill',

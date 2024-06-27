@@ -439,7 +439,7 @@ class SpecDecodeLLMEngine:
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for scheduled_seq_group in (scheduled_seq_groups +
+        for scheduled_seq_group in (prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups +
                                     scheduler_outputs.ignored_seq_groups):
             request_output = RequestOutput.from_seq_group(
                 scheduled_seq_group.seq_group)
@@ -486,6 +486,18 @@ class SpecDecodeLLMEngine:
         (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
          draft_decode_seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule()
 
+        if scheduler_outputs.preempted_seq_groups:
+            for seq_group in scheduler_outputs.preempted_seq_groups:
+                seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+                seq_id = seq.seq_id
+
+                if seq_id in self.draft_probs_dict:
+                    del self.draft_probs_dict[seq_id]
+
+        # print("prefill: ", len(prefill_seq_group_metadata_list))
+        # print("target: ", len(target_decode_seq_group_metadata_list))
+        # print("draft: ", len(draft_decode_seq_group_metadata_list))
+
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs)
 
@@ -526,13 +538,13 @@ class SpecDecodeLLMEngine:
 
                 result = self._process_model_outputs(output, scheduler_outputs)
 
-        self.scheduler.swap_target_draft_queues(scheduler_outputs)
         self.scheduler.free_finished_seq_groups()
+        self.scheduler.swap_target_draft_queues(scheduler_outputs)
 
         return result
 
-    @ nvtx_range("collocate_step")
-    def collocate_step(self) -> List[RequestOutput]:
+    @ nvtx_range("colocate_step")
+    def colocate_step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
         This function performs one decoding iteration of the engine. It first
@@ -542,7 +554,19 @@ class SpecDecodeLLMEngine:
         the sequences and returns the newly generated results.
         """
         (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
-         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
+         draft_decode_seq_group_metadata_list, target_scheduler_outputs,
+         draft_scheduler_outputs) = self.scheduler.colocate_schedule()
+
+        if target_scheduler_outputs.preempted_seq_groups:
+            for seq_group in target_scheduler_outputs.preempted_seq_groups:
+                seq_id = list(seq_group.seq_data.keys())[0]
+
+                if seq_id in self.draft_probs_dict:
+                    del self.draft_probs_dict[seq_id]
+
+        # print("prefill: ", len(prefill_seq_group_metadata_list))
+        # print("target: ", len(target_decode_seq_group_metadata_list))
+        # print("draft: ", len(draft_decode_seq_group_metadata_list))
 
         if target_scheduler_outputs.is_empty():
             target_result = self._process_model_outputs(
@@ -598,8 +622,8 @@ class SpecDecodeLLMEngine:
 
     @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
-        if self.spec_decode_config.collocate:
-            return self.collocate_step()
+        if self.spec_decode_config.colocate:
+            return self.colocate_step()
         else:
             return self.default_step()
 

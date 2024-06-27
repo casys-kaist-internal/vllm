@@ -98,6 +98,12 @@ class SchedulingBudget:
     def num_curr_seqs(self):
         return self._num_curr_seqs
 
+    def __repr__(self) -> str:
+        return (f"SchedulingBudget(token_budget={self.token_budget}, "
+                f"max_num_seqs={self.max_num_seqs}, "
+                f"num_batched_tokens={self.num_batched_tokens}, "
+                f"num_curr_seqs={self.num_curr_seqs})")
+
 
 class SpecDecodeSchedulerOutputs:
 
@@ -110,6 +116,7 @@ class SpecDecodeSchedulerOutputs:
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
         ignored_seq_groups: List[SequenceGroup],
+        preempted_seq_groups: List[SequenceGroup],
     ) -> None:
         self.prefill_scheduled_seq_groups = prefill_scheduled_seq_groups
         self.target_decode_scheduled_seq_groups = target_decode_scheduled_seq_groups
@@ -120,6 +127,7 @@ class SpecDecodeSchedulerOutputs:
         # Swap in and swap out should never happen at the same time.
         assert not (blocks_to_swap_in and blocks_to_swap_out)
         self.ignored_seq_groups = ignored_seq_groups
+        self.preempted_seq_groups = preempted_seq_groups
 
         if self.prefill_scheduled_seq_groups or self.target_decode_scheduled_seq_groups:
             self.is_target = True
@@ -170,10 +178,11 @@ class SpecDecodeScheduler:
         self.need_to_run_target_decode: List[SequenceGroup] = []
         self.need_to_run_draft_decode: List[SequenceGroup] = []
 
-        self.balancing_queue: List[SequenceGroup] = []
-
         # Sequence groups in the SWAPPED state.
         self.swapped: List[SequenceGroup] = []
+
+        # Flag to check whether any seq is preempted.
+        self.preempt_flag = False
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
@@ -208,19 +217,26 @@ class SpecDecodeScheduler:
         self.abort_seq_group(
             [
                 seq_group.request_id
-                for seq_group in self.waiting + self.need_to_run_draft_decode + self.need_to_run_target_decode + self.need_to_run_target_prefill + self.balancing_queue + self.swapped
+                for seq_group in self.waiting + self.need_to_run_draft_decode + self.need_to_run_target_decode + self.need_to_run_target_prefill + self.swapped
             ]
         )
 
     def has_unfinished_seqs(self) -> bool:
-        return self.waiting or self.balancing_queue or self.need_to_run_draft_decode or self.need_to_run_target_decode or self.need_to_run_target_prefill or self.swapped
+        # print("waiting: ", len(self.waiting))
+        # print("draft: ", len(self.need_to_run_draft_decode))
+        # print("target: ", len(self.need_to_run_target_decode))
+        # print("prefill: ", len(self.need_to_run_target_prefill))
+        # print("swapped: ", len(self.swapped))
+
+        return self.waiting or self.need_to_run_draft_decode or self.need_to_run_target_decode or self.need_to_run_target_prefill or self.swapped
 
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.need_to_run_draft_decode) + len(self.need_to_run_target_decode) + len(self.swapped)
 
     def get_num_running_seq_groups(self) -> int:
-        return len(self.need_to_run_draft_decode) + len(self.need_to_run_target_decode) + len(self.balancing_queue)
+        return len(self.need_to_run_draft_decode) + len(self.need_to_run_target_decode)
 
+    @ nvtx_range("swap_target_draft_queues")
     def swap_target_draft_queues(self, scheduler_outputs) -> None:
         scheduled_seq_groups = scheduler_outputs.prefill_scheduled_seq_groups + \
             scheduler_outputs.target_decode_scheduled_seq_groups + \
@@ -228,36 +244,40 @@ class SpecDecodeScheduler:
 
         for scheduled_seq_group in scheduled_seq_groups:
             seq_group = scheduled_seq_group.seq_group
+            if seq_group.is_finished():
+                continue
+
+            do_sample = scheduled_seq_group.do_sample
+            # print("seq_group: ", seq_group)
+            seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+
             if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
                 self.need_to_run_draft_decode.remove(seq_group)
                 self.need_to_run_target_decode.append(seq_group)
 
             elif seq_group.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-                self.need_to_run_target_decode.remove(seq_group)
-                self.need_to_run_draft_decode.append(seq_group)
+                if seq.draft_size != 0:
+                    self.need_to_run_target_decode.remove(seq_group)
+                    self.need_to_run_draft_decode.append(seq_group)
 
             elif seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
                 self.need_to_run_target_prefill.remove(seq_group)
-                self.need_to_run_draft_decode.append(seq_group)
+
+                if do_sample:
+                    if seq.draft_size != 0:
+                        self.need_to_run_draft_decode.append(seq_group)
+                    else:
+                        self.need_to_run_target_decode.append(seq_group)
+                else:
+                    seq.status = SequenceStatus.WAITING
+                    self.waiting.append(seq_group)
 
     def swap_and_balance_target_draft_queues(self, scheduler_outputs) -> None:
-        scheduled_seq_groups = scheduler_outputs.prefill_scheduled_seq_groups + \
-            scheduler_outputs.target_decode_scheduled_seq_groups + \
+        # Swap first with target and decode.
+        decode_scheduled_seq_groups = scheduler_outputs.target_decode_scheduled_seq_groups + \
             scheduler_outputs.draft_decode_scheduled_seq_groups
 
-        if self.balancing_queue:
-            # move all elements from balancing queue to draft queue
-            self.need_to_run_draft_decode += self.balancing_queue
-            self.balancing_queue = []
-
-        # Assess current load
-        draft_load = len(self.need_to_run_draft_decode)
-        target_load = len(self.need_to_run_target_decode)
-        target_prefill_load = len(self.need_to_run_target_prefill)
-        total_load = draft_load + target_load + target_prefill_load
-        balance_point = total_load // 2
-
-        for scheduled_seq_group in scheduled_seq_groups:
+        for scheduled_seq_group in decode_scheduled_seq_groups:
             seq_group = scheduled_seq_group.seq_group
             if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
                 self.need_to_run_draft_decode.remove(seq_group)
@@ -267,87 +287,95 @@ class SpecDecodeScheduler:
                 self.need_to_run_target_decode.remove(seq_group)
                 self.need_to_run_draft_decode.append(seq_group)
 
-            elif seq_group.spec_decode_stage == SpecDecodeStage.PREFILL:
-                self.need_to_run_target_prefill.remove(seq_group)
-                if len(self.need_to_run_draft_decode) < balance_point:
-                    self.need_to_run_draft_decode.append(seq_group)
-                else:
-                    self.balancing_queue.append(seq_group)
-
             else:
                 raise ValueError("Invalid SpecDecodeStage")
 
-    def _balance_target_draft_queues(self) -> None:
-        # Need to balance the draft and target queues
-        # the balancing queue is used to balance the draft and target queues
-        # Steps:
-        # 1) If balancing queue is not empty, move sequence groups from balancing queue to draft or target queue
-        # 2) Access current load
-        # 3) Determine imbalance
-        # 4) Rebalance queues by moving sequence groups to balancing queue
+        # Balance the queues from Prefill
+        prefill_scheduled_seq_groups = scheduler_outputs.prefill_scheduled_seq_groups
 
-        # Move sequence groups from balancing queue back to appropriate queues after one step
+        for scheduled_seq_group in prefill_scheduled_seq_groups:
+            seq_group = scheduled_seq_group.seq_group
+            do_sample = scheduled_seq_group.do_sample
 
-        rebalanced = (len(self.balancing_queue) != 0)
+            assert seq_group.spec_decode_stage == SpecDecodeStage.PREFILL
+            self.need_to_run_target_prefill.remove(seq_group)
 
-        i = 0
-        while i < len(self.balancing_queue):
-            seq_group = self.balancing_queue[i]
-
-            if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-                self.need_to_run_target_decode.append(seq_group)
-            else:
+            if do_sample:
                 self.need_to_run_draft_decode.append(seq_group)
+                # if len(self.need_to_run_draft_decode) < len(self.need_to_run_target_decode):
+                #     self.need_to_run_draft_decode.append(seq_group)
+                # else:
+                #     self.need_to_run_target_decode.append(seq_group)
+            else:
+                seq_group.get_seqs(status=SequenceStatus.RUNNING)[
+                    0].status = SequenceStatus.WAITING
+                self.waiting.append(seq_group)
 
-            # Remove the processed sequence group from the balancing queue
-            del self.balancing_queue[i]
+    # def _balance_target_draft_queues(self) -> None:
+    #     # Need to balance the draft and target queues
+    #     # the balancing queue is used to balance the draft and target queues
+    #     # Steps:
+    #     # 1) If balancing queue is not empty, move sequence groups from balancing queue to draft or target queue
+    #     # 2) Access current load
+    #     # 3) Determine imbalance
+    #     # 4) Rebalance queues by moving sequence groups to balancing queue
 
-        if rebalanced:
-            logger.info(
-                f"After Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
+    #     # Move sequence groups from balancing queue back to appropriate queues after one step
 
-        # Assess current load
-        draft_load = len(self.need_to_run_draft_decode)
-        target_load = len(self.need_to_run_target_decode)
-        total_load = draft_load + target_load
-        balance_point = total_load // 2
+    #     rebalanced = (len(self.balancing_queue) != 0)
 
-        if total_load > 0:
-            imbalance_percentage = abs(
-                draft_load - target_load) / total_load * 100
-        else:
-            imbalance_percentage = 0
+    #     i = 0
+    #     while i < len(self.balancing_queue):
+    #         seq_group = self.balancing_queue[i]
 
-        # Determine imbalance
-        if total_load < 32 or imbalance_percentage <= self.scheduler_config.balance_threshold:
-            return  # Queues are balanced within the acceptable range
+    #         if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+    #             self.need_to_run_target_decode.append(seq_group)
+    #         else:
+    #             self.need_to_run_draft_decode.append(seq_group)
 
-        logger.info(
-            f"Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
+    #         # Remove the processed sequence group from the balancing queue
+    #         del self.balancing_queue[i]
 
-        # Rebalance queues
-        if draft_load > target_load:
-            # Move sequence groups from draft to balancing queue
-            while len(self.need_to_run_draft_decode) > balance_point:
-                seq_group = self.need_to_run_draft_decode.pop()
-                self.balancing_queue.append(seq_group)
-        else:
-            # Move sequence groups from target to balancing queue
-            while len(self.need_to_run_target_decode) > balance_point:
-                seq_group = self.need_to_run_target_decode.pop()
-                self.balancing_queue.append(seq_group)
+    #     if rebalanced:
+    #         logger.info(
+    #             f"After Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
 
+    #     # Assess current load
+    #     draft_load = len(self.need_to_run_draft_decode)
+    #     target_load = len(self.need_to_run_target_decode)
+    #     total_load = draft_load + target_load
+    #     balance_point = total_load // 2
+
+    #     if total_load > 0:
+    #         imbalance_percentage = abs(
+    #             draft_load - target_load) / total_load * 100
+    #     else:
+    #         imbalance_percentage = 0
+
+    #     # Determine imbalance
+    #     if total_load < 32 or imbalance_percentage <= self.scheduler_config.balance_threshold:
+    #         return  # Queues are balanced within the acceptable range
+
+    #     logger.info(
+    #         f"Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
+
+    #     # Rebalance queues
+    #     if draft_load > target_load:
+    #         # Move sequence groups from draft to balancing queue
+    #         while len(self.need_to_run_draft_decode) > balance_point:
+    #             seq_group = self.need_to_run_draft_decode.pop()
+    #             self.balancing_queue.append(seq_group)
+    #     else:
+    #         # Move sequence groups from target to balancing queue
+    #         while len(self.need_to_run_target_decode) > balance_point:
+    #             seq_group = self.need_to_run_target_decode.pop()
+    #             self.balancing_queue.append(seq_group)
+
+    @ nvtx_range("schedule_prefill")
     def _schedule_prefill(self,
                           scheduled_seq_groups: List[ScheduledSequenceGroup],
                           ignored_seq_groups: List[SequenceGroup],
                           budget: SchedulingBudget):
-        # The total number of sequences on the fly, including the
-        # requests in the generation phase.
-        num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
-                            for seq_group in self.need_to_run_draft_decode)
-        num_curr_seqs += sum(seq_group.get_max_num_running_seqs()
-                             for seq_group in self.need_to_run_target_decode)
-
         # Optimization: We do not sort the waiting queue since the preempted
         # sequence groups are added to the front and the new sequence groups
         # are added to the back.
@@ -389,24 +417,23 @@ class SpecDecodeScheduler:
                 self.waiting.pop(0)
                 continue
 
-            num_new_seqs = seq_group.get_max_num_running_seqs()
             if (num_new_tokens == 0
                 or not budget.can_schedule(num_new_tokens=num_new_tokens,
-                                           num_new_seqs=num_new_seqs)):
+                                           num_new_seqs=1)):
                 break
 
             # Can schedule this request
             seq_group = self.waiting.pop(0)
             self._allocate(seq_group)
-            num_curr_seqs += num_new_seqs
             seq_group.spec_decode_stage = SpecDecodeStage.PREFILL
             budget.add_num_batched_tokens(
                 seq_group.request_id, num_new_tokens)
-            budget.add_num_seqs(seq_group.request_id, num_new_seqs)
+            budget.add_num_seqs(seq_group.request_id, 1)
             scheduled_seq_groups.append(
                 ScheduledSequenceGroup(seq_group, num_new_tokens, do_sample))
             self.need_to_run_target_prefill.append(seq_group)
 
+    @ nvtx_range("schedule_draft_decode")
     def _schedule_draft_decode(self,
                                scheduled_seq_groups: List[ScheduledSequenceGroup],
                                blocks_to_swap_in: Dict[int, int],
@@ -416,9 +443,9 @@ class SpecDecodeScheduler:
         # to keep all the sequence groups in the RUNNING state.
         # In this case, the policy is responsible for deciding which sequence
         # groups to preempt.
-        # now = time.time()
-        # self.need_to_run_draft_decode = self.policy.sort_by_priority(
-        #     now, self.need_to_run_draft_decode)
+        now = time.time()
+        self.need_to_run_draft_decode = self.policy.sort_by_priority(
+            now, self.need_to_run_draft_decode)
 
         # Reserve new token slots for the running sequence groups.
         preempted: List[SequenceGroup] = []
@@ -426,8 +453,8 @@ class SpecDecodeScheduler:
         while self.need_to_run_draft_decode:
             seq_group = self.need_to_run_draft_decode.pop(0)
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            # We reserve new token slots also considering the target decode stage.
-            while not self.block_manager.can_append_slots(seq_group, seq.draft_size + 1):
+            # We reserve new token slots considering multiple runs of draft decode
+            while not self.block_manager.can_append_slots(seq_group, seq.draft_size):
                 if self.need_to_run_draft_decode:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = self.need_to_run_draft_decode.pop(-1)
@@ -442,7 +469,7 @@ class SpecDecodeScheduler:
             else:
                 # Can schedule this request
                 self._append_slots(
-                    seq_group, seq.draft_size + 1, blocks_to_copy)
+                    seq_group, seq.draft_size, blocks_to_copy)
                 need_to_run_draft_decode.append(seq_group)
                 seq_group.spec_decode_stage = SpecDecodeStage.DRAFT_DECODE
                 scheduled_seq_groups.append(
@@ -483,25 +510,52 @@ class SpecDecodeScheduler:
                 scheduled_seq_groups.append(
                     ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_draft_tokens()))
 
+        return preempted
+
+    @ nvtx_range("schedule_target_decode")
     def _schedule_target_decode(self,
                                 scheduled_seq_groups: List[ScheduledSequenceGroup],
-                                budget: SchedulingBudget) -> int:
+                                budget: SchedulingBudget,
+                                blocks_to_swap_in: Dict[int, int],
+                                blocks_to_swap_out: Dict[int, int],
+                                blocks_to_copy: Dict[int, int]):
         # Sort the sequence groups by priority.
-        # now = time.time()
-        # self.need_to_run_target_decode = self.policy.sort_by_priority(
-        #     now, self.need_to_run_target_decode)
+        now = time.time()
+        self.need_to_run_target_decode = self.policy.sort_by_priority(
+            now, self.need_to_run_target_decode)
 
-        # We don't consider preemption for target decode because we already
-        # considered appending slots including the target token (also the bonus token)
-        # in the draft decoding stage.
-        for seq_group in self.need_to_run_target_decode:
+        preempted: List[SequenceGroup] = []
+        need_to_run_target_decode: List[SequenceGroup] = []
+        while self.need_to_run_target_decode:
+            seq_group = self.need_to_run_target_decode.pop(0)
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-            assert seq.draft_size == seq.get_draft_len()
-            seq_group.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
-            budget.add_num_batched_tokens(
-                seq_group.request_id, (seq.get_draft_len() + 1))
-            scheduled_seq_groups.append(
-                ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_target_tokens()))
+
+            while not self.block_manager.can_append_slots(seq_group, 1):
+                if self.need_to_run_target_decode:
+                    # Preempt the lowest-priority sequence groups.
+                    victim_seq_group = self.need_to_run_target_decode.pop(-1)
+                    self._preempt(victim_seq_group, {})
+                    preempted.append(victim_seq_group)
+                else:
+                    # No other sequence groups can be preempted.
+                    # Preempt the current sequence group.
+                    self._preempt(seq_group, blocks_to_swap_out)
+                    preempted.append(seq_group)
+                    break
+            else:
+                # Can schedule this request
+                self._append_slots(seq_group, 1, blocks_to_copy)
+                need_to_run_target_decode.append(seq_group)
+                seq_group.spec_decode_stage = SpecDecodeStage.TARGET_DECODE
+                budget.add_num_batched_tokens(
+                    seq_group.request_id, (seq.get_draft_len() + 1))
+                budget.add_num_seqs(seq_group.request_id, 1)
+                scheduled_seq_groups.append(
+                    ScheduledSequenceGroup(seq_group, seq.get_num_uncomputed_target_tokens()))
+
+        self.need_to_run_target_decode = need_to_run_target_decode
+
+        return preempted
 
     def _schedule(self) -> SpecDecodeSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -515,6 +569,9 @@ class SpecDecodeScheduler:
 
         # Ignore the sequence groups that are too long.
         ignored_seq_groups: List[SequenceGroup] = []
+
+        # Keep track of the preempted sequence groups.
+        preempted_seq_groups: List[SequenceGroup] = []
 
         # Inlcude running requests to the budget.
         target_budget = SchedulingBudget(
@@ -533,23 +590,32 @@ class SpecDecodeScheduler:
 
             if target_budget.num_batched_tokens == 0:
                 if self.need_to_run_draft_decode:
-                    self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
-                                                blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                    preempted = self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                                            blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                    preempted_seq_groups.extend(preempted)
 
                 else:
-                    self._schedule_target_decode(
-                        target_decode_scheduled_seq_groups, target_budget)
+                    preempted = self._schedule_target_decode(
+                        target_decode_scheduled_seq_groups, target_budget,
+                        blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                    preempted_seq_groups.extend(preempted)
 
         else:
             if self.need_to_run_draft_decode:
-                self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
-                                            blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                preempted = self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                                        blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                preempted_seq_groups.extend(preempted)
 
             else:
-                self._schedule_target_decode(
-                    target_decode_scheduled_seq_groups, target_budget)
+                preempted = self._schedule_target_decode(
+                    target_decode_scheduled_seq_groups, target_budget,
+                    blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                preempted_seq_groups.extend(preempted)
                 self._schedule_prefill(
                     prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
+
+        # print(target_budget)
+        # print(f"result token, {len(prefill_scheduled_seq_groups)}, {len(target_decode_scheduled_seq_groups)}, {len(draft_decode_scheduled_seq_groups)}, {target_budget.num_batched_tokens}")
 
         scheduler_outputs = SpecDecodeSchedulerOutputs(
             prefill_scheduled_seq_groups=prefill_scheduled_seq_groups,
@@ -559,10 +625,11 @@ class SpecDecodeScheduler:
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             ignored_seq_groups=ignored_seq_groups,
+            preempted_seq_groups=preempted_seq_groups,
         )
         return scheduler_outputs
 
-    def _collocate_schedule(self) -> Tuple[SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
+    def _colocate_schedule(self) -> Tuple[SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
         # Blocks that need to be swaped or copied before model execution.
         blocks_to_swap_in: Dict[int, int] = {}
         blocks_to_swap_out: Dict[int, int] = {}
@@ -575,6 +642,9 @@ class SpecDecodeScheduler:
         # Ignore the sequence groups that are too long.
         ignored_seq_groups: List[SequenceGroup] = []
 
+        # Keep track of the preempted sequence groups.
+        preempted_seq_groups: List[SequenceGroup] = []
+
         # Inlcude running requests to the budget.
         target_budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
@@ -583,12 +653,6 @@ class SpecDecodeScheduler:
         for seq_group in self.need_to_run_target_decode + self.need_to_run_draft_decode:
             target_budget.add_num_seqs(seq_group.request_id,
                                        seq_group.get_max_num_running_seqs())
-
-        # Draft decode scheduling
-        self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
-                                    blocks_to_swap_in,
-                                    blocks_to_swap_out,
-                                    blocks_to_copy)
 
         # Target prefill + decoding scheduling
         if not self.scheduler_config.chunk_prefill_enabled:
@@ -599,15 +663,33 @@ class SpecDecodeScheduler:
                     prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
 
             if target_budget.num_batched_tokens == 0:
-                self._schedule_target_decode(
-                    target_decode_scheduled_seq_groups, target_budget)
+                preempted = self._schedule_target_decode(
+                    target_decode_scheduled_seq_groups, target_budget,
+                    blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+                preempted_seq_groups.extend(preempted)
+
+                preempted = self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                                        blocks_to_swap_in,
+                                                        blocks_to_swap_out,
+                                                        blocks_to_copy)
+                preempted_seq_groups.extend(preempted)
 
         else:
-            # Schedule target prefill and decoding together
-            self._schedule_target_decode(
-                target_decode_scheduled_seq_groups, target_budget)
+            # Schedule target prefill, target decoding and draft decoding together
+            preempted = self._schedule_target_decode(
+                target_decode_scheduled_seq_groups, target_budget,
+                blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
+            preempted_seq_groups.extend(preempted)
             self._schedule_prefill(prefill_scheduled_seq_groups, ignored_seq_groups,
                                    target_budget)
+            preempted = self._schedule_draft_decode(draft_decode_scheduled_seq_groups,
+                                                    blocks_to_swap_in,
+                                                    blocks_to_swap_out,
+                                                    blocks_to_copy)
+            preempted_seq_groups.extend(preempted)
+
+        # print(target_budget)
+        # print(f"result token, {len(prefill_scheduled_seq_groups)}, {len(target_decode_scheduled_seq_groups)}, {len(draft_decode_scheduled_seq_groups)}, {target_budget.num_batched_tokens}")
 
         target_scheduler_outputs = SpecDecodeSchedulerOutputs(
             prefill_scheduled_seq_groups=prefill_scheduled_seq_groups,
@@ -617,6 +699,7 @@ class SpecDecodeScheduler:
             blocks_to_swap_out={},
             blocks_to_copy={},
             ignored_seq_groups=ignored_seq_groups,
+            preempted_seq_groups=preempted_seq_groups,
         )
         draft_scheduler_outputs = SpecDecodeSchedulerOutputs(
             prefill_scheduled_seq_groups=[],
@@ -626,6 +709,7 @@ class SpecDecodeScheduler:
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             ignored_seq_groups=[],
+            preempted_seq_groups=[],
         )
         return target_scheduler_outputs, draft_scheduler_outputs
 
@@ -648,16 +732,16 @@ class SpecDecodeScheduler:
         return (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
                 draft_decode_seq_group_metadata_list, scheduler_outputs)
 
-    @ nvtx_range("SpecDecodeScheduler::collocate_schedule")
-    def collocate_schedule(self) -> Tuple[List[SequenceGroupMetadata], List[SequenceGroupMetadata],
-                                          List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
+    @ nvtx_range("SpecDecodeScheduler::colocate_schedule")
+    def colocate_schedule(self) -> Tuple[List[SequenceGroupMetadata], List[SequenceGroupMetadata],
+                                         List[SequenceGroupMetadata], SpecDecodeSchedulerOutputs, SpecDecodeSchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.need_to_run_target_decode, self.need_to_run_draft_decode, self.swapped, and self.waiting.
         # Balance the draft and target queues
         # self._balance_target_draft_queues()
 
-        target_scheduler_outputs, draft_scheduler_outputs = self._collocate_schedule()
+        target_scheduler_outputs, draft_scheduler_outputs = self._colocate_schedule()
 
         prefill_seq_group_metadata_list = self._create_seq_group_metadata_list(
             target_scheduler_outputs.prefill_scheduled_seq_groups)
@@ -746,6 +830,12 @@ class SpecDecodeScheduler:
         blocks_to_swap_out: Dict[int, int],
         preemption_mode: Optional[PreemptionMode] = None,
     ) -> None:
+        # raise assertion error
+        # raise AssertionError(
+        #     "Preemption is not supported in the current version of the SpecDecodeScheduler.")
+        # print("preempting...")
+        self.preempt_flag = True
+
         # If preemption mode is not specified, we determine the mode as follows:
         # We use recomputation by default since it incurs lower overhead than
         # swapping. However, when the sequence group has multiple sequences

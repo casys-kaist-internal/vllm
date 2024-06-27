@@ -149,7 +149,7 @@ class AsyncSpecDecodeLLM:
         target_model: str,
         draft_model: str,
         draft_size: int,
-        collocate: bool = False,
+        colocate: bool = False,
         enable_chunked_prefill: bool = False,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
@@ -172,7 +172,7 @@ class AsyncSpecDecodeLLM:
             target_model=target_model,
             draft_model=draft_model,
             draft_size=draft_size,
-            collocate=collocate,
+            colocate=colocate,
             enable_chunked_prefill=enable_chunked_prefill,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
@@ -347,7 +347,7 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
                                          batch_size,
                                          max_output_len,
                                          force_output_len: bool,
-                                         print_tokens: bool = False):
+                                         print_tokens: bool = True):
     """Helper method that compares the outputs of both the baseline LLM and
     the test LLM. It asserts greedy equality, e.g. that the outputs are exactly
     the same when temperature is zero.

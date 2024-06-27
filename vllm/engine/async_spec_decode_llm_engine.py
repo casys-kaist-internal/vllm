@@ -229,7 +229,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
 
         return result
 
-    async def collocate_step(self) -> List[RequestOutput]:
+    async def colocate_step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
         This function performs one decoding iteration of the engine. It first
@@ -239,7 +239,7 @@ class _AsyncSpecDecodeLLMEngine(SpecDecodeLLMEngine):
         the sequences and returns the newly generated results.
         """
         (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
-         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
+         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.colocate_schedule()
 
         if target_scheduler_outputs.is_empty():
             target_result = self._process_model_outputs(

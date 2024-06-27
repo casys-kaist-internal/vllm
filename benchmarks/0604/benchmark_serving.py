@@ -17,14 +17,15 @@ from vllm.outputs import RequestOutput
 # (prompt len, output len, latency)
 REQUEST_LATENCY: List[Tuple[int, int, float]] = []
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
+<< << << < HEAD
+<< << << < HEAD
+== == == =
 DOWNLOAD_DIR = '/mnt/sda/download'
 
->>>>>>> 0.2.7
-=======
->>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
+>>>>>> > 0.2.7
+== == == =
+>>>>>> > d2cfb260cea73fe03489e3564ed33f92d1767df1
+
 
 def get_requests_with_time(
     input_requests: List[Tuple[str, int, int]],
@@ -107,7 +108,7 @@ def main(args: argparse.Namespace):
     table = [["target_model", args.target_model],
              ["draft_model", args.draft_model],
              ["draft_size", args.draft_size],
-             ["collocate", args.collocate],
+             ["colocate", args.colocate],
              ["chunked_prefill", args.chunked_prefill],
              ["dataset", args.dataset],
              ["input_len", args.input_len],
@@ -121,7 +122,7 @@ def main(args: argparse.Namespace):
         target_model=args.target_model,
         draft_model=args.draft_model,
         draft_size=args.draft_size,
-        collocate=args.collocate,
+        colocate=args.colocate,
         enable_chunked_prefill=args.chunked_prefill,
         tokenizer=args.tokenizer,
         quantization=args.quantization,
@@ -131,13 +132,13 @@ def main(args: argparse.Namespace):
         dtype=args.dtype,
         max_model_len=args.max_model_len,
         enforce_eager=args.enforce_eager,
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
+        << << << < HEAD
+        << << << < HEAD
+        == == == =
         download_dir=DOWNLOAD_DIR,
->>>>>>> 0.2.7
-=======
->>>>>>> d2cfb260cea73fe03489e3564ed33f92d1767df1
+        >>>>>> > 0.2.7
+        == == == =
+        >>>>>> > d2cfb260cea73fe03489e3564ed33f92d1767df1
     )
 
     def warmup():
@@ -210,7 +211,7 @@ if __name__ == "__main__":
                         default='facebook/opt-13b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=7)
-    parser.add_argument('--collocate',
+    parser.add_argument('--colocate',
                         '-c',
                         action='store_true')
     parser.add_argument('--chunked-prefill',

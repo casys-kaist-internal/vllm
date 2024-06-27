@@ -271,7 +271,7 @@ class SpecDecodeEngineArgs:
     target_model: str
     draft_model: str
     draft_size: int = 7
-    collocate: bool = False
+    colocate: bool = False
     enable_chunked_prefill: bool = False
     target_attention: bool = False
     disable_bonus_token: bool = False
@@ -327,10 +327,10 @@ class SpecDecodeEngineArgs:
                             type=int,
                             default=7,
                             help='draft size')
-        parser.add_argument('--collocate',
+        parser.add_argument('--colocate',
                             '-c',
                             action='store_true',
-                            help='collocate target and draft models')
+                            help='colocate target and draft models')
         parser.add_argument('--enable-chunked-prefill',
                             '-cp',
                             action='store_true',
@@ -528,7 +528,7 @@ class SpecDecodeEngineArgs:
                                            target_model_config.max_model_len,
                                            self.enable_chunked_prefill)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
-                                              self.collocate,
+                                              self.colocate,
                                               self.target_attention,
                                               self.disable_bonus_token)
 

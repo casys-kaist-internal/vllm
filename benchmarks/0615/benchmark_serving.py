@@ -195,7 +195,7 @@ def main(args: argparse.Namespace):
     table = [["target_model", args.target_model],
              ["draft_model", args.draft_model],
              ["draft_size", args.draft_size],
-             ["collocate", args.collocate],
+             ["colocate", args.colocate],
              ["chunked_prefill", args.chunked_prefill],
              ["dataset", args.dataset]]
 
@@ -205,7 +205,7 @@ def main(args: argparse.Namespace):
         target_model=args.target_model,
         draft_model=args.draft_model,
         draft_size=args.draft_size,
-        collocate=args.collocate,
+        colocate=args.colocate,
         enable_chunked_prefill=args.chunked_prefill,
         tokenizer=args.tokenizer,
         quantization=args.quantization,
@@ -301,7 +301,7 @@ if __name__ == "__main__":
                         default='facebook/opt-13b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=0)
-    parser.add_argument('--collocate',
+    parser.add_argument('--colocate',
                         '-c',
                         action='store_true')
     parser.add_argument('--chunked-prefill',

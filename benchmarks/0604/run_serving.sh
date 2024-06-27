@@ -4,7 +4,7 @@
 request_rates=(1 2)
 draft_sizes=(0 1)
 chunk_prefills=(false)
-collocates=(false)
+colocates=(false)
 datasets=("finance")
 
 # Path to the Python script
@@ -14,7 +14,7 @@ python_script="benchmark_serving.py"
 output_csv="benchmark_results.csv"
 
 # Write the header to the CSV file
-echo "dataset,request_rate,draft_size,chunk_prefill,collocate,p50_ttft,p99_ttft,p50_tpot,p99_tpot,p50_tpt,p99_tpt,throughput,latency" > $output_csv
+echo "dataset,request_rate,draft_size,chunk_prefill,colocate,p50_ttft,p99_ttft,p50_tpot,p99_tpot,p50_tpt,p99_tpt,throughput,latency" > $output_csv
 
 # Function to extract values from the benchmark output
 extract_values() {
@@ -29,7 +29,7 @@ extract_values() {
     latency=$(echo "$output" | awk -F', ' '/result/{print $9}')
 }
 
-total_runs=$(( ${#datasets[@]} * ${#request_rates[@]} * ${#draft_sizes[@]} * ${#chunk_prefills[@]} * ${#collocates[@]} ))
+total_runs=$(( ${#datasets[@]} * ${#request_rates[@]} * ${#draft_sizes[@]} * ${#chunk_prefills[@]} * ${#colocates[@]} ))
 current_run=0
 
 # Run the benchmark for each combination of parameters
@@ -43,23 +43,23 @@ for dataset in "${datasets[@]}"; do
                 fi
                 
                 if [ "$draft_size" -eq 0 ]; then
-                    collocate=false
+                    colocate=false
                     output=$(python $python_script --dataset $dataset --request-rate $request_rate --draft-size $draft_size $chunk_prefill_flag)
                     extract_values "$output"
-                    echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
-                    ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$throughput,$latency"
+                    echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$colocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
+                    ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$colocate,$throughput,$latency"
                     ((current_run++))
                     ./slack "[${current_run}/${total_runs}]"
                 else
-                    for collocate in "${collocates[@]}"; do
-                        collocate_flag=""
-                        if [ "$collocate" = "true" ]; then
-                            collocate_flag="--collocate"
+                    for colocate in "${colocates[@]}"; do
+                        colocate_flag=""
+                        if [ "$colocate" = "true" ]; then
+                            colocate_flag="--colocate"
                         fi
-                        output=$(python $python_script --dataset $dataset --request-rate $request_rate --draft-size $draft_size $chunk_prefill_flag $collocate_flag)
+                        output=$(python $python_script --dataset $dataset --request-rate $request_rate --draft-size $draft_size $chunk_prefill_flag $colocate_flag)
                         extract_values "$output"
-                        echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
-                        ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$collocate,$throughput,$latency"
+                        echo "$dataset,$request_rate,$draft_size,$chunk_prefill,$colocate,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_tpt,$p99_tpt,$throughput,$latency" >> $output_csv
+                        ./slack "$dataset,$request_rate,$draft_size,$chunk_prefill,$colocate,$throughput,$latency"
                         ((current_run++))
                         ./slack "[${current_run}/${total_runs}]"
                     done

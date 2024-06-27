@@ -18,7 +18,7 @@ from vllm.outputs import RequestOutput
 
 
 DOWNLOAD_DIR = '/mnt/sda/download'
-BENCHMARK_DURATION_IN_MINUTES = 0.5
+BENCHMARK_DURATION_IN_MINUTES = 5
 
 
 def get_requests_with_time(
@@ -32,9 +32,6 @@ def get_requests_with_time(
     for request in cycle(input_requests):
         requests_with_time.append((current_time, request))
 
-        if request_rate == float("inf"):
-            # If the request rate is infinity, then all requests are sent at time 0.
-            continue
         # Sample the request interval from the exponential distribution.
         interval = np.random.exponential(1.0 / request_rate)
         # Accumulate the interval to get the next request time.
@@ -199,7 +196,7 @@ def main(args: argparse.Namespace):
     table = [["target_model", args.target_model],
              ["draft_model", args.draft_model],
              ["draft_size", args.draft_size],
-             ["collocate", args.collocate],
+             ["colocate", args.colocate],
              ["chunked_prefill", args.chunked_prefill],
              ["target_attention", args.target_attention],
              ["dataset", args.dataset]]
@@ -210,7 +207,7 @@ def main(args: argparse.Namespace):
         target_model=args.target_model,
         draft_model=args.draft_model,
         draft_size=args.draft_size,
-        collocate=args.collocate,
+        colocate=args.colocate,
         enable_chunked_prefill=args.chunked_prefill,
         target_attention=args.target_attention,
         tokenizer=args.tokenizer,
@@ -309,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=0)
     parser.add_argument('--temperature', type=float, default=0.0)
-    parser.add_argument('--collocate',
+    parser.add_argument('--colocate',
                         '-c',
                         action='store_true')
     parser.add_argument('--chunked-prefill',
@@ -361,10 +358,9 @@ if __name__ == "__main__":
                         help="enforce eager execution")
     parser.add_argument("--request-rate",
                         type=float,
-                        default=float("inf"),
-                        help="Number of requests per second. If this is inf, "
-                        "then all the requests are sent at time 0. "
-                        "Otherwise, we use Poisson process to synthesize "
+                        default=4,
+                        help="Number of requests per second."
+                        "we use Poisson process to synthesize "
                         "the request arrival times.")
     args = parser.parse_args()
     if args.tokenizer is None:

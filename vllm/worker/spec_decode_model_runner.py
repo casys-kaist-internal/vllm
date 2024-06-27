@@ -8,6 +8,8 @@ import torch.nn as nn
 from vllm.config import ModelConfig, ParallelConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.logger import init_logger
 from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
+from vllm.model_executor.sampling_metadata import SamplingTensors
+
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata, SpecDecodeStage
 from vllm.utils import in_wsl, nvtx_range
@@ -331,19 +333,6 @@ class SpecDecodeModelRunner:
                 block_tables.append([])
             batch_size = graph_batch_size
 
-        # input_tokens = torch.tensor(input_tokens,
-        #                             dtype=torch.long,
-        #                             device="cuda")
-        # input_positions = torch.tensor(input_positions,
-        #                                dtype=torch.long,
-        #                                device="cuda")
-        # slot_mapping = torch.tensor(slot_mapping,
-        #                             dtype=torch.long,
-        #                             device="cuda")
-        # context_lens = torch.tensor(context_lens,
-        #                             dtype=torch.int,
-        #                             device="cuda")
-
         input_tokens = _async_h2d(
             input_tokens, dtype=torch.long, pin_memory=True)
         input_positions = _async_h2d(
@@ -401,6 +390,7 @@ class SpecDecodeModelRunner:
         categorized_sample_indices_start_idx = 0
         sampled_draft_token_ids: List[List[int]] = []
         target_modify_greedy_indices: List[int] = []
+        target_modify_greedy_start_idx = 0
 
         max_prompt_len = max(prompt_lens) if prompt_lens else 1
         prefill_idx = 0
@@ -458,10 +448,11 @@ class SpecDecodeModelRunner:
 
                 if sampling_params.sampling_type == SamplingType.GREEDY:
                     target_modify_greedy_indices.extend(
-                        range(selected_token_start_idx,
-                              selected_token_start_idx + target_len))
+                        range(target_modify_greedy_start_idx,
+                              target_modify_greedy_start_idx + target_len))
 
                 selected_token_start_idx += target_len
+                target_modify_greedy_start_idx += target_len
 
                 # categorized_sample_indices[sampling_params.sampling_type].extend(
                 categorized_sample_indices[sampling_params.sampling_type].extend(
@@ -499,7 +490,7 @@ class SpecDecodeModelRunner:
                                                                 target_lens) - 1,
                                                             pad=0,
                                                             dtype=torch.long)
-            sampled_draft_token_ids.to(device="cuda", non_blocking=True)
+
         else:
             sampled_draft_token_ids = None
             draft_probs_tensor = None
@@ -541,23 +532,25 @@ class SpecDecodeModelRunner:
                                                  prefill_lens, [], target_lens, draft_probs_tensor)
 
         # Combine prefill and target input tokens, input_positions, slot_mappings.
-        input_tokens = torch.tensor(
-            prefill_input_tokens + target_input_tokens, dtype=torch.long, device="cuda")
-        input_positions = torch.tensor(
-            prefill_input_positions + target_input_positions, dtype=torch.long, device="cuda")
-
-        slot_mapping = torch.tensor(
-            prefill_slot_mapping + target_slot_mapping, dtype=torch.long, device="cuda")
+        input_tokens = _async_h2d(
+            prefill_input_tokens + target_input_tokens,
+            dtype=torch.long, pin_memory=True)
+        input_positions = _async_h2d(
+            prefill_input_positions + target_input_positions,
+            dtype=torch.long, pin_memory=True)
+        slot_mapping = _async_h2d(
+            prefill_slot_mapping + target_slot_mapping,
+            dtype=torch.long, pin_memory=True)
 
         num_prefill_tokens = sum(prefill_lens)
         num_decode_tokens = sum(target_lens)
 
-        target_lens = torch.tensor(
-            target_lens, dtype=torch.int, device="cuda")
+        target_lens = _async_h2d(
+            target_lens, dtype=torch.int, pin_memory=True)
 
         if target_decode_seq_group_metadata_list:
-            context_lens = torch.tensor(
-                target_context_lens, dtype=torch.int, device="cuda")
+            context_lens = _async_h2d(
+                target_context_lens, dtype=torch.int, pin_memory=True)
             max_block_table_len = max([len(t) for t in target_block_tables])
             block_tables = _make_tensor_with_pad(
                 target_block_tables,
@@ -647,8 +640,9 @@ class SpecDecodeModelRunner:
         # Sample the next token.
         output = self.model.sample(
             hidden_states=hidden_states,
-            sampling_metadata=sampling_metadata,
+            sampling_metadata=sampling_metadata
         )
+
         return output
 
     @ torch.inference_mode()
