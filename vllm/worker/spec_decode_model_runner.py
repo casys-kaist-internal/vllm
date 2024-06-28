@@ -68,7 +68,9 @@ class SpecDecodeModelRunner:
     def set_block_size(self, block_size: int) -> None:
         self.block_size = block_size
 
-        max_num_blocks = (self.max_context_len_to_capture + block_size -
+        # Add draft size to max_context_len_to_capture because the end condition is checked
+        # on the target decode stage so draft decode stage can over run the max_context_len_to_capture
+        max_num_blocks = (self.max_context_len_to_capture + self.spec_decode_config.draft_size + block_size -
                           1) // block_size
         self.graph_block_tables = np.zeros(
             (max(_BATCH_SIZES_TO_CAPTURE), max_num_blocks), dtype=np.int32)

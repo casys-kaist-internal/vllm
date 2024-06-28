@@ -387,7 +387,6 @@ class SchedulerConfig:
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
         self.chunk_prefill_enabled = enable_chunked_prefill
-        self.balance_threshold = 20  # 20%
         self._verify_args()
 
     def _verify_args(self) -> None:

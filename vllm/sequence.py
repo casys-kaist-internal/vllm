@@ -502,7 +502,7 @@ class SequenceGroupMetadata:
         seq_data: OrderedDict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
-        token_chunk_size: int,
+        token_chunk_size: Optional[int] = 0,
         spec_decode_stage: Optional[SpecDecodeStage] = None,
         draft_size: Optional[int] = 0,
     ) -> None:

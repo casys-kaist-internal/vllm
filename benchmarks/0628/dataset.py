@@ -171,7 +171,7 @@ def sample_requests(dataset_name: str,
 
 
 def plot_length_distribution(name, data):
-    prompt_lengths = [len(prompt) for prompt, _, _ in data]
+    prompt_lengths = [prompt_len for _, prompt_len, _ in data]
     output_lengths = [output_len for _, _, output_len in data]
 
     fig, ax = plt.subplots(1, 2, figsize=(14, 6))

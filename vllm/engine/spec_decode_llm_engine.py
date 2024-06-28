@@ -95,6 +95,7 @@ class SpecDecodeLLMEngine:
         self.scheduler_config = scheduler_config
         self.spec_decode_config = spec_decode_config
         self.log_stats = log_stats
+        self.only_target = (spec_decode_config.draft_size == 0)
         self._verify_args()
 
         self.tokenizer = get_tokenizer(
@@ -106,7 +107,8 @@ class SpecDecodeLLMEngine:
         self.seq_counter = Counter()
 
         self.worker_executor = WorkerExecutor(
-            target_model_config, draft_model_config, parallel_config, scheduler_config, spec_decode_config
+            target_model_config, draft_model_config,
+            parallel_config, scheduler_config, spec_decode_config
         )
 
         # Draft_probs that should be sent to target worker when target decode
@@ -116,7 +118,10 @@ class SpecDecodeLLMEngine:
             target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
-        self._init_cache()
+        if self.only_target:
+            self._init_cache_target_only()
+        else:
+            self._init_cache()
 
         # Create the scheduler.
         self.scheduler = SpecDecodeScheduler(
@@ -190,6 +195,55 @@ class SpecDecodeLLMEngine:
         # Warm up the model. This includes capturing the model into CUDA graph
         # if enforce_eager is False.
         self.worker_executor.run_draft_worker_sync("warm_up_model")
+        self.worker_executor.run_target_worker_sync("warm_up_model")
+
+    def _init_cache_target_only(self) -> None:
+        """Profiles the memory usage and initializes the KV cache."""
+        # Get the maximum number of blocks that can be allocated on GPU and CPU.
+        torch.cuda.empty_cache()
+        target_cache_block_size = self.worker_executor.run_target_worker_sync(
+            "profile_consumed_memory",
+            block_size=self.cache_config.block_size,
+        )
+        torch.cuda.synchronize()
+
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        peak_memory = total_gpu_memory - free_gpu_memory
+        cache_block_size = target_cache_block_size
+        num_gpu_blocks = int(
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization - peak_memory) //
+            cache_block_size)
+        num_cpu_blocks = int(
+            self.cache_config.swap_space_bytes // cache_block_size)
+        num_gpu_blocks = max(num_gpu_blocks, 0)
+        num_cpu_blocks = max(num_cpu_blocks, 0)
+        torch.cuda.empty_cache()
+
+        # FIXME(woosuk): Change to debug log.
+        logger.info(f"# GPU blocks: {num_gpu_blocks}, "
+                    f"# CPU blocks: {num_cpu_blocks}")
+
+        if num_gpu_blocks <= 0:
+            raise ValueError("No available memory for the cache blocks. "
+                             "Try increasing `gpu_memory_utilization` when "
+                             "initializing the engine.")
+        max_seq_len = self.cache_config.block_size * num_gpu_blocks
+        if self.target_model_config.max_model_len > max_seq_len:
+            raise ValueError(
+                f"The model's max seq len ({self.target_model_config.max_model_len}) "
+                "is larger than the maximum number of tokens that can be "
+                f"stored in KV cache ({max_seq_len}). Try increasing "
+                "`gpu_memory_utilization` or decreasing `max_model_len` when "
+                "initializing the engine.")
+
+        self.cache_config.num_gpu_blocks = num_gpu_blocks
+        self.cache_config.num_cpu_blocks = num_cpu_blocks
+
+        # Initialize the cache.
+        self.worker_executor.run_target_worker_sync("init_cache_engine",
+                                                    cache_config=self.cache_config)
+        # Warm up the model. This includes capturing the model into CUDA graph
+        # if enforce_eager is False.
         self.worker_executor.run_target_worker_sync("warm_up_model")
 
     @ classmethod
@@ -559,7 +613,8 @@ class SpecDecodeLLMEngine:
 
         if target_scheduler_outputs.preempted_seq_groups:
             for seq_group in target_scheduler_outputs.preempted_seq_groups:
-                seq_id = list(seq_group.seq_data.keys())[0]
+                seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+                seq_id = seq.seq_id
 
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
