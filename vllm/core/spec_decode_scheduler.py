@@ -417,8 +417,10 @@ class SpecDecodeScheduler:
                 self.waiting.pop(0)
                 continue
 
-            if not budget.can_schedule(num_new_tokens=num_new_tokens,
-                                       num_new_seqs=1):
+            if (num_new_tokens == 0
+                    or not budget.can_schedule(
+                        num_new_tokens=num_new_tokens,
+                        num_new_seqs=1)):
                 break
 
             # Can schedule this request
