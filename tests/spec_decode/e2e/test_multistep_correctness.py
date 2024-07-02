@@ -52,17 +52,17 @@ from .conftest import (get_output_from_llm_generator,
         "model": "facebook/opt-125m",
     }])
 @pytest.mark.parametrize("test_llm_kwargs",
-    [{
-        # Use a small model for a fast test.
-        # Note this is repeated in the test body; to initialize a tokenizer.
-        "target_model": "facebook/opt-125m",
-        "draft_model": "facebook/opt-125m",
-        "draft_size": 5,
-    },
-    {
-        # Verify the detokenizer assertions in the test work when spec
-        # decode is disabled.
-    }])
+                         [{
+                             # Use a small model for a fast test.
+                             # Note this is repeated in the test body; to initialize a tokenizer.
+                             "target_model": "facebook/opt-125m",
+                             "draft_model": "facebook/opt-125m",
+                             "draft_size": 5,
+                         },
+                             {
+                             # Verify the detokenizer assertions in the test work when spec
+                             # decode is disabled.
+                         }])
 @pytest.mark.parametrize("batch_size", [1, 32])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_e2e_with_detokenization(test_llm_generator,
@@ -149,10 +149,10 @@ def test_spec_decode_e2e_with_async_engine(test_llm_generator,
 @pytest.mark.parametrize(
     "common_llm_kwargs",
     [{
-            # Skip cuda graph recording for fast test.
-            "enforce_eager": True,
-            # Print spec metrics.
-            "disable_log_stats": False,
+        # Skip cuda graph recording for fast test.
+        "enforce_eager": True,
+        # Print spec metrics.
+        "disable_log_stats": False,
     }])
 @pytest.mark.parametrize("per_test_common_llm_kwargs", [{}])
 @pytest.mark.parametrize(
@@ -181,7 +181,7 @@ def test_spec_decode_e2e_with_async_engine(test_llm_generator,
             "draft_model": "facebook/opt-125m",
             "draft_size": 5,
         },
-])
+    ])
 @pytest.mark.parametrize(
     "output_len",
     [
