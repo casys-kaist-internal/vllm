@@ -404,7 +404,6 @@ class AsyncSpecDecodeLLMEngine:
         else:
             request_outputs = await self.engine.step_async()
 
-        # print(request_outputs)
         # Put the outputs into the corresponding streams.
         for request_output in request_outputs:
             self._request_tracker.process_request_output(

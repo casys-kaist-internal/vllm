@@ -17,16 +17,17 @@ from .conftest import run_greedy_equality_correctness_test
 @pytest.mark.parametrize(
     "baseline_llm_kwargs",
     [{
-        "model": "facebook/opt-6.7b",
+        "model": "facebook/opt-13b",
     }])
 @pytest.mark.parametrize("test_llm_kwargs",
-    [{
-        "target_model": "facebook/opt-6.7b",
-        "draft_model": "facebook/opt-125m",
-        "draft_size": 5,
-    }])
+                         [{
+                             "target_model": "facebook/opt-13b",
+                             "draft_model": "facebook/opt-125m",
+                             "draft_size": 5,
+                             "disable_bonus_token": False
+                         }])
 @pytest.mark.parametrize("batch_size", [8])
-@pytest.mark.parametrize("output_len", [32])
+@pytest.mark.parametrize("output_len", [128])
 @pytest.mark.parametrize("seed", [1])
 def test_spec_decode_cuda_graph(baseline_llm_generator, test_llm_generator,
                                 batch_size, output_len):

@@ -142,6 +142,7 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            prefill_lens=prompt_lens,
             block_tables=None,
             use_cuda_graph=False,
         )
@@ -150,13 +151,14 @@ class ModelRunner:
     def _prepare_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, List[int]]:
         assert len(seq_group_metadata_list) > 0
         input_tokens: List[List[int]] = []
         input_positions: List[List[int]] = []
         slot_mapping: List[List[int]] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
+        target_lens: List[int] = []
 
         for seq_group_metadata in seq_group_metadata_list:
             assert not seq_group_metadata.is_prompt
@@ -166,6 +168,7 @@ class ModelRunner:
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 generation_token = seq_data.get_last_token_id()
                 input_tokens.extend([generation_token])
+                target_lens.append(1)
 
                 seq_len = seq_data.get_len()
                 position = seq_len - 1
@@ -242,15 +245,17 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            prefill_lens=[],
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
         )
-        return input_tokens, input_positions, input_metadata
+        return input_tokens, input_positions, input_metadata, target_lens
 
     def _prepare_sample(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         prompt_lens: List[int],
+        target_lens: List[int]
     ) -> SamplingMetadata:
         seq_groups: List[Tuple[List[int], SamplingParams]] = []
         selected_token_indices: List[int] = []
@@ -258,7 +263,7 @@ class ModelRunner:
         categorized_sample_indices = {t: [] for t in SamplingType}
         categorized_sample_indices_start_idx = 0
 
-        max_prompt_len = max(prompt_lens) if prompt_lens else 1
+        # max_prompt_len = max(prompt_lens) if prompt_lens else 1
         for i, seq_group_metadata in enumerate(seq_group_metadata_list):
             seq_ids = list(seq_group_metadata.seq_data.keys())
             sampling_params = seq_group_metadata.sampling_params
@@ -282,7 +287,7 @@ class ModelRunner:
                               selected_token_start_idx + prompt_len - 1))
                 selected_token_indices.append(selected_token_start_idx +
                                               prompt_len - 1)
-                selected_token_start_idx += max_prompt_len
+                selected_token_start_idx += prompt_len
             else:
                 num_seqs = len(seq_ids)
                 selected_token_indices.extend(
@@ -312,7 +317,8 @@ class ModelRunner:
             seq_groups=seq_groups,
             seq_data=seq_data,
             draft_lens=[],    # TODO(noppanat): fix this
-            target_lens=[],   # TODO(noppanat): fix this
+            # TODO(noppanat): fix this
+            target_lens=target_lens,
             prompt_lens=prompt_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
@@ -331,12 +337,13 @@ class ModelRunner:
             if is_prompt:
                 (input_tokens, input_positions, input_metadata,
                  prompt_lens) = self._prepare_prompt(seq_group_metadata_list)
+                target_lens = []
             else:
-                (input_tokens, input_positions, input_metadata
-                 ) = self._prepare_decode(seq_group_metadata_list)
+                (input_tokens, input_positions, input_metadata,
+                 target_lens) = self._prepare_decode(seq_group_metadata_list)
                 prompt_lens = []
             sampling_metadata = self._prepare_sample(seq_group_metadata_list,
-                                                     prompt_lens)
+                                                     prompt_lens, target_lens)
 
             def get_size_or_none(x: Optional[torch.Tensor]):
                 return x.size() if x is not None else None
@@ -425,6 +432,7 @@ class ModelRunner:
                 num_decode_tokens=py_data["num_decode_tokens"],
                 slot_mapping=slot_mapping,
                 max_context_len=py_data["max_context_len"],
+                prefill_len=py_data["prefill_len"],
                 context_lens=context_lens,
                 block_tables=block_tables,
                 use_cuda_graph=py_data["use_cuda_graph"],
@@ -534,6 +542,7 @@ class ModelRunner:
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
+                prefill_lens=[],
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
             )

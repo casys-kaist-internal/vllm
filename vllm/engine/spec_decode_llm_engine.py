@@ -112,7 +112,8 @@ class SpecDecodeLLMEngine:
         # Draft_probs that should be sent to target worker when target decode
         self.draft_probs_dict = defaultdict(list)
         self.draft_probs_tensor = torch.zeros(
-            self.scheduler_config.max_num_seqs * 7, target_model_config.get_vocab_size(), device='cuda').share_memory_()
+            self.scheduler_config.max_num_seqs * 7,
+            target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
@@ -362,19 +363,30 @@ class SpecDecodeLLMEngine:
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
             self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
+            num_tokens_to_log_system_stats += sample.accept_cnt
+            check_stop_cnt = sample.accept_cnt
 
             # modified_rejection token for not all accept case and bonus token for all accept case
-            seq.append_token_id(sample.output_token, sample.logprobs)
-            seq.update_num_computed_target_tokens(1)
+            if self.spec_decode_config.disable_bonus_token:
+                if seq.draft_size != sample.accept_cnt:
+                    seq.append_token_id(sample.output_token, sample.logprobs)
+                    num_tokens_to_log_system_stats += 1
+                    check_stop_cnt += 1
+                    seq.update_num_computed_target_tokens(1)
+                    seq.update_num_computed_draft_tokens(1)
 
-            # If all accept, the bonus token don't have draft kv cache yet.
-            # So only update num_computed_draft_tokens if not all accept
-            if seq.draft_size != sample.accept_cnt:
-                seq.update_num_computed_draft_tokens(1)
+            else:
+                seq.append_token_id(sample.output_token, sample.logprobs)
+                seq.update_num_computed_target_tokens(1)
+                num_tokens_to_log_system_stats += 1
+                check_stop_cnt += 1
 
-            check_stop_cnt = (sample.accept_cnt + 1)
+                # If all accept, the bonus token don't have draft kv cache yet.
+                # So only update num_computed_draft_tokens if not all accept
+                if seq.draft_size != sample.accept_cnt:
+                    seq.update_num_computed_draft_tokens(1)
+
             self.draft_probs_dict[seq.seq_id].clear()
-            num_tokens_to_log_system_stats += (sample.accept_cnt + 1)
 
         else:
             raise ValueError(
