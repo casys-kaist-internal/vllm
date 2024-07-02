@@ -1,9 +1,9 @@
-Namespace(dataset='dummy', input_len=2, output_len=4, target_model='facebook/opt-125m', draft_model='facebook/opt-125m', draft_size=2, collocate=False, chunked_prefill=False, tokenizer='facebook/opt-125m', quantization=None, tensor_parallel_size=1, n=1, use_beam_search=False, num_prompts=2, seed=0, hf_max_batch_size=None, trust_remote_code=False, max_model_len=None, dtype='auto', enforce_eager=True)
+Namespace(dataset='dummy', input_len=2, output_len=4, target_model='facebook/opt-125m', draft_model='facebook/opt-125m', draft_size=2, colocate=False, chunked_prefill=False, tokenizer='facebook/opt-125m', quantization=None, tensor_parallel_size=1, n=1, use_beam_search=False, num_prompts=2, seed=0, hf_max_batch_size=None, trust_remote_code=False, max_model_len=None, dtype='auto', enforce_eager=True)
 ---------------  -----------------
 target_model     facebook/opt-125m
 draft_model      facebook/opt-125m
 draft_size       2
-collocate        False
+colocate        False
 chunked_prefill  False
 dataset          dummy
 input_len        2

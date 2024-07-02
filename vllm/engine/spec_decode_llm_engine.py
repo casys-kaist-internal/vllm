@@ -95,6 +95,7 @@ class SpecDecodeLLMEngine:
         self.scheduler_config = scheduler_config
         self.spec_decode_config = spec_decode_config
         self.log_stats = log_stats
+        self.only_target = (spec_decode_config.draft_size == 0)
         self._verify_args()
 
         self.tokenizer = get_tokenizer(
@@ -106,7 +107,8 @@ class SpecDecodeLLMEngine:
         self.seq_counter = Counter()
 
         self.worker_executor = WorkerExecutor(
-            target_model_config, draft_model_config, parallel_config, scheduler_config, spec_decode_config
+            target_model_config, draft_model_config,
+            parallel_config, scheduler_config, spec_decode_config
         )
 
         # Draft_probs that should be sent to target worker when target decode
@@ -116,7 +118,10 @@ class SpecDecodeLLMEngine:
             target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
-        self._init_cache()
+        if self.only_target:
+            self._init_cache_target_only()
+        else:
+            self._init_cache()
 
         # Create the scheduler.
         self.scheduler = SpecDecodeScheduler(
@@ -192,6 +197,55 @@ class SpecDecodeLLMEngine:
         self.worker_executor.run_draft_worker_sync("warm_up_model")
         self.worker_executor.run_target_worker_sync("warm_up_model")
 
+    def _init_cache_target_only(self) -> None:
+        """Profiles the memory usage and initializes the KV cache."""
+        # Get the maximum number of blocks that can be allocated on GPU and CPU.
+        torch.cuda.empty_cache()
+        target_cache_block_size = self.worker_executor.run_target_worker_sync(
+            "profile_consumed_memory",
+            block_size=self.cache_config.block_size,
+        )
+        torch.cuda.synchronize()
+
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        peak_memory = total_gpu_memory - free_gpu_memory
+        cache_block_size = target_cache_block_size
+        num_gpu_blocks = int(
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization - peak_memory) //
+            cache_block_size)
+        num_cpu_blocks = int(
+            self.cache_config.swap_space_bytes // cache_block_size)
+        num_gpu_blocks = max(num_gpu_blocks, 0)
+        num_cpu_blocks = max(num_cpu_blocks, 0)
+        torch.cuda.empty_cache()
+
+        # FIXME(woosuk): Change to debug log.
+        logger.info(f"# GPU blocks: {num_gpu_blocks}, "
+                    f"# CPU blocks: {num_cpu_blocks}")
+
+        if num_gpu_blocks <= 0:
+            raise ValueError("No available memory for the cache blocks. "
+                             "Try increasing `gpu_memory_utilization` when "
+                             "initializing the engine.")
+        max_seq_len = self.cache_config.block_size * num_gpu_blocks
+        if self.target_model_config.max_model_len > max_seq_len:
+            raise ValueError(
+                f"The model's max seq len ({self.target_model_config.max_model_len}) "
+                "is larger than the maximum number of tokens that can be "
+                f"stored in KV cache ({max_seq_len}). Try increasing "
+                "`gpu_memory_utilization` or decreasing `max_model_len` when "
+                "initializing the engine.")
+
+        self.cache_config.num_gpu_blocks = num_gpu_blocks
+        self.cache_config.num_cpu_blocks = num_cpu_blocks
+
+        # Initialize the cache.
+        self.worker_executor.run_target_worker_sync("init_cache_engine",
+                                                    cache_config=self.cache_config)
+        # Warm up the model. This includes capturing the model into CUDA graph
+        # if enforce_eager is False.
+        self.worker_executor.run_target_worker_sync("warm_up_model")
+
     @ classmethod
     def from_engine_args(cls, engine_args: SpecDecodeEngineArgs) -> "SpecDecodeLLMEngine":
         """Creates an LLM engine from the engine arguments."""
@@ -256,6 +310,10 @@ class SpecDecodeLLMEngine:
             request_id: The ID(s) of the request to abort.
         """
         self.scheduler.abort_seq_group(request_id)
+
+    def abort_all_requests(self) -> None:
+        """Aborts all requests."""
+        self.scheduler.abort_all_seq_groups()
 
     def get_target_model_config(self) -> ModelConfig:
         """Gets the model configuration."""
@@ -361,6 +419,7 @@ class SpecDecodeLLMEngine:
             scheduled_seq_group.token_chunk_size = 1
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+            # print("accept: ", sample.accept_cnt)
             free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
             self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
             num_tokens_to_log_system_stats += sample.accept_cnt
@@ -434,7 +493,7 @@ class SpecDecodeLLMEngine:
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for scheduled_seq_group in (scheduled_seq_groups +
+        for scheduled_seq_group in (prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups +
                                     scheduler_outputs.ignored_seq_groups):
             request_output = RequestOutput.from_seq_group(
                 scheduled_seq_group.seq_group)
@@ -481,6 +540,18 @@ class SpecDecodeLLMEngine:
         (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
          draft_decode_seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule()
 
+        if scheduler_outputs.preempted_seq_groups:
+            for seq_group in scheduler_outputs.preempted_seq_groups:
+                seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+                seq_id = seq.seq_id
+
+                if seq_id in self.draft_probs_dict:
+                    del self.draft_probs_dict[seq_id]
+
+        # print("prefill: ", len(prefill_seq_group_metadata_list))
+        # print("target: ", len(target_decode_seq_group_metadata_list))
+        # print("draft: ", len(draft_decode_seq_group_metadata_list))
+
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs)
 
@@ -521,13 +592,13 @@ class SpecDecodeLLMEngine:
 
                 result = self._process_model_outputs(output, scheduler_outputs)
 
-        self.scheduler.swap_target_draft_queues(scheduler_outputs)
         self.scheduler.free_finished_seq_groups()
+        self.scheduler.swap_target_draft_queues(scheduler_outputs)
 
         return result
 
-    @ nvtx_range("collocate_step")
-    def collocate_step(self) -> List[RequestOutput]:
+    @ nvtx_range("colocate_step")
+    def colocate_step(self) -> List[RequestOutput]:
         """Performs one decoding iteration and returns newly generated results.
 
         This function performs one decoding iteration of the engine. It first
@@ -537,7 +608,20 @@ class SpecDecodeLLMEngine:
         the sequences and returns the newly generated results.
         """
         (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
-         draft_decode_seq_group_metadata_list, target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.collocate_schedule()
+         draft_decode_seq_group_metadata_list, target_scheduler_outputs,
+         draft_scheduler_outputs) = self.scheduler.colocate_schedule()
+
+        if target_scheduler_outputs.preempted_seq_groups:
+            for seq_group in target_scheduler_outputs.preempted_seq_groups:
+                seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+                seq_id = seq.seq_id
+
+                if seq_id in self.draft_probs_dict:
+                    del self.draft_probs_dict[seq_id]
+
+        # print("prefill: ", len(prefill_seq_group_metadata_list))
+        # print("target: ", len(target_decode_seq_group_metadata_list))
+        # print("draft: ", len(draft_decode_seq_group_metadata_list))
 
         if target_scheduler_outputs.is_empty():
             target_result = self._process_model_outputs(
@@ -593,8 +677,8 @@ class SpecDecodeLLMEngine:
 
     @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
-        if self.spec_decode_config.collocate:
-            return self.collocate_step()
+        if self.spec_decode_config.colocate:
+            return self.colocate_step()
         else:
             return self.default_step()
 

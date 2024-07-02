@@ -83,6 +83,9 @@ class Scheduler:
         # Sequence groups in the SWAPPED state.
         self.swapped: List[SequenceGroup] = []
 
+        # Flag to check whether any seq is preempted.
+        self.preempt_flag = False
+
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
@@ -107,6 +110,14 @@ class Scheduler:
                     request_ids.remove(seq_group.request_id)
                     if not request_ids:
                         return
+
+    def abort_all_seq_groups(self) -> None:
+        self.abort_seq_group(
+            [
+                seq_group.request_id
+                for seq_group in self.waiting + self.running + self.swapped
+            ]
+        )
 
     def has_unfinished_seqs(self) -> bool:
         return self.waiting or self.running or self.swapped
@@ -343,6 +354,8 @@ class Scheduler:
         blocks_to_swap_out: Dict[int, int],
         preemption_mode: Optional[PreemptionMode] = None,
     ) -> None:
+        self.preempt_flag = True
+
         # If preemption mode is not specified, we determine the mode as follows:
         # We use recomputation by default since it incurs lower overhead than
         # swapping. However, when the sequence group has multiple sequences

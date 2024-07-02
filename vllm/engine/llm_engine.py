@@ -123,6 +123,8 @@ class LLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
+        self.total_tokens = 0
+
     def _init_workers(self):
         # Lazy import the Worker to avoid importing torch.cuda/xformers
         # before CUDA_VISIBLE_DEVICES is set in the Worker
@@ -360,6 +362,10 @@ class LLMEngine:
             request_id: The ID(s) of the request to abort.
         """
         self.scheduler.abort_seq_group(request_id)
+
+    def abort_all_requests(self) -> None:
+        """Aborts all requests."""
+        self.scheduler.abort_all_seq_groups()
 
     def get_model_config(self) -> ModelConfig:
         """Gets the model configuration."""
@@ -606,6 +612,8 @@ class LLMEngine:
             request_output = RequestOutput.from_seq_group(seq_group)
             request_outputs.append(request_output)
 
+        self.total_tokens += scheduler_outputs.num_batched_tokens
+
         if self.log_stats:
             # Log the system stats.
             self._log_system_stats(scheduler_outputs.prompt_run,
@@ -802,3 +810,9 @@ class LLMEngine:
             ray_worker_outputs = ray.get(ray_worker_outputs)
 
         return [driver_worker_output] + ray_worker_outputs
+
+    def reset_total_tokens(self) -> None:
+        self.total_tokens = 0
+
+    def get_total_tokens(self) -> int:
+        return self.total_tokens

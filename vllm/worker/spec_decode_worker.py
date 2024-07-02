@@ -45,7 +45,7 @@ class SpecDecodeWorker:
         self.rank = rank
         self.distributed_init_method = distributed_init_method
         self.model_runner = SpecDecodeModelRunner(model_config, parallel_config,
-                                                  scheduler_config, is_target)
+                                                  scheduler_config, spec_decode_config, is_target)
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
         self.cache_config = None

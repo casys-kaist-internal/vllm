@@ -17,6 +17,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &paged_attention_v2,
     "PagedAttention V2.");
 
+  ops.def(
+    "paged_attention_v2_target",
+    &paged_attention_v2_target,
+    "PagedAttention V2 optimized for multi-query attention");
   // Activation ops
   ops.def(
     "silu_and_mul",

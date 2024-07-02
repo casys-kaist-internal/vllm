@@ -6,11 +6,13 @@ import torch.nn as nn
 
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_gather)
-from vllm.model_executor.sampling_metadata import SamplingMetadata, SamplingTensors
+from vllm.model_executor.sampling_metadata import SamplingMetadata, SamplingTensors, MinimizedSamplingTensors
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import (PromptLogprobs, SampleLogprobs, SamplerOutput,
                            SequenceData, SequenceGroupOutput, SequenceOutput, SpecDecodeStage)
 from vllm.utils import nvtx_range
+
+MINIMIZED_SAMPLE = False
 
 
 class Sampler(nn.Module):
@@ -40,76 +42,136 @@ class Sampler(nn.Module):
         sampling_metadata: SamplingMetadata,
         embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
-        # Get the hidden states that we use for sampling.
-        hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
 
-        # Get the logits for the next tokens.
-        logits = _get_logits(hidden_states, embedding, embedding_bias,
-                             self.vocab_size)
+        if not MINIMIZED_SAMPLE:
+            # Get the hidden states that we use for sampling.
+            hidden_states = _prune_hidden_states(
+                hidden_states, sampling_metadata)
 
-        # Only perform sampling in the driver worker.
-        # Note: `_get_logits` is still distributed across TP workers because
-        # the `embedding` weight is distributed across TP workers.
-        # TODO(zhuohan): Change the get_logits part to a separate stage.
-        if not sampling_metadata.perform_sampling:
-            return None
+            # Get the logits for the next tokens.
+            logits = _get_logits(hidden_states, embedding, embedding_bias,
+                                 self.vocab_size)
 
-        assert logits is not None
-        _, vocab_size = logits.shape
+            # Only perform sampling in the driver worker.
+            # Note: `_get_logits` is still distributed across TP workers because
+            # the `embedding` weight is distributed across TP workers.
+            # TODO(zhuohan): Change the get_logits part to a separate stage.
+            if not sampling_metadata.perform_sampling:
+                return None
 
-        # Apply logits processors (if any).
-        logits = _apply_logits_processors(logits, sampling_metadata)
+            assert logits is not None
+            _, vocab_size = logits.shape
 
-        # Prepare sampling tensors with pinned memory to avoid blocking.
-        (sampling_tensors, do_penalties, do_top_p_top_k,
-         do_min_p) = SamplingTensors.from_sampling_metadata(
-             sampling_metadata, vocab_size, logits.device, logits.dtype)
+            # Apply logits processors (if any).
+            logits = _apply_logits_processors(logits, sampling_metadata)
 
-        # Apply presence and frequency penalties.
-        if do_penalties:
-            logits = _apply_penalties(logits, sampling_tensors.prompt_tokens,
-                                      sampling_tensors.output_tokens,
-                                      sampling_tensors.presence_penalties,
-                                      sampling_tensors.frequency_penalties,
-                                      sampling_tensors.repetition_penalties)
-        # Apply temperature scaling.
-        # Use in-place division to avoid creating a new tensor.
-        logits.div_(sampling_tensors.temperatures.unsqueeze_(dim=1))
+            torch.cuda.nvtx.range_push("from_sampling_metadata")
+            # Prepare sampling tensors with pinned memory to avoid blocking.
+            (sampling_tensors, do_penalties, do_top_p_top_k,
+             do_min_p) = SamplingTensors.from_sampling_metadata(
+                sampling_metadata, vocab_size, logits.device, logits.dtype)
+            torch.cuda.nvtx.range_pop()
 
-        if do_top_p_top_k:
-            logits = _apply_top_p_top_k(logits, sampling_tensors.top_ps,
-                                        sampling_tensors.top_ks)
+            # Apply presence and frequency penalties.
+            if do_penalties:
+                logits = _apply_penalties(logits, sampling_tensors.prompt_tokens,
+                                          sampling_tensors.output_tokens,
+                                          sampling_tensors.presence_penalties,
+                                          sampling_tensors.frequency_penalties,
+                                          sampling_tensors.repetition_penalties)
+            # Apply temperature scaling.
+            # Use in-place division to avoid creating a new tensor.
+            logits.div_(sampling_tensors.temperatures.unsqueeze_(dim=1))
 
-        if do_min_p:
-            logits = _apply_min_p(logits, sampling_tensors.min_ps)
+            if do_top_p_top_k:
+                logits = _apply_top_p_top_k(logits, sampling_tensors.top_ps,
+                                            sampling_tensors.top_ks)
 
-        # We use float32 for probabilities and log probabilities.
-        # Compute the probabilities.
-        probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+            if do_min_p:
+                logits = _apply_min_p(logits, sampling_tensors.min_ps)
 
-        # Compute the log probabilities.
-        # Use log_softmax to ensure numerical stability.
-        logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
+            # We use float32 for probabilities and log probabilities.
+            # Compute the probabilities.
+            probs = torch.softmax(logits, dim=-1, dtype=torch.float)
 
-        # Sample the next tokens.
-        if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0 or
-                all([l == 1 for l in sampling_metadata.target_lens])):
-            sample_results = _sample(probs, logprobs, sampling_metadata)
-            accept_cnts = None
+            # Compute the log probabilities.
+            # Use log_softmax to ensure numerical stability.
+            logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
 
+            # Sample the next tokens.
+            if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0 or
+                    all([l == 1 for l in sampling_metadata.target_lens])):
+                sample_results = _sample(probs, logprobs, sampling_metadata)
+                accept_cnts = None
+
+            else:
+                sample_results, accept_cnts, logprobs = _spec_decode_sample(
+                    probs, sampling_metadata)
+
+            # Get the logprobs query results.
+            prompt_logprobs, sample_logprobs = _get_logprobs(
+                logprobs, sampling_metadata, sample_results)
+
+            return _build_sampler_output(sample_results, sampling_metadata,
+                                         prompt_logprobs, sample_logprobs,
+                                         probs, accept_cnts)
         else:
-            sample_results, accept_cnts, logprobs = _spec_decode_sample(
-                probs, sampling_metadata)
+            # Get the hidden states that we use for sampling.
+            hidden_states = _prune_hidden_states(
+                hidden_states, sampling_metadata)
 
-        # Get the logprobs query results.
-        prompt_logprobs, sample_logprobs = _get_logprobs(
-            logprobs, sampling_metadata, sample_results)
+            # Get the logits for the next tokens.
+            logits = _get_logits(hidden_states, embedding, embedding_bias,
+                                 self.vocab_size)
 
-        return _build_sampler_output(sample_results, sampling_metadata,
-                                     prompt_logprobs, sample_logprobs,
-                                     probs, accept_cnts)
+            # Only perform sampling in the driver worker.
+            # Note: `_get_logits` is still distributed across TP workers because
+            # the `embedding` weight is distributed across TP workers.
+            # TODO(zhuohan): Change the get_logits part to a separate stage.
+            if not sampling_metadata.perform_sampling:
+                return None
+
+            assert logits is not None
+            _, vocab_size = logits.shape
+
+            torch.cuda.nvtx.range_push("from_sampling_metadata")
+            # Prepare sampling tensors with pinned memory to avoid blocking.
+            sampling_tensors = MinimizedSamplingTensors.from_sampling_metadata(
+                sampling_metadata, logits.device, logits.dtype)
+            torch.cuda.nvtx.range_pop()
+
+            # Apply temperature scaling.
+            # Use in-place division to avoid creating a new tensor.
+            logits.div_(sampling_tensors.temperatures.unsqueeze_(dim=1))
+
+            # We use float32 for probabilities and log probabilities.
+            # Compute the probabilities.
+            probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+
+            # Compute the log probabilities.
+            # Use log_softmax to ensure numerical stability.
+            logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
+
+            # Sample the next tokens.
+            if (not sampling_metadata.is_target or len(sampling_metadata.target_lens) == 0 or
+                    all([l == 1 for l in sampling_metadata.target_lens])):
+                sample_results = _sample(probs, logprobs, sampling_metadata)
+                accept_cnts = None
+
+            else:
+                sample_results, accept_cnts, logprobs = _spec_decode_sample(
+                    probs, sampling_metadata)
+
+            # Get the logprobs query results.
+            prompt_logprobs, sample_logprobs = _get_logprobs(
+                logprobs, sampling_metadata, sample_results)
+
+            return _build_sampler_output(sample_results, sampling_metadata,
+                                         prompt_logprobs, sample_logprobs,
+                                         probs, accept_cnts)
 
 
+@nvtx_range("_get_logits")
 def _get_logits(hidden_states: torch.Tensor, embedding: torch.Tensor,
                 embedding_bias: Optional[torch.Tensor],
                 vocab_size: int) -> Optional[torch.Tensor]:
@@ -174,6 +236,7 @@ def _apply_logits_processors(
     return logits
 
 
+@nvtx_range("_apply_penalties")
 def _apply_penalties(logits: torch.Tensor, prompt_tokens_tensor: torch.Tensor,
                      output_tokens_tensor: torch.Tensor,
                      presence_penalties: torch.Tensor,
@@ -398,6 +461,10 @@ def _sample(
                                           is_prompts, sample_indices)
         if sampling_type == SamplingType.GREEDY:
             greedy_samples = torch.argmax(logprobs[sample_indices], dim=-1)
+            # Needed for spec decoding greedy verification test.
+            _modify_greedy_probs_inplace(probs,
+                                         sample_indices,
+                                         greedy_samples)
         elif sampling_type == SamplingType.RANDOM:
             max_best_of = 1
             for seq_group, is_prompt in zip(seq_groups, is_prompts):
@@ -445,6 +512,16 @@ def _spec_decode_sample(
     prefill_probs = probs[:sampling_metadata.num_prompts]
     decode_probs = probs[sampling_metadata.num_prompts:]
 
+    # Needed for spec decoding greedy verification test.
+    # check empty tensor
+    if sampling_metadata.target_modify_greedy_indices is not None:
+        greedy_samples = torch.argmax(
+            decode_probs[sampling_metadata.target_modify_greedy_indices], dim=-1)
+        _modify_greedy_probs_inplace(decode_probs,
+                                     sampling_metadata.target_modify_greedy_indices,
+                                     greedy_samples)
+        del greedy_samples
+
     # Target lens includes one additional token just before draft tokens and draft tokens.
     target_lens = sampling_metadata.target_lens
     target_lens_minus_one = [l - 1 for l in target_lens]
@@ -456,30 +533,38 @@ def _spec_decode_sample(
     target_probs = _reshape_and_pad(
         decode_probs, target_lens, decode_probs.size(-1))
 
+    # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
+    draft_probs = _reshape_and_pad(
+        sampling_metadata.draft_probs_tensor,
+        target_lens_minus_one, target_probs.size(-1)
+    )
+
     # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
 
-    # draft_probs: [seq_len, vocab_size] -> [seq_idx, target_lens_minus_one, vocab_size]
-    draft_probs = _reshape_and_pad(
-        sampling_metadata.draft_probs_tensor, target_lens_minus_one, target_probs.size(
-            -1)
-    )
-
     # draft_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    # print("target_probs_for_sampled_draft_token",
+    #       target_prob_for_sampled_draft_token)
+    # print("draft_probs_for_sampled_draft_token",
+    #       draft_prob_for_sampled_draft_token)
 
     # accept_probs: [seq_idx, target_lens_minus_one]
     accept_prob = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
     del probs, target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
+    # print(accept_prob)
+
     # change inf or nan to 0
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
 
+    # print("accept_probs", accept_prob)
+
     random_prob = torch.rand_like(accept_prob)
-    # random_prob = torch.full_like(accept_prob, 0.5)  # for testing
 
     # accept is 0 and reject is 1
     accepted = torch.where(
@@ -494,6 +579,11 @@ def _spec_decode_sample(
 
     # accept_cnts: [seq_idx]
     accept_cnts = torch.sum(accepted, dim=1)
+
+    # sum accept_cnt
+    # accept_cnt_sum = accept_cnts.sum()
+    # accept_cnt_len = accept_cnts.size(0)
+    # print("result accept_cnt,", accept_cnt_sum / (accept_cnt_len * 4))
     del accepted
 
     target_lens_tensor = torch.tensor(
@@ -506,8 +596,8 @@ def _spec_decode_sample(
 
     # target_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
     # draft_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
-    indices = torch.arange(masked_accept_cnt.size(
-        0)).long().to(masked_accept_cnt.device)
+    # indices = torch.arange(masked_accept_cnt.size(0), device='cuda')
+    indices = torch.arange(target_probs.size(0), device='cuda')
     target_prob_at_reject_idx = target_probs[indices,
                                              masked_accept_cnt, :].squeeze(1)
     draft_prob_at_reject_idx = draft_probs[indices, masked_accept_cnt, :].squeeze(
@@ -520,8 +610,7 @@ def _spec_decode_sample(
     del target_prob_at_reject_idx, draft_prob_at_reject_idx
 
     # recover to original probability for all accepted sequences
-    indices = torch.arange(all_accept_mask.size(
-        0)).long().to(all_accept_mask.device)
+    # indices = torch.arange(all_accept_mask.size(0), device='cuda')
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
 
@@ -530,10 +619,11 @@ def _spec_decode_sample(
         [prefill_probs, modified_rejection_prob], dim=0)
 
     modified_rejection_logprobs = torch.log(modified_rejection_prob)
-    del target_probs, draft_probs, target_lens_tensor
+    del target_probs, draft_probs, target_lens_tensor, indices
 
     sample_results = _sample(modified_rejection_prob,
-                             modified_rejection_logprobs, sampling_metadata)
+                             modified_rejection_logprobs,
+                             sampling_metadata)
 
     return sample_results, accept_cnts, modified_rejection_logprobs
 
@@ -725,3 +815,53 @@ def _get_modified_rejection_prob(target_prob: torch.Tensor, draft_prob: torch.Te
 def _smallest_positive_value(dtype) -> float:
     """Return the smallest positive normal value representable by the dtype."""
     return torch.finfo(dtype).tiny
+
+
+def _modify_greedy_probs_inplace(probs: torch.Tensor,
+                                 sample_indices: torch.Tensor,
+                                 greedy_samples: torch.Tensor) -> None:
+    """Modify the probability distributions of the greedily-sampled tokens such
+        that each sampled token has a "probability" of 1.0. This is required by
+        speculative decoding, which depends on the sampling method being encoded
+        within the probability distribution for correctness.
+
+        # Why do we only need to do this for greedy sampling?
+
+        vLLM's sampler performs the following steps for greedy or multinomial
+        (random) sampling:
+            1. Get logits from model.
+            2. Modify logits according to per-sequence sampling parameters.
+                - Multiply by temperature, top-k and top-p masking, penalize tokens
+                    according to their frequency, etc.
+            3. Sample a token.
+                - Random sampling simply samples from the modified probability
+                    distribution.
+                - Greedy sampling performs `argmax` to obtain the token with the
+                    highest likelihood.
+
+        Ignoring greedy sampling for a moment, we find that the computed probability
+        distribution has the following property: we can sample from it independently
+        and find that the token sampled by the Sampler has a frequency corresponding
+        to how often we see it in our sampling. In other words, for tokens sampled
+        with vLLM's random SamplingType, the computed probability distribution
+        encodes the sampling methodology completely.
+
+        Greedy sampling does not normally have this property. vLLM modifies logits
+        according to sampling params, then performs `argmax`, then returns the
+        sampled token and the computed probability distribution. If we sample from
+        the distribution, we'll find the likelihood of the greedily-sampled token
+        is not always 1.0.
+
+        Since lossless speculative decoding requires that the sampling methodology
+        be encoded within the probability distribution, we are motivated to modify
+        the probability distribution such that the sampled token has probability 1
+        when speculative decoding is used.
+
+        NOTE: Alternatively, we could use an extremely low temperature to achieve
+        greedy sampling using multinomial computation and unite the codepaths. This
+        has implications on the overall design of the sampler, e.g. how to record
+        accurate logprobs for the user, so this improvement is deferred to later.
+        """
+    # NOTE: logprobs are not modified so they can be returned to the user.
+    probs[sample_indices, :] = 0
+    probs[sample_indices, greedy_samples] = 1.0

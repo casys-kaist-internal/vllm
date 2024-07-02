@@ -160,6 +160,10 @@ class SequenceData:
         self._num_computed_target_tokens = 0
         self._num_computed_draft_tokens = 0
 
+        # We clear the draft tokens for reseting state.
+        self.draft_token_ids.clear()
+        self.draft_logprobs.clear()
+
     def __repr__(self) -> str:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
@@ -308,8 +312,8 @@ class Sequence:
 
     @nvtx_range("accept_draft_tokens")
     def accept_draft_tokens(self, accept_cnt: int) -> int:
-        assert self.draft_size == self.get_draft_len()
-        reject_cnt = self.draft_size - accept_cnt
+        # assert self.draft_size == self.get_draft_len()
+        reject_cnt = self.get_draft_len() - accept_cnt
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
@@ -474,7 +478,8 @@ class SequenceGroup:
     def __repr__(self) -> str:
         return (f"SequenceGroup(request_id={self.request_id}, "
                 f"sampling_params={self.sampling_params}, "
-                f"num_seqs={len(self.seqs_dict)})")
+                f"num_seqs={len(self.seqs_dict)}), "
+                f"seqs={self.seqs_dict})")
 
 
 class SequenceGroupMetadata:
@@ -497,7 +502,7 @@ class SequenceGroupMetadata:
         seq_data: OrderedDict[int, SequenceData],
         sampling_params: SamplingParams,
         block_tables: Dict[int, List[int]],
-        token_chunk_size: int,
+        token_chunk_size: Optional[int] = 0,
         spec_decode_stage: Optional[SpecDecodeStage] = None,
         draft_size: Optional[int] = 0,
     ) -> None:

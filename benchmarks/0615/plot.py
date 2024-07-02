@@ -7,25 +7,25 @@ df = pd.read_csv('benchmark_results.csv')
 # Define the label conditions
 conditions = [
     (df['draft_size'] == 0) & (df['chunk_prefill']
-                               == False) & (df['collocate'] == False),
+                               == False) & (df['colocate'] == False),
     (df['draft_size'] == 0) & (df['chunk_prefill']
-                               == True) & (df['collocate'] == False),
+                               == True) & (df['colocate'] == False),
     (df['draft_size'] == 4) & (df['chunk_prefill']
-                               == False) & (df['collocate'] == False),
+                               == False) & (df['colocate'] == False),
     (df['draft_size'] == 4) & (df['chunk_prefill']
-                               == False) & (df['collocate'] == True),
+                               == False) & (df['colocate'] == True),
     (df['draft_size'] == 4) & (df['chunk_prefill']
-                               == True) & (df['collocate'] == False),
+                               == True) & (df['colocate'] == False),
     (df['draft_size'] == 4) & (df['chunk_prefill']
-                               == True) & (df['collocate'] == True),
+                               == True) & (df['colocate'] == True),
     (df['draft_size'] == 7) & (df['chunk_prefill']
-                               == False) & (df['collocate'] == False),
+                               == False) & (df['colocate'] == False),
     (df['draft_size'] == 7) & (df['chunk_prefill']
-                               == False) & (df['collocate'] == True),
+                               == False) & (df['colocate'] == True),
     (df['draft_size'] == 7) & (df['chunk_prefill']
-                               == True) & (df['collocate'] == False),
+                               == True) & (df['colocate'] == False),
     (df['draft_size'] == 7) & (df['chunk_prefill']
-                               == True) & (df['collocate'] == True)
+                               == True) & (df['colocate'] == True)
 ]
 
 # Define the labels
@@ -33,13 +33,13 @@ labels = [
     'baseline',
     'baseline_cp',
     'draft_4',
-    'draft_4_collocate',
+    'draft_4_colocate',
     'draft_4_cp',
-    'draft_4_collocate_cp',
+    'draft_4_colocate_cp',
     'draft_7',
-    'draft_7_collocate',
+    'draft_7_colocate',
     'draft_7_cp',
-    'draft_7_collocate_cp',
+    'draft_7_colocate_cp',
 ]
 
 # Apply the labels

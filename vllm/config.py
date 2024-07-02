@@ -387,7 +387,6 @@ class SchedulerConfig:
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
         self.chunk_prefill_enabled = enable_chunked_prefill
-        self.balance_threshold = 20  # 20%
         self._verify_args()
 
     def _verify_args(self) -> None:
@@ -531,8 +530,10 @@ class SpecDecodeConfig:
 
     def __init__(self,
                  draft_size: int,
-                 collocate: bool,
+                 colocate: bool,
+                 target_attention: bool,
                  disable_bonus_token: bool) -> None:
         self.draft_size = draft_size
-        self.collocate = collocate
+        self.target_attention = target_attention
+        self.colocate = colocate
         self.disable_bonus_token = disable_bonus_token

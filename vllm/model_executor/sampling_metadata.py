@@ -33,6 +33,7 @@ class SamplingMetadata:
         target_lens: Optional[List[int]],
         selected_token_indices: torch.Tensor,
         categorized_sample_indices: Optional[Dict[SamplingType, torch.Tensor]],
+        target_modify_greedy_indices: Optional[torch.Tensor] = None,
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
         draft_probs_tensor: Optional[torch.Tensor] = None,
         perform_sampling: bool = True,
@@ -44,6 +45,7 @@ class SamplingMetadata:
         self.target_lens = target_lens
         self.selected_token_indices = selected_token_indices
         self.categorized_sample_indices = categorized_sample_indices
+        self.target_modify_greedy_indices = target_modify_greedy_indices
         self.sampled_draft_token_ids = sampled_draft_token_ids
         self.draft_probs_tensor = draft_probs_tensor
         self.perform_sampling = perform_sampling
@@ -270,4 +272,74 @@ class SamplingTensors:
                                                            non_blocking=True),
             prompt_tokens=prompt_tensor.to(device=device, non_blocking=True),
             output_tokens=output_tensor.to(device=device, non_blocking=True),
+        )
+
+
+@dataclass
+class MinimizedSamplingTensors:
+    """Tensors for sampling."""
+    temperatures: torch.Tensor
+
+    @classmethod
+    def from_sampling_metadata(
+            cls, sampling_metadata: "SamplingMetadata",
+            device: torch.device,
+            dtype: torch.dtype) -> SamplingTensors:
+        prompt_tokens: List[List[int]] = []
+        output_tokens: List[List[int]] = []
+        temperatures: List[float] = []
+        for i, seq_group in enumerate(sampling_metadata.seq_groups):
+            seq_ids, sampling_params = seq_group
+            temperature = sampling_params.temperature
+
+            if temperature < _SAMPLING_EPS:
+                # NOTE: Zero temperature means deterministic sampling
+                # (i.e., greedy sampling or beam search).
+                # Set the temperature to 1 to avoid division by zero.
+                temperature = 1.0
+
+            if (i < sampling_metadata.num_prompts
+                    and sampling_params.prompt_logprobs is not None):
+                # For tokens in the prompt that we only need to get their logprobs
+                prompt_len = sampling_metadata.prompt_lens[i]
+                temperatures += [temperature] * (prompt_len - 1)
+
+                prompt_tokens.extend([] for _ in range(prompt_len - 1))
+                output_tokens.extend([] for _ in range(prompt_len - 1))
+
+            if sampling_metadata.is_target:
+                if i < sampling_metadata.num_prompts:
+                    temperatures += [temperature] * len(seq_ids)
+
+                else:
+                    decode_idx = i - sampling_metadata.num_prompts
+                    temperatures += [temperature] * \
+                        sampling_metadata.target_lens[decode_idx]
+
+            else:
+                temperatures += [temperature] * len(seq_ids)
+
+        sampling_tensors = MinimizedSamplingTensors.from_lists(
+            temperatures, device, dtype)
+        return (sampling_tensors)
+
+    @classmethod
+    def from_lists(cls, temperatures: List[float],
+                   device: torch.device,
+                   dtype: torch.dtype) -> "SamplingTensors":
+        # Note that the performance will be very bad without
+        # pinned memory.
+        pin_memory = not in_wsl()
+
+        temperatures_t = torch.tensor(
+            temperatures,
+            device="cpu",
+            dtype=dtype,
+            pin_memory=pin_memory,
+        )
+
+        # Because the memory is pinned, we can do non-blocking
+        # transfer to device.
+        return cls(
+            temperatures=temperatures_t.to(device=device, non_blocking=True)
         )

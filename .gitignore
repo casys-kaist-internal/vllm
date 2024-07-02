@@ -187,3 +187,6 @@ benchmarks/figures/*.txt
 benchmarks/figures/*.pkl
 benchmarks/figures/*.zip
 benchmarks/result/*
+
+# huggingface 
+.huggingface_cache/
