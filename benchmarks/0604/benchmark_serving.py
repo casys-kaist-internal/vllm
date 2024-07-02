@@ -17,7 +17,7 @@ from vllm.outputs import RequestOutput
 # (prompt len, output len, latency)
 REQUEST_LATENCY: List[Tuple[int, int, float]] = []
 
-DOWNLOAD_DIR = '/mnt/sda/download'
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 
 
 def get_requests_with_time(

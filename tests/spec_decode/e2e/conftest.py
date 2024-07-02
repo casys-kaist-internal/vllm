@@ -27,7 +27,7 @@ from ...conftest import cleanup
 
 # DOWNLOAD_DIR = "../models/" # NOTE(noppanat): Change this to the correct path
 # NOTE(noppanat): Change this to the correct path
-DOWNLOAD_DIR = "/mnt/sda/download"
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 
 
 class AsyncLLM:

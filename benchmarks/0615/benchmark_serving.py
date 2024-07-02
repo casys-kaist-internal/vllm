@@ -16,7 +16,7 @@ from vllm import SpecDecodeLLM, SamplingParams
 from vllm.outputs import RequestOutput
 
 
-DOWNLOAD_DIR = '/mnt/sda/download'
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 BENCHMARK_DURATION_IN_MINUTES = 5
 
 

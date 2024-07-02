@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from datasets import load_dataset
 
-DOWNLOAD_DIR = '/mnt/sda/download'
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 RANDOM_SAMPLE = False
 
 # Ensure DOWNLOAD_DIR exists

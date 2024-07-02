@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DOWNLOAD_DIR='/mnt/sda/download'
+DOWNLOAD_DIR='/home/noppanat/workspace/models'
 TARGET_MODEL='facebook/opt-6.7b'
 DRAFT_MODEL='facebook/opt-125m'
 DRAFT_SIZE=7

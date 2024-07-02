@@ -7,7 +7,7 @@ from transformers import (AutoTokenizer)
 from dataset import sample_requests
 from tabulate import tabulate
 
-DOWNLOAD_DIR = '/mnt/sda/download'
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 
 
 def run(

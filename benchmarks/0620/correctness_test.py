@@ -17,7 +17,7 @@ from vllm import LLM, SpecDecodeLLM, SamplingParams
 from vllm.utils import is_cpu
 
 
-DOWNLOAD_DIR = '/mnt/sda/download'
+DOWNLOAD_DIR = '/home/noppanat/workspace/models'
 
 np.random.seed(0)
 random.seed(0)
