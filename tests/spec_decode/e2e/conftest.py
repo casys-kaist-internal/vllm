@@ -1,8 +1,9 @@
 import asyncio
 import time
 from itertools import cycle
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pytest
 import ray
 import torch
@@ -438,3 +439,129 @@ def wait_for_gpu_memory_to_clear(devices: List[int],
                              f'{dur_s=:.02f} ({threshold_bytes/2**30=})')
 
         time.sleep(5)
+
+
+# ----------- Below are helper functions for testing serving mode -----------#
+
+def get_requests_with_time(input_requests: List[str],
+                           request_rate: float) -> List[Tuple[float, str]]:
+    input_requests = iter(input_requests)
+    requests_with_time = []
+    current_time = 0.0
+
+    for request in input_requests:
+        requests_with_time.append((current_time, request))
+
+        if request_rate == float("inf"):
+            # If the request rate is infinity, then all requests are sent at time 0.
+            continue
+        # Sample the request interval from the exponential distribution.
+        interval = np.random.exponential(1.0 / request_rate)
+        # Accumulate the interval to get the next request time.
+        current_time += interval
+
+    return requests_with_time
+
+
+def get_serving_output_from_llm_generator(llm_generator,
+                                          prompts,
+                                          request_rate: float,
+                                          get_sampling_params: Callable[[], SamplingParams],
+                                          ) -> Tuple[List[str], List[List[int]]]:
+    tokens: List[str] = []
+    token_ids: List[List[int]] = []
+    llm: SpecDecodeLLM
+    for llm in llm_generator():
+        requests_with_time = get_requests_with_time(prompts, request_rate)
+        # Ensure the list is sorted by time
+        requests_with_time.sort(reverse=True)
+
+        start_time = time.perf_counter()
+
+        while requests_with_time:
+            current_time = time.perf_counter() - start_time
+
+            # Add requests to the engine if their scheduled time has passed
+            while requests_with_time and (requests_with_time[-1][0] <= current_time):
+                _, prompt = requests_with_time.pop()
+                sampling_params = get_sampling_params()
+                llm._add_request(prompt=prompt,
+                                 prompt_token_ids=None,
+                                 sampling_params=sampling_params)
+
+            step_outputs = llm.llm_engine.step()
+            token_ids.extend(
+                output.outputs[0].token_ids for output in step_outputs)
+            tokens.extend(output.outputs[0].text for output in step_outputs)
+
+        del llm
+
+    return tokens, token_ids
+
+
+def run_greedy_serving_correctness_test(baseline_llm_generator,
+                                        test_llm_generator,
+                                        num_requests: int,
+                                        max_output_len: int,
+                                        request_rate: float,
+                                        force_output_len: bool,
+                                        print_tokens: bool = True):
+    """Helper method that compares the outputs of both the baseline LLM and
+    the test LLM in the serving mode. It asserts greedy equality, e.g. that the 
+    outputs are exactly the same when temperature is zero.
+    """
+    def get_sampling_params():
+        # If the test requires that we generated max_output_len tokens, then set the
+        # sampling params to ignore eos token.
+        ignore_eos = force_output_len
+        temperature = 0.0
+        return SamplingParams(
+            n=1,
+            temperature=temperature,
+            top_p=1.0,
+            use_beam_search=False,
+            ignore_eos=ignore_eos,
+            max_tokens=max_output_len,
+        )
+
+    prompts = [
+        "The future of AI is",
+        "The president of the United States is",
+        "Hello, my name is",
+        "The capital of France is",
+        "San Francisco is know for its",
+        "Facebook was created in 2004 by",
+        "Curious George is a",
+        "Python 3.11 brings improvements to its",
+    ]
+
+    prompts = [prompt for prompt, _ in zip(
+        cycle(prompts), range(num_requests))]
+
+    (baseline_tokens,
+     baseline_token_ids) = get_output_from_llm_generator(
+         baseline_llm_generator, prompts, get_sampling_params())
+
+    (spec_tokens,
+     spec_token_ids) = get_serving_output_from_llm_generator(
+         test_llm_generator, prompts, request_rate, get_sampling_params)
+
+    assert len(baseline_token_ids) == len(prompts)
+    assert len(spec_token_ids) == len(prompts)
+
+    for i, (baseline_token_ids, baseline_tokens, spec_token_ids,
+            spec_tokens) in enumerate(
+                zip(baseline_token_ids, baseline_tokens,
+                    spec_token_ids, spec_tokens)):
+        if print_tokens:
+            print(f'{i=} {baseline_tokens=}')
+            print(f'{i=}     {spec_tokens=}')
+        print(f'{i=} {baseline_token_ids=}')
+        print(f'{i=}     {spec_token_ids=}')
+
+        # compare until the length of baseline_token_ids
+        if len(baseline_token_ids) < len(spec_token_ids):
+            assert baseline_token_ids == spec_token_ids[:len(
+                baseline_token_ids)]
+        else:
+            assert baseline_token_ids == spec_token_ids
