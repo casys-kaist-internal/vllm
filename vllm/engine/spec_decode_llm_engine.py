@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
+total_accept = 0
+total_draft = 0
 
 
 class SpecDecodeLLMEngine:
@@ -406,20 +408,27 @@ class SpecDecodeLLMEngine:
                 scheduled_seq_group.token_chunk_size)
 
         elif spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-            seq.append_draft_token_id(
-                sample.output_token, sample.logprobs
-            )
-            check_stop_cnt = 0
-            self.draft_probs_dict[seq.seq_id].append(
-                sample.draft_probs)
-            seq.update_num_computed_draft_tokens(
-                scheduled_seq_group.token_chunk_size)
-            # since multi-step draft decode,
-            # we need to update the next draft token size which is always 1 from the second iteration
-            scheduled_seq_group.token_chunk_size = 1
+            len_with_draft = seq.get_len_with_draft()
+            # We only append the draft token if the length with draft token
+            # is less than the max model length and max tokens
+            if (len_with_draft < self.scheduler_config.max_model_len):
+                seq.append_draft_token_id(
+                    sample.output_token, sample.logprobs
+                )
+                self.draft_probs_dict[seq.seq_id].append(
+                    sample.draft_probs)
+                seq.update_num_computed_draft_tokens(
+                    scheduled_seq_group.token_chunk_size)
+                # since multi-step draft decode,
+                # we need to update the next draft token size which is always 1 from the second iteration
+                scheduled_seq_group.token_chunk_size = 1
 
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
-            # print("accept: ", sample.accept_cnt)
+            global total_accept
+            global total_draft
+
+            total_accept += sample.accept_cnt
+            total_draft += seq.get_draft_len()
             free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
             self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
             num_tokens_to_log_system_stats += sample.accept_cnt
@@ -444,6 +453,8 @@ class SpecDecodeLLMEngine:
                 # So only update num_computed_draft_tokens if not all accept
                 if seq.draft_size != sample.accept_cnt:
                     seq.update_num_computed_draft_tokens(1)
+                # else:
+                #     print(seq.seq_id, "all accept")
 
             self.draft_probs_dict[seq.seq_id].clear()
 
@@ -456,10 +467,10 @@ class SpecDecodeLLMEngine:
             self._check_stop(
                 seq, seq_group.sampling_params, check_stop_cnt)
 
-            # Free the finished and selected parent sequences' memory in block
-            # manager. Keep them in the sequence group as candidate output.
-            if seq.is_finished():
-                self.scheduler.free_seq(seq)
+        # Free the finished and selected parent sequences' memory in block
+        # manager. Keep them in the sequence group as candidate output.
+        if seq.is_finished():
+            self.scheduler.free_seq(seq)
 
         return num_tokens_to_log_system_stats
 
@@ -519,13 +530,14 @@ class SpecDecodeLLMEngine:
             assert len(keys) == 1
             seq_id = keys[0]
             draft_probs = self.draft_probs_dict[seq_id]
-            length = len(draft_probs)
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            draft_len = seq_data.get_draft_len()
 
-            if length > 0:
+            if draft_len > 0:
                 self.draft_probs_tensor[idx:idx +
-                                        length, :] = torch.stack(draft_probs)
+                                        draft_len, :] = torch.stack(draft_probs[:draft_len])
 
-            idx += length
+            idx += draft_len
 
     @ nvtx_range("default_step")
     def default_step(self) -> List[RequestOutput]:
@@ -677,6 +689,9 @@ class SpecDecodeLLMEngine:
 
     @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
+        # if total_draft > 0:
+        #     print("accept_prob: ", total_accept / total_draft)
+
         if self.spec_decode_config.colocate:
             return self.colocate_step()
         else:

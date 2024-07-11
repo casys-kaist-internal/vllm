@@ -100,27 +100,27 @@ class WorkerExecutor:
 
 
 def init_worker(pipe, target_model_config, parallel_config, scheduler_config, spec_decode_config):
-    target_stream = torch.cuda.Stream()
+    # target_stream = torch.cuda.Stream()
 
-    with torch.cuda.stream(target_stream):
-        target_worker = SpecDecodeWorker(
-            copy.deepcopy(target_model_config),
-            copy.deepcopy(parallel_config),
-            copy.deepcopy(scheduler_config),
-            copy.deepcopy(spec_decode_config),
-            local_rank=0,
-            rank=0,
-            distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
-            is_target=True
-        )
-        target_worker.init_model()
-        target_worker.load_model()
+    # with torch.cuda.stream(target_stream):
+    target_worker = SpecDecodeWorker(
+        copy.deepcopy(target_model_config),
+        copy.deepcopy(parallel_config),
+        copy.deepcopy(scheduler_config),
+        copy.deepcopy(spec_decode_config),
+        local_rank=0,
+        rank=0,
+        distributed_init_method=f"tcp://{get_ip()}:{get_open_port()}",
+        is_target=True
+    )
+    target_worker.init_model()
+    target_worker.load_model()
 
-        while True:
-            method, args, kwargs = pipe.recv()
+    while True:
+        method, args, kwargs = pipe.recv()
 
-            if method == "shutdown":
-                break
+        if method == "shutdown":
+            break
 
-            result = getattr(target_worker, method)(*args, **kwargs)
-            pipe.send(result)
+        result = getattr(target_worker, method)(*args, **kwargs)
+        pipe.send(result)

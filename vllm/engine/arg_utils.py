@@ -274,7 +274,9 @@ class SpecDecodeEngineArgs:
     colocate: bool = False
     enable_chunked_prefill: bool = False
     target_attention: bool = False
+    demote_spec_tokens: bool = False
     disable_bonus_token: bool = False
+    emulate_accept_prob: float = None
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -530,7 +532,9 @@ class SpecDecodeEngineArgs:
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.colocate,
                                               self.target_attention,
-                                              self.disable_bonus_token)
+                                              self.demote_spec_tokens,
+                                              self.disable_bonus_token,
+                                              self.emulate_accept_prob)
 
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 

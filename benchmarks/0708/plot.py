@@ -7,9 +7,10 @@ df = pd.read_csv('benchmark_results.csv')
 
 # Define lists for subplot division and labeling
 # Controls how subplots are divided
-subplot_division_features = ['chunk_prefill', 'output_len', 'temperature']
+subplot_division_features = ['chunk_prefill',
+                             'input_len', 'budget']
 # Controls labeling within subplots
-labeling_features = ['draft_size', 'target_attention', 'colocate']
+labeling_features = ['draft_size', 'demote', 'colocate']
 
 # Generate a composite key for subplot division and labeling
 df['subplot_key'] = df.apply(lambda row: ' | '.join(
@@ -81,7 +82,7 @@ for dataset in df['dataset'].unique():
     # Create a subplot for each unique subplot key
     n_cols = len(unique_subplot_keys)
     fig, axes = plt.subplots(1, n_cols, figsize=(
-        10 * n_cols, 8), sharey=True, sharex=True)
+        8 * n_cols, 6), sharey=True, sharex=True)
 
     # If only one subplot, make sure 'axes' is iterable
     if n_cols == 1:
@@ -102,12 +103,12 @@ for dataset in df['dataset'].unique():
     line_style_legend = [plt.Line2D([0], [0], color='black', linestyle=style, label=f'colocate {val}')
                          for val, style in line_styles.items()]
     # Show marker styles for chunk_prefill
-    marker_style_legend = [plt.Line2D([0], [0], color='black', marker=style, label=f'Target Atten {val}')
+    marker_style_legend = [plt.Line2D([0], [0], color='black', marker=style, label=f'Demote {val}')
                            for val, style in marker_styles.items()]
 
     # Show the legends
     fig.legend(handles=draft_size_legend + line_style_legend + marker_style_legend,
-               loc='upper center', bbox_to_anchor=(0.5, 1.08), ncol=3)
+               loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=3)
 
     # Adjust layout and save the figure
     # Adjust the rectangle in which to fit the subplots

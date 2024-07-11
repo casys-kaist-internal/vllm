@@ -28,6 +28,7 @@ class SequenceStatus(enum.Enum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
+    FINISHED_LENGTH_CAPPED_DRAFT = enum.auto()
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -136,6 +137,13 @@ class SequenceData:
 
     def get_draft_token_ids(self) -> List[int]:
         return self.draft_token_ids
+
+    def drop_draft_tokens(self, drop_cnt: int) -> None:
+        # Remove drop_cnt elements from the back of draft_token_ids
+        # and draft_logprobs.
+        self.draft_token_ids = self.draft_token_ids[:-drop_cnt]
+        self.draft_logprobs = self.draft_logprobs[:-drop_cnt]
+        self._num_computed_draft_tokens -= drop_cnt
 
     def get_num_uncomputed_target_tokens(self) -> int:
         """Return the number of prefill tokens that are not computed."""
@@ -257,6 +265,9 @@ class Sequence:
     def get_output_len(self) -> int:
         return self.data.get_output_len()
 
+    def get_len_with_draft(self) -> int:
+        return self.data.get_len_with_draft()
+
     def get_token_ids(self) -> List[int]:
         return self.data.get_token_ids()
 
@@ -312,8 +323,10 @@ class Sequence:
 
     @nvtx_range("accept_draft_tokens")
     def accept_draft_tokens(self, accept_cnt: int) -> int:
-        # assert self.draft_size == self.get_draft_len()
-        reject_cnt = self.get_draft_len() - accept_cnt
+        # draft_size and draft_len can be different because we may drop
+        # We should clean up the draft tokens including the drop tokens
+        # reject_cnt = self.get_draft_len() - accept_cnt
+        reject_cnt = self.draft_size - accept_cnt
 
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
@@ -346,6 +359,9 @@ class Sequence:
                 free_block_cnt += 1
 
         return free_block_cnt
+
+    def drop_draft_tokens(self, drop_cnt: int) -> None:
+        return self.data.drop_draft_tokens(drop_cnt)
 
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()

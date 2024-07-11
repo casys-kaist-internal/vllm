@@ -288,6 +288,7 @@ class SpecDecodeModelRunner:
                 num_computed_draft_tokens = seq_data.get_num_computed_draft_tokens()
                 all_tokens = seq_data.get_token_ids_with_draft()
                 generation_tokens = all_tokens[num_computed_draft_tokens:]
+
                 draft_lens.append(len(generation_tokens))
                 input_tokens.extend(generation_tokens)
 
@@ -335,14 +336,23 @@ class SpecDecodeModelRunner:
                 block_tables.append([])
             batch_size = graph_batch_size
 
-        input_tokens = _async_h2d(
-            input_tokens, dtype=torch.long, pin_memory=True)
-        input_positions = _async_h2d(
-            input_positions, dtype=torch.long, pin_memory=True)
-        slot_mapping = _async_h2d(
-            slot_mapping, dtype=torch.long, pin_memory=True)
-        context_lens = _async_h2d(
-            context_lens, dtype=torch.int, pin_memory=True)
+        # input_tokens = _async_h2d(
+        #     input_tokens, dtype=torch.long, pin_memory=True)
+        # input_positions = _async_h2d(
+        #     input_positions, dtype=torch.long, pin_memory=True)
+        # slot_mapping = _async_h2d(
+        #     slot_mapping, dtype=torch.long, pin_memory=True)
+        # context_lens = _async_h2d(
+        #     context_lens, dtype=torch.int, pin_memory=True)
+
+        input_tokens = torch.tensor(
+            input_tokens, dtype=torch.long, device="cuda")
+        input_positions = torch.tensor(
+            input_positions, dtype=torch.long, device="cuda")
+        slot_mapping = torch.tensor(
+            slot_mapping, dtype=torch.long, device="cuda")
+        context_lens = torch.tensor(
+            context_lens, dtype=torch.int, device="cuda")
 
         if use_captured_graph:
             # The shape of graph_block_tables is
@@ -471,14 +481,23 @@ class SpecDecodeModelRunner:
                 raise ValueError(f"Invalid spec decode stage: "
                                  f"{seq_group_metadata.spec_decode_stage}")
 
-        selected_token_indices = _async_h2d(selected_token_indices,
-                                            dtype=torch.long,
-                                            pin_memory=not self.in_wsl)
-        target_modify_greedy_indices = _async_h2d(target_modify_greedy_indices,
-                                                  dtype=torch.long,
-                                                  pin_memory=not self.in_wsl)
+        # selected_token_indices = _async_h2d(selected_token_indices,
+        #                                     dtype=torch.long,
+        #                                     pin_memory=not self.in_wsl)
+        # target_modify_greedy_indices = _async_h2d(target_modify_greedy_indices,
+        #                                           dtype=torch.long,
+        #                                           pin_memory=not self.in_wsl)
+        # categorized_sample_indices = {
+        #     t: _async_h2d(seq_ids, dtype=torch.int, pin_memory=not self.in_wsl)
+        #     for t, seq_ids in categorized_sample_indices.items()
+        # }
+
+        selected_token_indices = torch.tensor(
+            selected_token_indices, dtype=torch.long, device="cuda")
+        target_modify_greedy_indices = torch.tensor(
+            target_modify_greedy_indices, dtype=torch.long, device="cuda")
         categorized_sample_indices = {
-            t: _async_h2d(seq_ids, dtype=torch.int, pin_memory=not self.in_wsl)
+            t: torch.tensor(seq_ids, dtype=torch.int, device="cuda")
             for t, seq_ids in categorized_sample_indices.items()
         }
 
@@ -507,7 +526,8 @@ class SpecDecodeModelRunner:
             categorized_sample_indices=categorized_sample_indices,
             target_modify_greedy_indices=target_modify_greedy_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
-            draft_probs_tensor=draft_probs_tensor
+            draft_probs_tensor=draft_probs_tensor,
+            emulate_accept_prob=self.spec_decode_config.emulate_accept_prob,
         )
         return sampling_metadata
 
@@ -534,25 +554,37 @@ class SpecDecodeModelRunner:
                                                  prefill_lens, [], target_lens, draft_probs_tensor)
 
         # Combine prefill and target input tokens, input_positions, slot_mappings.
-        input_tokens = _async_h2d(
-            prefill_input_tokens + target_input_tokens,
-            dtype=torch.long, pin_memory=True)
-        input_positions = _async_h2d(
-            prefill_input_positions + target_input_positions,
-            dtype=torch.long, pin_memory=True)
-        slot_mapping = _async_h2d(
-            prefill_slot_mapping + target_slot_mapping,
-            dtype=torch.long, pin_memory=True)
+        # input_tokens = _async_h2d(
+        #     prefill_input_tokens + target_input_tokens,
+        #     dtype=torch.long, pin_memory=True)
+        # input_positions = _async_h2d(
+        #     prefill_input_positions + target_input_positions,
+        #     dtype=torch.long, pin_memory=True)
+        # slot_mapping = _async_h2d(
+        #     prefill_slot_mapping + target_slot_mapping,
+        #     dtype=torch.long, pin_memory=True)
+
+        input_tokens = torch.tensor(
+            prefill_input_tokens + target_input_tokens, dtype=torch.long, device="cuda")
+        input_positions = torch.tensor(
+            prefill_input_positions + target_input_positions, dtype=torch.long, device="cuda")
+        slot_mapping = torch.tensor(
+            prefill_slot_mapping + target_slot_mapping, dtype=torch.long, device="cuda")
 
         num_prefill_tokens = sum(prefill_lens)
         num_decode_tokens = sum(target_lens)
 
-        target_lens = _async_h2d(
-            target_lens, dtype=torch.int, pin_memory=True)
+        # target_lens = _async_h2d(
+        #     target_lens, dtype=torch.int, pin_memory=True)
+        target_lens = torch.tensor(
+            target_lens, dtype=torch.int, device="cuda")
 
         if target_decode_seq_group_metadata_list:
-            context_lens = _async_h2d(
-                target_context_lens, dtype=torch.int, pin_memory=True)
+            # context_lens = _async_h2d(
+            #     target_context_lens, dtype=torch.int, pin_memory=True)
+            context_lens = torch.tensor(
+                target_context_lens, dtype=torch.int, device="cuda"
+            )
             max_block_table_len = max([len(t) for t in target_block_tables])
             block_tables = _make_tensor_with_pad(
                 target_block_tables,

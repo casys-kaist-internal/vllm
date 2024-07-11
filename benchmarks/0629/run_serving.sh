@@ -17,7 +17,7 @@ output_csv="benchmark_results.csv"
 
 initialize_csv() {
     if [ ! -f "$output_csv" ]; then
-        echo "dataset,output_len,request_rate,draft_size,chunk_prefill,colocate,target_attention,p50_ttft,p99_ttft,p50_tpot,p99_tpot,p50_tpt,p99_tpt,throughput,latency,preempt_flag" > "$output_csv"
+        echo "dataset,temperature,output_len,request_rate,draft_size,chunk_prefill,colocate,target_attention,p50_ttft,p99_ttft,p50_tpot,p99_tpot,p50_tpt,p99_tpt,throughput,latency,preempt_flag" > "$output_csv"
     else
         echo "Error: $output_csv already exists."
         exit 1

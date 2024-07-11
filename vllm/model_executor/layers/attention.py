@@ -10,7 +10,7 @@ from xformers.ops.fmha.attn_bias import (BlockDiagonalCausalMask,
 from vllm._C import ops
 from vllm._C import cache_ops
 from vllm.model_executor.input_metadata import InputMetadata
-from vllm.utils import is_hip
+from vllm.utils import is_hip, nvtx_range
 
 _SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
@@ -56,6 +56,7 @@ class PagedAttention(nn.Module):
             raise ValueError(f"head_size ({self.head_size}) is not supported. "
                              f"Supported head sizes: {_SUPPORTED_HEAD_SIZES}.")
 
+    @nvtx_range("attention forward")
     def forward(
         self,
         query: torch.Tensor,
@@ -174,6 +175,7 @@ class PagedAttention(nn.Module):
 
         # Decoding run.
         if num_decode_tokens > 0:
+            torch.cuda.nvtx.range_push("decode_attention")
             if key_cache is not None and value_cache is not None:
                 output[num_prefill_tokens:] = _paged_attention(
                     decode_query,
@@ -189,6 +191,7 @@ class PagedAttention(nn.Module):
                 # This happens during the initial memory profiling run for
                 # CUDA graphs.
                 output = torch.zeros_like(query)
+            torch.cuda.nvtx.range_pop()
 
         # Reshape the output tensor.
         return output.view(-1, self.num_heads * self.head_size)
@@ -230,6 +233,7 @@ def _make_alibi_bias(
     return attn_biases
 
 
+@ nvtx_range("_paged_attention")
 def _paged_attention(
     query: torch.Tensor,
     key_cache: torch.Tensor,
@@ -322,11 +326,5 @@ def _paged_attention(
                 input_metadata.max_context_len,
                 alibi_slopes,
             )
-
-    # if torch.isnan(tmp_output).any():
-    #     raise RuntimeError("NaN detected in PagedAttention tmp_output.")
-
-    # if torch.isnan(output).any():
-    #     raise RuntimeError("NaN detected in PagedAttention output.")
 
     return output

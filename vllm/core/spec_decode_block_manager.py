@@ -47,6 +47,7 @@ class SpecDecodeBlockAllocator:
         if block.ref_count == 0:
             raise ValueError(f"Double free! {block} is already freed.")
         block.ref_count -= 1
+        assert block.ref_count == 0  # added for spec decode debugging
         if block.ref_count == 0:
             self.free_blocks.append(block)
 

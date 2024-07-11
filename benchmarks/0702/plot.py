@@ -7,7 +7,8 @@ df = pd.read_csv('benchmark_results.csv')
 
 # Define lists for subplot division and labeling
 # Controls how subplots are divided
-subplot_division_features = ['chunk_prefill', 'output_len', 'temperature']
+subplot_division_features = ['chunk_prefill',
+                             'output_len', 'temperature', 'budget']
 # Controls labeling within subplots
 labeling_features = ['draft_size', 'target_attention', 'colocate']
 
