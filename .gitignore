@@ -190,3 +190,6 @@ benchmarks/result/*
 
 # huggingface 
 .huggingface_cache/
+
+# dont include any nsight system files 
+benchmarks/*/nsight/*
