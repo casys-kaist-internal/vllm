@@ -1,0 +1,788 @@
+ Budget,         2048,          256,                 17,              1,             17,            0,            0
+Budget, elapsed_time,  0.053775190375745296
+ Budget,         2048,          256,                 19,              2,             19,            0,            0
+Budget, elapsed_time,  0.03027920238673687
+ Budget,         2048,          256,                  8,              2,              0,            1,            7
+Budget, elapsed_time,  0.10026458092033863
+ Budget,         2048,          256,                 24,              4,             16,            1,            7
+Budget, elapsed_time,  0.02929836604744196
+ Budget,         2048,          256,                 21,              5,             13,            1,            7
+Budget, elapsed_time,  0.02886491548269987
+ Budget,         2048,          256,                 35,              6,             11,            3,           21
+Budget, elapsed_time,  0.02924618124961853
+ Budget,         2048,          256,                 29,              7,             13,            2,           14
+Budget, elapsed_time,  0.029039252549409866
+ Budget,         2048,          256,                 45,              8,             13,            4,           28
+Budget, elapsed_time,  0.02999535296112299
+ Budget,         2048,          256,                 24,              8,              0,            3,           21
+Budget, elapsed_time,  0.028665613383054733
+ Budget,         2048,          256,                 40,              8,              0,            5,           35
+Budget, elapsed_time,  0.03103501070290804
+ Budget,         2048,          256,                 24,              8,              0,            3,           21
+Budget, elapsed_time,  0.02887493185698986
+ Budget,         2048,          256,                 55,              9,             15,            5,           35
+Budget, elapsed_time,  0.030025145038962364
+ Budget,         2048,          256,                 24,              9,              0,            3,           21
+Budget, elapsed_time,  0.028995689935982227
+ Budget,         2048,          256,                 48,              9,              0,            6,           42
+Budget, elapsed_time,  0.03001990169286728
+ Budget,         2048,          256,                 24,              9,              0,            3,           21
+Budget, elapsed_time,  0.029214932583272457
+ Budget,         2048,          256,                 48,              9,              0,            6,           42
+Budget, elapsed_time,  0.029944528825581074
+ Budget,         2048,          256,                 24,              9,              0,            3,           21
+Budget, elapsed_time,  0.029184226877987385
+ Budget,         2048,          256,                 72,             11,             24,            6,           42
+Budget, elapsed_time,  0.0334544675424695
+ Budget,         2048,          256,                 24,             11,              0,            3,           21
+Budget, elapsed_time,  0.03302665054798126
+ Budget,         2048,          256,                 64,             11,              0,            8,           56
+Budget, elapsed_time,  0.030126487836241722
+ Budget,         2048,          256,                 37,             12,             13,            3,           21
+Budget, elapsed_time,  0.030018115416169167
+ Budget,         2048,          256,                 79,             13,             15,            8,           56
+Budget, elapsed_time,  0.03289250377565622
+ Budget,         2048,          256,                 45,             14,             13,            4,           28
+Budget, elapsed_time,  0.030965019017457962
+ Budget,         2048,          256,                 72,             14,              0,            9,           63
+Budget, elapsed_time,  0.03410952724516392
+ Budget,         2048,          256,                 40,             14,              0,            5,           35
+Budget, elapsed_time,  0.03164299204945564
+ Budget,         2048,          256,                 72,             14,              0,            9,           63
+Budget, elapsed_time,  0.03404575865715742
+ Budget,         2048,          256,                 55,             16,             15,            5,           35
+Budget, elapsed_time,  0.03206505719572306
+ Budget,         2048,          256,                 91,             18,             19,            9,           63
+Budget, elapsed_time,  0.03365297708660364
+ Budget,         2048,          256,                 56,             18,              0,            7,           49
+Budget, elapsed_time,  0.03379453904926777
+ Budget,         2048,          256,                 99,             19,             11,           11,           77
+Budget, elapsed_time,  0.034188260324299335
+ Budget,         2048,          256,                 56,             19,              0,            7,           49
+Budget, elapsed_time,  0.03328233864158392
+ Budget,         2048,          256,                 96,             19,              0,           12,           84
+Budget, elapsed_time,  0.03368225879967213
+ Budget,         2048,          256,                 80,             20,             24,            7,           49
+Budget, elapsed_time,  0.035244978964328766
+ Budget,         2048,          256,                 96,             20,              0,           12,           84
+Budget, elapsed_time,  0.03384477365761995
+ Budget,         2048,          256,                 73,             21,              9,            8,           56
+Budget, elapsed_time,  0.03326338902115822
+ Budget,         2048,          256,                 96,             21,              0,           12,           84
+Budget, elapsed_time,  0.033824543468654156
+ Budget,         2048,          256,                 72,             19,              0,            9,           63
+Budget, elapsed_time,  0.03460352309048176
+ Budget,         2048,          256,                 80,             19,              0,           10,           70
+Budget, elapsed_time,  0.034855227917432785
+ Budget,         2048,          256,                 72,             19,              0,            9,           63
+Budget, elapsed_time,  0.034134531393647194
+ Budget,         2048,          256,                 80,             19,              0,           10,           70
+Budget, elapsed_time,  0.03497579786926508
+ Budget,         2048,          256,                 80,             20,              8,            9,           63
+Budget, elapsed_time,  0.03512055054306984
+ Budget,         2048,          256,                 80,             20,              0,           10,           70
+Budget, elapsed_time,  0.034939391538500786
+ Budget,         2048,          256,                 96,             21,             16,           10,           70
+Budget, elapsed_time,  0.033354757353663445
+ Budget,         2048,          256,                 96,             22,             16,           10,           70
+Budget, elapsed_time,  0.03368381783366203
+ Budget,         2048,          256,                 88,             22,              0,           11,           77
+Budget, elapsed_time,  0.0349225252866745
+ Budget,         2048,          256,                 88,             22,              0,           11,           77
+Budget, elapsed_time,  0.03489679004997015
+ Budget,         2048,          256,                111,             23,             23,           11,           77
+Budget, elapsed_time,  0.03447701130062342
+ Budget,         2048,          256,                120,             25,             40,           10,           70
+Budget, elapsed_time,  0.03482029773294926
+ Budget,         2048,          256,                104,             25,              0,           13,           91
+Budget, elapsed_time,  0.03475786931812763
+ Budget,         2048,          256,                 96,             25,              0,           12,           84
+Budget, elapsed_time,  0.03398914821445942
+ Budget,         2048,          256,                104,             25,              0,           13,           91
+Budget, elapsed_time,  0.035060650669038296
+ Budget,         2048,          256,                 96,             25,              0,           12,           84
+Budget, elapsed_time,  0.034131426364183426
+ Budget,         2048,          256,                119,             26,             15,           13,           91
+Budget, elapsed_time,  0.03586232662200928
+ Budget,         2048,          256,                136,             28,             40,           12,           84
+Budget, elapsed_time,  0.045345853082835674
+ Budget,         2048,          256,                120,             27,              8,           14,           98
+Budget, elapsed_time,  0.03613244462758303
+ Budget,         2048,          256,                 96,             27,              0,           12,           84
+Budget, elapsed_time,  0.033864576369524
+ Budget,         2048,          256,                145,             29,             25,           15,          105
+Budget, elapsed_time,  0.04416929744184017
+ Budget,         2048,          256,                125,             31,             29,           12,           84
+Budget, elapsed_time,  0.03576607350260019
+ Budget,         2048,          256,                136,             31,              0,           17,          119
+Budget, elapsed_time,  0.046839237213134766
+ Budget,         2048,          256,                126,             31,             14,           14,           98
+Budget, elapsed_time,  0.03639575932174921
+ Budget,         2048,          256,                150,             32,             22,           16,          112
+Budget, elapsed_time,  0.04483032878488302
+ Budget,         2048,          256,                151,             33,             31,           15,          105
+Budget, elapsed_time,  0.04486265126615763
+ Budget,         2048,          256,                136,             31,              0,           17,          119
+Budget, elapsed_time,  0.04771619476377964
+ Budget,         2048,          256,                112,             31,              0,           14,           98
+Budget, elapsed_time,  0.03510846011340618
+ Budget,         2048,          256,                142,             32,              6,           17,          119
+Budget, elapsed_time,  0.0486139040440321
+ Budget,         2048,          256,                112,             32,              0,           14,           98
+Budget, elapsed_time,  0.03534791339188814
+ Budget,         2048,          256,                172,             34,             28,           18,          126
+Budget, elapsed_time,  0.04710143152624369
+ Budget,         2048,          256,                129,             35,             17,           14,           98
+Budget, elapsed_time,  0.04696312174201012
+ Budget,         2048,          256,                202,             37,             42,           20,          140
+Budget, elapsed_time,  0.05582550633698702
+ Budget,         2048,          256,                129,             38,              9,           15,          105
+Budget, elapsed_time,  0.04720396641641855
+ Budget,         2048,          256,                187,             39,             11,           22,          154
+Budget, elapsed_time,  0.04943730030208826
+ Budget,         2048,          256,                174,             41,             46,           16,          112
+Budget, elapsed_time,  0.04674726910889149
+ Budget,         2048,          256,                217,             43,             41,           22,          154
+Budget, elapsed_time,  0.05711093358695507
+ Budget,         2048,          256,                166,             43,             14,           19,          133
+Budget, elapsed_time,  0.0467499615624547
+ Budget,         2048,          256,                184,             43,              0,           23,          161
+Budget, elapsed_time,  0.047189049422740936
+ Budget,         2048,          256,                160,             42,              0,           20,          140
+Budget, elapsed_time,  0.04314307030290365
+ Budget,         2048,          256,                176,             41,              0,           22,          154
+Budget, elapsed_time,  0.052138954401016235
+ Budget,         2048,          256,                152,             40,              0,           19,          133
+Budget, elapsed_time,  0.04446060676127672
+ Budget,         2048,          256,                235,             44,             67,           21,          147
+Budget, elapsed_time,  0.05770025961101055
+ Budget,         2048,          256,                179,             46,             27,           19,          133
+Budget, elapsed_time,  0.04790682904422283
+ Budget,         2048,          256,                243,             48,             43,           25,          175
+Budget, elapsed_time,  0.060566519387066364
+ Budget,         2048,          256,                186,             48,             26,           20,          140
+Budget, elapsed_time,  0.04898748826235533
+ Budget,         2048,          256,                245,             51,             37,           26,          182
+Budget, elapsed_time,  0.060064058750867844
+ Budget,         2048,          256,                176,             51,              0,           22,          154
+Budget, elapsed_time,  0.05154064949601889
+ Budget,         2048,          256,                257,             53,             25,           29,          203
+Budget, elapsed_time,  0.06406642217189074
+ Budget,         2048,          256,                189,             54,             13,           22,          154
+Budget, elapsed_time,  0.05020683538168669
+ Budget,         2048,          256,                266,             55,             18,           31,          217
+Budget, elapsed_time,  0.06585350353270769
+ Budget,         2048,          256,                184,             55,              0,           23,          161
+Budget, elapsed_time,  0.0476430244743824
+ Budget,         2048,          256,                256,             55,              0,           32,          224
+Budget, elapsed_time,  0.06809052079916
+ Budget,         2048,          256,                208,             56,             24,           23,          161
+Budget, elapsed_time,  0.06444437243044376
+ Budget,         2048,          256,                248,             56,              0,           31,          217
+Budget, elapsed_time,  0.0655843336135149
+ Budget,         2048,          256,                200,             56,              0,           25,          175
+Budget, elapsed_time,  0.06471073348075151
+ Budget,         2048,          256,                263,             56,             15,           31,          217
+Budget, elapsed_time,  0.06498120632022619
+ Budget,         2048,          256,                201,             57,              9,           24,          168
+Budget, elapsed_time,  0.05871019326150417
+ Budget,         2048,          256,                299,             59,             43,           32,          224
+Budget, elapsed_time,  0.06895310431718826
+ Budget,         2048,          256,                249,             64,             65,           23,          161
+Budget, elapsed_time,  0.060636986047029495
+ Budget,         2048,          256,                302,             64,             14,           36,          252
+Budget, elapsed_time,  0.07033493090420961
+ Budget,         2048,          256,                234,             66,             18,           27,          189
+Budget, elapsed_time,  0.06089679803699255
+ Budget,         2048,          256,                313,             68,             17,           37,          259
+Budget, elapsed_time,  0.07224341295659542
+ Budget,         2048,          256,                242,             69,             10,           29,          203
+Budget, elapsed_time,  0.06090768799185753
+ Budget,         2048,          256,                312,             69,              0,           39,          273
+Budget, elapsed_time,  0.07397397048771381
+ Budget,         2048,          256,                277,             71,             37,           30,          210
+Budget, elapsed_time,  0.06620768364518881
+ Budget,         2048,          256,                356,             73,             44,           39,          273
+Budget, elapsed_time,  0.07692722976207733
+ Budget,         2048,          256,                294,             76,             38,           32,          224
+Budget, elapsed_time,  0.06838683970272541
+ Budget,         2048,          256,                348,             78,             20,           41,          287
+Budget, elapsed_time,  0.07774318475276232
+ Budget,         2048,          256,                316,             78,             36,           35,          245
+Budget, elapsed_time,  0.07123017031699419
+ Budget,         2048,          256,                359,             79,             31,           41,          287
+Budget, elapsed_time,  0.07764171250164509
+ Budget,         2048,          256,                308,             80,             20,           36,          252
+Budget, elapsed_time,  0.07080800924450159
+ Budget,         2048,          256,                344,             80,              0,           43,          301
+Budget, elapsed_time,  0.07918423414230347
+ Budget,         2048,          256,                329,             80,             33,           37,          259
+Budget, elapsed_time,  0.07273027580231428
+ Budget,         2048,          256,                361,             81,             33,           41,          287
+Budget, elapsed_time,  0.07814877200871706
+ Budget,         2048,          256,                337,             81,             33,           38,          266
+Budget, elapsed_time,  0.07414908707141876
+ Budget,         2048,          256,                328,             81,              0,           41,          287
+Budget, elapsed_time,  0.07789790444076061
+ Budget,         2048,          256,                356,             83,             36,           40,          280
+Budget, elapsed_time,  0.07555550243705511
+ Budget,         2048,          256,                328,             82,              0,           41,          287
+Budget, elapsed_time,  0.07852723263204098
+ Budget,         2048,          256,                353,             84,             25,           41,          287
+Budget, elapsed_time,  0.07590219099074602
+ Budget,         2048,          256,                345,             85,             17,           41,          287
+Budget, elapsed_time,  0.0787426745519042
+ Budget,         2048,          256,                373,             86,             29,           43,          301
+Budget, elapsed_time,  0.07824809104204178
+ Budget,         2048,          256,                347,             86,             19,           41,          287
+Budget, elapsed_time,  0.07827645819634199
+ Budget,         2048,          256,                362,             87,             10,           44,          308
+Budget, elapsed_time,  0.07792360242456198
+ Budget,         2048,          256,                345,             88,              9,           42,          294
+Budget, elapsed_time,  0.0792330214753747
+ Budget,         2048,          256,                375,             89,             15,           45,          315
+Budget, elapsed_time,  0.07963907718658447
+ Budget,         2048,          256,                372,             90,             28,           43,          301
+Budget, elapsed_time,  0.08112743962556124
+ Budget,         2048,          256,                360,             89,              0,           45,          315
+Budget, elapsed_time,  0.07988120801746845
+ Budget,         2048,          256,                370,             89,             18,           44,          308
+Budget, elapsed_time,  0.08125839941203594
+ Budget,         2048,          256,                377,             89,             25,           44,          308
+Budget, elapsed_time,  0.08025816734880209
+ Budget,         2048,          256,                398,             91,             54,           43,          301
+Budget, elapsed_time,  0.09436702821403742
+ Budget,         2048,          256,                409,             93,             49,           45,          315
+Budget, elapsed_time,  0.09388845972716808
+ Budget,         2048,          256,                431,             95,             71,           45,          315
+Budget, elapsed_time,  0.09592404495924711
+ Budget,         2048,          256,                404,             97,             36,           46,          322
+Budget, elapsed_time,  0.09363119211047888
+ Budget,         2048,          256,                410,             98,             18,           49,          343
+Budget, elapsed_time,  0.09694328717887402
+ Budget,         2048,          256,                388,             99,             12,           47,          329
+Budget, elapsed_time,  0.09339882526546717
+ Budget,         2048,          256,                445,            102,             37,           51,          357
+Budget, elapsed_time,  0.09958379901945591
+ Budget,         2048,          256,                401,            102,             17,           48,          336
+Budget, elapsed_time,  0.09520447999238968
+ Budget,         2048,          256,                440,            102,             16,           53,          371
+Budget, elapsed_time,  0.1014561178162694
+ Budget,         2048,          256,                418,            102,             34,           48,          336
+Budget, elapsed_time,  0.09603260643780231
+ Budget,         2048,          256,                430,            103,             14,           52,          364
+Budget, elapsed_time,  0.0988724259659648
+ Budget,         2048,          256,                417,            103,             17,           50,          350
+Budget, elapsed_time,  0.09702281653881073
+ Budget,         2048,          256,                416,            101,              0,           52,          364
+Budget, elapsed_time,  0.09919571690261364
+ Budget,         2048,          256,                392,            100,              0,           49,          343
+Budget, elapsed_time,  0.09674378484487534
+ Budget,         2048,          256,                439,            100,             31,           51,          357
+Budget, elapsed_time,  0.10575123503804207
+ Budget,         2048,          256,                407,            102,             31,           47,          329
+Budget, elapsed_time,  0.09944968111813068
+ Budget,         2048,          256,                443,            103,             19,           53,          371
+Budget, elapsed_time,  0.10246814880520105
+ Budget,         2048,          256,                397,            104,             13,           48,          336
+Budget, elapsed_time,  0.09829386416822672
+ Budget,         2048,          256,                498,            108,             58,           55,          385
+Budget, elapsed_time,  0.10668438207358122
+ Budget,         2048,          256,                423,            110,             31,           49,          343
+Budget, elapsed_time,  0.09975975099951029
+ Budget,         2048,          256,                491,            110,             19,           59,          413
+Budget, elapsed_time,  0.1064206613227725
+ Budget,         2048,          256,                412,            109,             12,           50,          350
+Budget, elapsed_time,  0.09852067194879055
+ Budget,         2048,          256,                464,            108,              0,           58,          406
+Budget, elapsed_time,  0.10502587631344795
+ Budget,         2048,          256,                418,            108,             18,           50,          350
+Budget, elapsed_time,  0.09801201801747084
+ Budget,         2048,          256,                503,            110,             47,           57,          399
+Budget, elapsed_time,  0.10527897626161575
+ Budget,         2048,          256,                472,            116,             72,           50,          350
+Budget, elapsed_time,  0.10334056615829468
+ Budget,         2048,          256,                510,            117,             30,           60,          420
+Budget, elapsed_time,  0.10848009493201971
+ Budget,         2048,          256,                443,            117,             11,           54,          378
+Budget, elapsed_time,  0.10149516817182302
+ Budget,         2048,          256,                530,            118,             34,           62,          434
+Budget, elapsed_time,  0.11501556914299726
+ Budget,         2048,          256,                487,            117,             63,           53,          371
+Budget, elapsed_time,  0.10402551107108593
+ Budget,         2048,          256,                505,            117,             17,           61,          427
+Budget, elapsed_time,  0.10697384178638458
+ Budget,         2048,          256,                469,            118,             29,           55,          385
+Budget, elapsed_time,  0.10463025514036417
+ Budget,         2048,          256,                526,            120,             38,           61,          427
+Budget, elapsed_time,  0.11494901031255722
+ Budget,         2048,          256,                497,            122,             49,           56,          392
+Budget, elapsed_time,  0.10591968521475792
+ Budget,         2048,          256,                526,            122,             22,           63,          441
+Budget, elapsed_time,  0.11617323197424412
+ Budget,         2048,          256,                541,            126,             77,           58,          406
+Budget, elapsed_time,  0.11381158512085676
+ Budget,         2048,          256,                600,            132,             96,           63,          441
+Budget, elapsed_time,  0.1282115476205945
+ Budget,         2048,          256,                555,            133,             51,           63,          441
+Budget, elapsed_time,  0.11697517335414886
+ Budget,         2048,          256,                546,            134,             18,           66,          462
+Budget, elapsed_time,  0.11942573636770248
+ Budget,         2048,          256,                536,            134,              0,           67,          469
+Budget, elapsed_time,  0.11557403858751059
+ Budget,         2048,          256,                548,            135,             12,           67,          469
+Budget, elapsed_time,  0.12052991148084402
+ Budget,         2048,          256,                589,            138,             53,           67,          469
+Budget, elapsed_time,  0.1183891911059618
+ Budget,         2048,          256,                596,            140,             60,           67,          469
+Budget, elapsed_time,  0.12151023931801319
+ Budget,         2048,          256,                565,            140,             13,           69,          483
+Budget, elapsed_time,  0.11897340975701809
+ Budget,         2048,          256,                593,            140,             33,           70,          490
+Budget, elapsed_time,  0.12130021117627621
+ Budget,         2048,          256,                586,            143,             42,           68,          476
+Budget, elapsed_time,  0.11880706902593374
+ Budget,         2048,          256,                576,            143,              0,           72,          504
+Budget, elapsed_time,  0.12130912486463785
+ Budget,         2048,          256,                601,            143,             33,           71,          497
+Budget, elapsed_time,  0.12127184960991144
+ Budget,         2048,          256,                566,            143,             14,           69,          483
+Budget, elapsed_time,  0.12153831031173468
+ Budget,         2048,          256,                666,            146,             82,           73,          511
+Budget, elapsed_time,  0.13985295500606298
+ Budget,         2048,          256,                620,            151,             76,           68,          476
+Budget, elapsed_time,  0.12315487582236528
+ Budget,         2048,          256,                680,            153,             56,           78,          546
+Budget, elapsed_time,  0.1424563629552722
+ Budget,         2048,          256,                657,            157,             81,           72,          504
+Budget, elapsed_time,  0.14067371934652328
+ Budget,         2048,          256,                701,            161,             53,           81,          567
+Budget, elapsed_time,  0.14522377401590347
+ Budget,         2048,          256,                614,            162,             14,           75,          525
+Budget, elapsed_time,  0.12588205002248287
+ Budget,         2048,          256,                713,            162,             25,           86,          602
+Budget, elapsed_time,  0.1472485512495041
+ Budget,         2048,          256,                630,            165,             38,           74,          518
+Budget, elapsed_time,  0.12650870718061924
+ Budget,         2048,          256,                721,            164,             17,           88,          616
+Budget, elapsed_time,  0.149968677200377
+ Budget,         2048,          256,                667,            167,             67,           75,          525
+Budget, elapsed_time,  0.14383921679109335
+ Budget,         2048,          256,                734,            167,             38,           87,          609
+Budget, elapsed_time,  0.1499746898189187
+ Budget,         2048,          256,                697,            170,             73,           78,          546
+Budget, elapsed_time,  0.14599404949694872
+ Budget,         2048,          256,                720,            167,             16,           88,          616
+Budget, elapsed_time,  0.1507928529754281
+ Budget,         2048,          256,                636,            167,             12,           78,          546
+Budget, elapsed_time,  0.1283526048064232
+ Budget,         2048,          256,                739,            167,             35,           88,          616
+Budget, elapsed_time,  0.15091619547456503
+ Budget,         2048,          256,                642,            168,             26,           77,          539
+Budget, elapsed_time,  0.14410595875233412
+ Budget,         2048,          256,                720,            169,              8,           89,          623
+Budget, elapsed_time,  0.15200547873973846
+ Budget,         2048,          256,                640,            166,              8,           79,          553
+Budget, elapsed_time,  0.1386560183018446
+ Budget,         2048,          256,                726,            168,             38,           86,          602
+Budget, elapsed_time,  0.15113862045109272
+ Budget,         2048,          256,                680,            170,             40,           80,          560
+Budget, elapsed_time,  0.14828599896281958
+ Budget,         2048,          256,                776,            171,             80,           87,          609
+Budget, elapsed_time,  0.16866794601082802
+ Budget,         2048,          256,                669,            171,             29,           80,          560
+Budget, elapsed_time,  0.14638216141611338
+ Budget,         2048,          256,                766,            174,             54,           89,          623
+Budget, elapsed_time,  0.15440908912569284
+ Budget,         2048,          256,                711,            178,             63,           81,          567
+Budget, elapsed_time,  0.15030995104461908
+ Budget,         2048,          256,                757,            178,             21,           92,          644
+Budget, elapsed_time,  0.25185465067625046
+ Budget,         2048,          256,                704,            178,             24,           85,          595
+Budget, elapsed_time,  0.2353142024949193
+ Budget,         2048,          256,                818,            184,             90,           91,          637
+Budget, elapsed_time,  0.1715085804462433
+ Budget,         2048,          256,                780,            191,             92,           86,          602
+Budget, elapsed_time,  0.16843977104872465
+ Budget,         2048,          256,                869,            193,             85,           98,          686
+Budget, elapsed_time,  0.24054487328976393
+ Budget,         2048,          256,                842,            198,            114,           91,          637
+Budget, elapsed_time,  0.17431676667183638
+ Budget,         2048,          256,                874,            201,             82,           99,          693
+Budget, elapsed_time,  0.1807380886748433
+ Budget,         2048,          256,                821,            202,             45,           97,          679
+Budget, elapsed_time,  0.17142605688422918
+ Budget,         2048,          256,                880,            205,             72,          101,          707
+Budget, elapsed_time,  0.1799773871898651
+ Budget,         2048,          256,                905,            210,            113,           99,          693
+Budget, elapsed_time,  0.19204364344477654
+ Budget,         2048,          256,                897,            212,             57,          105,          735
+Budget, elapsed_time,  0.19898611027747393
+ Budget,         2048,          256,                911,            216,             79,          104,          728
+Budget, elapsed_time,  0.19479540269821882
+ Budget,         2048,          256,                925,            218,             77,          106,          742
+Budget, elapsed_time,  0.19774343352764845
+ Budget,         2048,          256,                897,            219,             33,          108,          756
+Budget, elapsed_time,  0.19475168734788895
+ Budget,         2048,          256,                926,            221,             62,          108,          756
+Budget, elapsed_time,  0.19818259309977293
+ Budget,         2048,          256,                902,            222,             30,          109,          763
+Budget, elapsed_time,  0.19697253592312336
+ Budget,         2048,          256,                951,            221,             63,          111,          777
+Budget, elapsed_time,  0.20088471937924623
+ Budget,         2048,          256,                941,            225,             93,          106,          742
+Budget, elapsed_time,  0.19561892561614513
+ Budget,         2048,          256,                935,            226,             23,          114,          798
+Budget, elapsed_time,  0.20157102961093187
+ Budget,         2048,          256,                929,            225,             49,          110,          770
+Budget, elapsed_time,  0.19369246251881123
+ Budget,         2048,          256,                925,            225,             29,          112,          784
+Budget, elapsed_time,  0.1999862939119339
+ Budget,         2048,          256,                907,            226,             19,          111,          777
+Budget, elapsed_time,  0.19374617841094732
+ Budget,         2048,          256,               1020,            233,            116,          113,          791
+Budget, elapsed_time,  0.2034091092646122
+ Budget,         2048,          256,                932,            233,             28,          113,          791
+Budget, elapsed_time,  0.19753616861999035
+ Budget,         2048,          256,               1065,            237,            121,          118,          826
+Budget, elapsed_time,  0.21922417264431715
+ Budget,         2048,          256,                961,            238,             57,          113,          791
+Budget, elapsed_time,  0.20111641194671392
+ Budget,         2048,          256,               1081,            246,            105,          122,          854
+Budget, elapsed_time,  0.3189157508313656
+ Budget,         2048,          256,               1051,            253,            131,          115,          805
+Budget, elapsed_time,  0.21802860591560602
+ Budget,         2048,          256,               1047,            252,              7,          130,          910
+Budget, elapsed_time,  0.22414300497621298
+ Budget,         2048,          256,               1011,            251,             43,          121,          847
+Budget, elapsed_time,  0.2034406317397952
+ Budget,         2048,          256,               1076,            252,             68,          126,          882
+Budget, elapsed_time,  0.22332594823092222
+ Budget,         2048,          256,               1064,            255,             88,          122,          854
+Budget, elapsed_time,  0.21403771080076694
+ Budget,         2048,          256,               1091,            256,             75,          127,          889
+Budget, elapsed_time,  0.22549783065915108
+ Budget,         2048,          256,               1010,            256,             10,          125,          875
+Budget, elapsed_time,  0.20576906763017178
+ Budget,         2048,          256,               1085,            256,             45,          130,          910
+Budget, elapsed_time,  0.22873565554618835
+ Budget,         2048,          256,               1006,            256,             22,          123,          861
+Budget, elapsed_time,  0.2064623637124896
+ Budget,         2048,          256,               1059,            256,             11,          131,          917
+Budget, elapsed_time,  0.227706097997725
+ Budget,         2048,          256,               1032,            256,             40,          124,          868
+Budget, elapsed_time,  0.21768292784690857
+ Budget,         2048,          256,               1064,            256,             32,          129,          903
+Budget, elapsed_time,  0.22433447744697332
+ Budget,         2048,          256,               1011,            256,             11,          125,          875
+Budget, elapsed_time,  0.20976721122860909
+ Budget,         2048,          256,               1086,            256,             46,          130,          910
+Budget, elapsed_time,  0.23085416108369827
+ Budget,         2048,          256,               1046,            256,             62,          123,          861
+Budget, elapsed_time,  0.22326504345983267
+ Budget,         2048,          256,               1053,            256,             29,          128,          896
+Budget, elapsed_time,  0.22839324548840523
+ Budget,         2048,          256,               1077,            256,             69,          126,          882
+Budget, elapsed_time,  0.22649929020553827
+ Budget,         2048,          256,               1019,            256,             11,          126,          882
+Budget, elapsed_time,  0.21460654214024544
+ Budget,         2048,          256,               1116,            256,             84,          129,          903
+Budget, elapsed_time,  0.2548712892457843
+ Budget,         2048,          256,               1022,            256,             46,          122,          854
+Budget, elapsed_time,  0.21357436198741198
+ Budget,         2048,          256,               1098,            256,             50,          131,          917
+Budget, elapsed_time,  0.2282132850959897
+ Budget,         2048,          256,               1023,            256,             47,          122,          854
+Budget, elapsed_time,  0.21333994157612324
+ Budget,         2048,          256,               1085,            256,             37,          131,          917
+Budget, elapsed_time,  0.22905558813363314
+ Budget,         2048,          256,               1032,            256,             48,          123,          861
+Budget, elapsed_time,  0.2219594968482852
+ Budget,         2048,          256,               1177,            256,            137,          130,          910
+Budget, elapsed_time,  0.23829393554478884
+ Budget,         2048,          256,                985,            256,             41,          118,          826
+Budget, elapsed_time,  0.20873646344989538
+ Budget,         2048,          256,               1128,            256,             48,          135,          945
+Budget, elapsed_time,  0.23998700361698866
+ Budget,         2048,          256,                989,            256,             45,          118,          826
+Budget, elapsed_time,  0.2100963480770588
+ Budget,         2048,          256,               1121,            256,             41,          135,          945
+Budget, elapsed_time,  0.23347545508295298
+ Budget,         2048,          256,                979,            256,             35,          118,          826
+Budget, elapsed_time,  0.2086247056722641
+ Budget,         2048,          256,               1105,            256,             25,          135,          945
+Budget, elapsed_time,  0.233193370513618
+ Budget,         2048,          256,               1020,            256,             68,          119,          833
+Budget, elapsed_time,  0.2105357190594077
+ Budget,         2048,          256,               1056,            256,              0,          132,          924
+Budget, elapsed_time,  0.22490597609430552
+ Budget,         2048,          256,               1044,            256,             52,          124,          868
+Budget, elapsed_time,  0.22800875175744295
+ Budget,         2048,          256,               1112,            256,             72,          130,          910
+Budget, elapsed_time,  0.23023187555372715
+ Budget,         2048,          256,               1046,            256,             78,          121,          847
+Budget, elapsed_time,  0.22878338024020195
+ Budget,         2048,          256,               1096,            256,             56,          130,          910
+Budget, elapsed_time,  0.2283160174265504
+ Budget,         2048,          256,                984,            256,              8,          122,          854
+Budget, elapsed_time,  0.31878677755594254
+ Budget,         2048,          256,               1092,            256,             28,          133,          931
+Budget, elapsed_time,  0.23471520002931356
+ Budget,         2048,          256,               1003,            256,             35,          121,          847
+Budget, elapsed_time,  0.21351672895252705
+ Budget,         2048,          256,               1136,            256,             72,          133,          931
+Budget, elapsed_time,  0.24199339840561152
+ Budget,         2048,          256,                977,            256,             33,          118,          826
+Budget, elapsed_time,  0.2111485842615366
+ Budget,         2048,          256,               1139,            256,             51,          136,          952
+Budget, elapsed_time,  0.23860942851752043
+ Budget,         2048,          256,               1017,            256,             81,          117,          819
+Budget, elapsed_time,  0.21396245341748
+ Budget,         2048,          256,               1090,            256,             26,          133,          931
+Budget, elapsed_time,  0.23491628095507622
+ Budget,         2048,          256,                990,            256,             30,          120,          840
+Budget, elapsed_time,  0.21129678282886744
+ Budget,         2048,          256,               1085,            256,             13,          134,          938
+Budget, elapsed_time,  0.23422788735479116
+ Budget,         2048,          256,               1017,            256,             49,          121,          847
+Budget, elapsed_time,  0.21486650593578815
+ Budget,         2048,          256,               1087,            256,             31,          132,          924
+Budget, elapsed_time,  0.23583284206688404
+ Budget,         2048,          256,               1026,            256,             50,          122,          854
+Budget, elapsed_time,  0.2303852830082178
+ Budget,         2048,          256,               1088,            256,             48,          130,          910
+Budget, elapsed_time,  0.2304606819525361
+ Budget,         2048,          256,                990,            256,             14,          122,          854
+Budget, elapsed_time,  0.21330659929662943
+ Budget,         2048,          256,               1144,            256,             88,          132,          924
+Budget, elapsed_time,  0.2450213683769107
+ Budget,         2048,          256,               1061,            256,            109,          119,          833
+Budget, elapsed_time,  0.23070724867284298
+ Budget,         2048,          256,               1070,            256,             22,          131,          917
+Budget, elapsed_time,  0.23507891409099102
+ Budget,         2048,          256,               1071,            256,             79,          124,          868
+Budget, elapsed_time,  0.23164811171591282
+ Budget,         2048,          256,               1065,            256,             57,          126,          882
+Budget, elapsed_time,  0.344817035831511
+ Budget,         2048,          256,               1034,            256,             26,          126,          882
+Budget, elapsed_time,  0.23034823033958673
+ Budget,         2048,          256,               1067,            256,             43,          128,          896
+Budget, elapsed_time,  0.23456793650984764
+ Budget,         2048,          256,               1051,            256,             51,          125,          875
+Budget, elapsed_time,  0.23078815825283527
+ Budget,         2048,          256,               1025,            256,              9,          127,          889
+Budget, elapsed_time,  0.23249280266463757
+ Budget,         2048,          256,               1024,            256,              0,          128,          896
+Budget, elapsed_time,  0.21967592928558588
+ Budget,         2048,          256,               1034,            256,             10,          128,          896
+Budget, elapsed_time,  0.23337256908416748
+ Budget,         2048,          256,               1082,            256,             66,          127,          889
+Budget, elapsed_time,  0.23394274059683084
+ Budget,         2048,          256,               1101,            256,            101,          125,          875
+Budget, elapsed_time,  0.23710740730166435
+ Budget,         2048,          256,               1020,            256,             20,          125,          875
+Budget, elapsed_time,  0.22113765589892864
+ Budget,         2048,          256,               1067,            256,             35,          129,          903
+Budget, elapsed_time,  0.23687257431447506
+ Budget,         2048,          256,               1042,            256,             42,          125,          875
+Budget, elapsed_time,  0.23430111445486546
+ Budget,         2048,          256,               1087,            256,             63,          128,          896
+Budget, elapsed_time,  0.23892869893461466
+ Budget,         2048,          256,               1100,            256,            116,          123,          861
+Budget, elapsed_time,  0.23419649992138147
+ Budget,         2048,          256,               1079,            256,             63,          127,          889
+Budget, elapsed_time,  0.23508865758776665
+ Budget,         2048,          256,               1020,            256,             20,          125,          875
+Budget, elapsed_time,  0.21880565863102674
+ Budget,         2048,          256,               1128,            256,             88,          130,          910
+Budget, elapsed_time,  0.24532921519130468
+ Budget,         2048,          256,                967,            256,              7,          120,          840
+Budget, elapsed_time,  0.2202672827988863
+ Budget,         2048,          256,               1113,            256,             33,          135,          945
+Budget, elapsed_time,  0.3177757207304239
+ Budget,         2048,          256,                979,            256,             27,          119,          833
+Budget, elapsed_time,  0.21676503587514162
+ Budget,         2048,          256,               1132,            256,             44,          136,          952
+Budget, elapsed_time,  0.2438541678711772
+ Budget,         2048,          256,                994,            256,             58,          117,          819
+Budget, elapsed_time,  0.2191858058795333
+ Budget,         2048,          256,               1134,            256,             46,          136,          952
+Budget, elapsed_time,  0.24334155581891537
+ Budget,         2048,          256,                982,            256,             54,          116,          812
+Budget, elapsed_time,  0.21559006348252296
+ Budget,         2048,          256,               1207,            256,            119,          136,          952
+Budget, elapsed_time,  0.2501265723258257
+ Budget,         2048,          256,                940,            256,             36,          113,          791
+Budget, elapsed_time,  0.21553635504096746
+ Budget,         2048,          256,               1130,            256,             10,          140,          980
+Budget, elapsed_time,  0.24768780544400215
+ Budget,         2048,          256,                981,            256,             61,          115,          805
+Budget, elapsed_time,  0.21483179181814194
+ Budget,         2048,          256,               1111,            256,             23,          136,          952
+Budget, elapsed_time,  0.24207527562975883
+ Budget,         2048,          256,                997,            256,             45,          119,          833
+Budget, elapsed_time,  0.21786045469343662
+ Budget,         2048,          256,               1094,            256,             30,          133,          931
+Budget, elapsed_time,  0.24156329035758972
+ Budget,         2048,          256,                968,            256,              0,          121,          847
+Budget, elapsed_time,  0.21828037407249212
+ Budget,         2048,          256,               1127,            256,             47,          135,          945
+Budget, elapsed_time,  0.24428465869277716
+ Budget,         2048,          256,                975,            256,             31,          118,          826
+Budget, elapsed_time,  0.2161262072622776
+ Budget,         2048,          256,               1160,            256,             72,          136,          952
+Budget, elapsed_time,  0.2543792575597763
+ Budget,         2048,          256,               1031,            256,            111,          115,          805
+Budget, elapsed_time,  0.2845700439065695
+ Budget,         2048,          256,               1090,            256,             18,          134,          938
+Budget, elapsed_time,  0.2418226646259427
+ Budget,         2048,          256,                968,            256,              0,          121,          847
+Budget, elapsed_time,  0.2188933901488781
+ Budget,         2048,          256,               1108,            256,             28,          135,          945
+Budget, elapsed_time,  0.2455084826797247
+ Budget,         2048,          256,               1051,            256,             99,          119,          833
+Budget, elapsed_time,  0.23568785842508078
+ Budget,         2048,          256,               1143,            256,            103,          130,          910
+Budget, elapsed_time,  0.24305755272507668
+ Budget,         2048,          256,               1007,            256,             47,          120,          840
+Budget, elapsed_time,  0.2186359902843833
+ Budget,         2048,          256,               1186,            256,            122,          133,          931
+Budget, elapsed_time,  0.2500247461721301
+ Budget,         2048,          256,                944,            256,             32,          114,          798
+Budget, elapsed_time,  0.20447676442563534
+ Budget,         2048,          256,               1134,            256,             14,          140,          980
+Budget, elapsed_time,  0.2451497307047248
+ Budget,         2048,          256,                969,            256,             49,          115,          805
+Budget, elapsed_time,  0.21418652217835188
+ Budget,         2048,          256,               1122,            256,             18,          138,          966
+Budget, elapsed_time,  0.24439300410449505
+ Budget,         2048,          256,                975,            256,             39,          117,          819
+Budget, elapsed_time,  0.21559201087802649
+ Budget,         2048,          256,               1111,            256,             23,          136,          952
+Budget, elapsed_time,  0.2441419856622815
+ Budget,         2048,          256,                990,            256,             46,          118,          826
+Budget, elapsed_time,  0.21553908474743366
+ Budget,         2048,          256,               1125,            256,             37,          136,          952
+Budget, elapsed_time,  0.24560678284615278
+ Budget,         2048,          256,                960,            256,             16,          118,          826
+Budget, elapsed_time,  0.20843011885881424
+ Budget,         2048,          256,               1125,            256,             29,          137,          959
+Budget, elapsed_time,  0.37912276200950146
+ Budget,         2048,          256,                965,            256,             29,          117,          819
+Budget, elapsed_time,  0.22367951553314924
+ Budget,         2048,          256,               1126,            256,             30,          137,          959
+Budget, elapsed_time,  0.24767709337174892
+ Budget,         2048,          256,               1024,            256,             88,          117,          819
+Budget, elapsed_time,  0.2219920363277197
+ Budget,         2048,          256,               1168,            256,             96,          134,          938
+Budget, elapsed_time,  0.2565734423696995
+ Budget,         2048,          256,                933,            256,              5,          116,          812
+Budget, elapsed_time,  0.2163898702710867
+ Budget,         2048,          256,               1143,            256,             31,          139,          973
+Budget, elapsed_time,  0.2488688975572586
+ Budget,         2048,          256,                959,            256,             39,          115,          805
+Budget, elapsed_time,  0.2197075905278325
+ Budget,         2048,          256,               1149,            256,             45,          138,          966
+Budget, elapsed_time,  0.25007642339915037
+ Budget,         2048,          256,               1022,            256,            102,          115,          805
+Budget, elapsed_time,  0.21861968375742435
+ Budget,         2048,          256,               1131,            256,             59,          134,          938
+Budget, elapsed_time,  0.24479039572179317
+ Budget,         2048,          256,                963,            256,             19,          118,          826
+Budget, elapsed_time,  0.21761390939354897
+ Budget,         2048,          256,               1130,            256,             34,          137,          959
+Budget, elapsed_time,  0.24567717220634222
+ Budget,         2048,          256,                997,            256,             61,          117,          819
+Budget, elapsed_time,  0.21721799951046705
+ Budget,         2048,          256,               1121,            256,             41,          135,          945
+Budget, elapsed_time,  0.24453269317746162
+ Budget,         2048,          256,               1011,            256,             67,          118,          826
+Budget, elapsed_time,  0.2174446452409029
+ Budget,         2048,          256,               1146,            256,             74,          134,          938
+Budget, elapsed_time,  0.24445382878184319
+ Budget,         2048,          256,                962,            256,             18,          118,          826
+Budget, elapsed_time,  0.2194990972056985
+ Budget,         2048,          256,               1096,            256,              0,          137,          959
+Budget, elapsed_time,  0.2381030535325408
+ Budget,         2048,          256,               1031,            256,             79,          119,          833
+Budget, elapsed_time,  0.2712326664477587
+ Budget,         2048,          256,               1098,            256,             42,          132,          924
+Budget, elapsed_time,  0.24291482474654913
+ Budget,         2048,          256,                998,            256,             22,          122,          854
+Budget, elapsed_time,  0.22066912800073624
+ Budget,         2048,          256,               1098,            256,             34,          133,          931
+Budget, elapsed_time,  0.24428426381200552
+ Budget,         2048,          256,               1013,            256,             45,          121,          847
+Budget, elapsed_time,  0.329030180349946
+ Budget,         2048,          256,               1143,            256,             87,          132,          924
+Budget, elapsed_time,  0.24714590422809124
+ Budget,         2048,          256,                953,            256,              9,          118,          826
+Budget, elapsed_time,  0.22118240501731634
+ Budget,         2048,          256,               1168,            256,             72,          137,          959
+Budget, elapsed_time,  0.25741198007017374
+ Budget,         2048,          256,                947,            256,             43,          113,          791
+Budget, elapsed_time,  0.21874648332595825
+ Budget,         2048,          256,               1164,            256,             44,          140,          980
+Budget, elapsed_time,  0.2528763683512807
+ Budget,         2048,          256,                966,            256,             54,          114,          798
+Budget, elapsed_time,  0.21989780850708485
+ Budget,         2048,          256,               1145,            256,             33,          139,          973
+Budget, elapsed_time,  0.24816343933343887
+ Budget,         2048,          256,                920,            256,              0,          115,          805
+Budget, elapsed_time,  0.21499973349273205
+ Budget,         2048,          256,               1163,            256,             35,          141,          987
+Budget, elapsed_time,  0.29850263241678476
+ Budget,         2048,          256,                963,            256,             59,          113,          791
+Budget, elapsed_time,  0.22489329893141985
+ Budget,         2048,          256,               1137,            256,             17,          140,          980
+Budget, elapsed_time,  0.2519675875082612
+ Budget,         2048,          256,                974,            256,             62,          114,          798
+Budget, elapsed_time,  0.21904873475432396
+ Budget,         2048,          256,               1138,            256,             42,          137,          959
+Budget, elapsed_time,  0.2492674347013235
+ Budget,         2048,          256,                972,            256,             36,          117,          819
+Budget, elapsed_time,  0.21815637219697237
+ Budget,         2048,          256,               1120,            256,             24,          137,          959
+Budget, elapsed_time,  0.35787133499979973
+ Budget,         2048,          256,                975,            256,             31,          118,          826
+Budget, elapsed_time,  0.22071443405002356
+ Budget,         2048,          256,               1152,            256,             72,          135,          945
+Budget, elapsed_time,  0.2566699022427201
+ Budget,         2048,          256,                967,            256,             39,          116,          812
+Budget, elapsed_time,  0.22448346856981516
+ Budget,         2048,          256,               1124,            256,             36,          136,          952
+Budget, elapsed_time,  0.2492629550397396
+ Budget,         2048,          256,               1006,            256,             70,          117,          819
+Budget, elapsed_time,  0.2206614539027214
+ Budget,         2048,          256,               1124,            256,             52,          134,          938
+Budget, elapsed_time,  0.24838350247591734
+ Budget,         2048,          256,                991,            256,             39,          119,          833
+Budget, elapsed_time,  0.22088439669460058
+ Budget,         2048,          256,               1092,            256,             28,          133,          931
+Budget, elapsed_time,  0.24613015074282885
+ Budget,         2048,          256,               1010,            256,             42,          121,          847
+Budget, elapsed_time,  0.2229982940480113
+ Budget,         2048,          256,               1116,            256,             60,          132,          924
+Budget, elapsed_time,  0.24818862229585648
+ Budget,         2048,          256,                974,            256,             22,          119,          833
+Budget, elapsed_time,  0.21822266932576895
+ Budget,         2048,          256,               1147,            256,             67,          135,          945
+Budget, elapsed_time,  0.2514995215460658
+ Budget,         2048,          256,                952,            256,             16,          117,          819
+Budget, elapsed_time,  0.21988009195774794
+ Budget,         2048,          256,               1140,            256,             36,          138,          966
+Budget, elapsed_time,  0.25261516869068146
+ Budget,         2048,          256,                939,            256,             19,          115,          805
+Budget, elapsed_time,  0.21978806611150503
+ Budget,         2048,          256,               1167,            256,             47,          140,          980
+Budget, elapsed_time,  0.26106152404099703
+ Budget,         2048,          256,                983,            256,             87,          112,          784
+Budget, elapsed_time,  0.21679452154785395
+ Budget,         2048,          256,               1115,            256,             11,          138,          966
+Budget, elapsed_time,  0.2529263338074088
+ Budget,         2048,          256,                945,            256,              9,          117,          819
+Budget, elapsed_time,  0.2963977511972189
+ Budget,         2048,          256,               1122,            256,             18,          138,          966
+Budget, elapsed_time,  0.2534055635333061
+ Budget,         2048,          256,                982,            256,             46,          117,          819
+Budget, elapsed_time,  0.2180340737104416

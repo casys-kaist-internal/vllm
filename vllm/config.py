@@ -370,27 +370,45 @@ class SchedulerConfig:
         max_num_batched_tokens: Optional[int],
         max_num_seqs: int,
         max_model_len: int,
-        enable_chunked_prefill: bool,
+        prefill_mode: str,
     ) -> None:
-        self.max_num_batched_tokens = max_num_batched_tokens
-        # if max_num_batched_tokens is not None:
-        #     self.max_num_batched_tokens = max_num_batched_tokens
-        # else:
-        #     if enable_chunked_prefill:
-        #         # Chunked prefill based on token budget
-        #         self.max_num_batched_tokens = 512
-        #     else:
-        #         # Full prefill without any token budget limit
-        #         self.max_num_batched_tokens = max(max_model_len, 8192)
-
+        # change prefill_mode to enum PrefillScheduleMode
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
-        self.chunk_prefill_enabled = enable_chunked_prefill
+
+        if prefill_mode not in ["prioritize_prefill", "full_prefill", "chunked_prefill", "chunked_prefill_demote_draft"]:
+            raise ValueError(
+                f"Unknown prefill mode: {prefill_mode}. Must be one of "
+                "'prioritize_prefill', 'full_prefill', or 'chunked_prefill'.")
+
+        if prefill_mode == "prioritize_prefill":
+            assert max_num_batched_tokens is not None
+            self.max_num_batched_tokens = max_num_batched_tokens
+            self.prioritize_prefill = True
+            self.chunked_prefill = False
+            self.demote_draft = False
+        elif prefill_mode == "full_prefill":
+            assert max_num_batched_tokens is not None
+            self.max_num_batched_tokens = max_num_batched_tokens
+            self.prioritize_prefill = False
+            self.chunked_prefill = False
+            self.demote_draft = False
+        elif prefill_mode == "chunked_prefill":
+            self.max_num_batched_tokens = 512
+            self.prioritize_prefill = False
+            self.chunked_prefill = True
+            self.demote_draft = False
+        elif prefill_mode == "chunked_prefill_demote_draft":
+            self.max_num_batched_tokens = 512
+            self.prioritize_prefill = False
+            self.chunked_prefill = True
+            self.demote_draft = True
+
         self._verify_args()
 
     def _verify_args(self) -> None:
         if (self.max_num_batched_tokens < self.max_model_len
-                and not self.chunk_prefill_enabled):
+                and not self.chunked_prefill):
             raise ValueError(
                 f"max_num_batched_tokens ({self.max_num_batched_tokens}) is "
                 f"smaller than max_model_len ({self.max_model_len}). "
@@ -411,6 +429,8 @@ _STR_DTYPE_TO_TORCH_DTYPE = {
     "float": torch.float32,
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
+
+
 }
 
 _ROCM_NOT_SUPPORTED_DTYPE = ["float", "float32"]
@@ -531,13 +551,13 @@ class SpecDecodeConfig:
                  draft_size: int,
                  colocate: bool,
                  target_attention: bool,
-                 demote_spec_tokens: bool,
+                 drop_threshold: float,
                  disable_bonus_token: bool,
                  emulate_accept_prob: Optional[float]) -> None:
         self.draft_size = draft_size
         self.target_attention = target_attention
         self.colocate = colocate
-        self.demote_spec_tokens = demote_spec_tokens
+        self.drop_threshold = drop_threshold
         self.disable_bonus_token = disable_bonus_token
         self.emulate_accept_prob = emulate_accept_prob
 

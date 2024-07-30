@@ -141,6 +141,24 @@ class SpecDecodeBlockSpaceManager:
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             self.block_tables[seq.seq_id] = block_table.copy()
 
+    def sync_blocks(self, seq: Sequence) -> None:
+        block_table = self.block_tables[seq.seq_id]
+        num_physical_blocks = len(block_table)
+        num_logical_blocks = len(seq.logical_token_blocks)
+
+        assert num_physical_blocks >= num_logical_blocks
+
+        if num_physical_blocks > num_logical_blocks:
+            # The sequence has been appended.
+            # Free the additional blocks.
+            free_block_cnt = num_physical_blocks - num_logical_blocks
+            for _ in range(free_block_cnt):
+                block = block_table.pop()
+                if block.device == Device.GPU:
+                    self.gpu_allocator.free(block)
+                else:
+                    self.cpu_allocator.free(block)
+
     def can_append_slot(self, seq_group: SequenceGroup) -> bool:
         # Simple heuristic: If there is at least one free block
         # for each sequence, we can append.

@@ -207,7 +207,7 @@ class SpecDecodeWorker:
                                                  draft_decode_seq_group_metadata_list,
                                                  self.gpu_cache, draft_probs_tensor)
 
-        del draft_probs_tensor
+        # del draft_probs_tensor
 
         return output
 

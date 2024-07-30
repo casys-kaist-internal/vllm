@@ -144,6 +144,35 @@ def load_finance(num_prompts: int,
     return process_dataset(dataset, 'instruction', 'output', num_prompts, tokenizer, fixed_output_len)
 
 
+def load_finance_a(num_prompts: int,
+                   tokenizer: PreTrainedTokenizerBase,
+                   fixed_output_len: Optional[int] = None):
+    dataset = load_dataset(
+        'gbharti/finance-alpaca', cache_dir=DOWNLOAD_DIR)['train']
+    result = process_dataset(dataset, 'instruction',
+                             'output', num_prompts, tokenizer, fixed_output_len)
+
+    result = [(prompt + prompt + prompt + prompt, prompt_len * 4, output_len)
+              for prompt, prompt_len, output_len in result]
+
+    return result
+
+
+def load_finance_b(num_prompts: int,
+                   tokenizer: PreTrainedTokenizerBase,
+                   fixed_output_len: Optional[int] = None):
+    dataset = load_dataset(
+        'gbharti/finance-alpaca', cache_dir=DOWNLOAD_DIR)['train']
+    result = process_dataset(dataset, 'instruction',
+                             'output', num_prompts, tokenizer, fixed_output_len)
+
+    # Half the prompt length
+    result = [(prompt[:prompt_len // 4], prompt_len // 4, output_len)
+              for prompt, prompt_len, output_len in result]
+
+    return result
+
+
 def load_dummy(num_prompts: int,
                tokenizer: PreTrainedTokenizerBase,
                fixed_input_len: Optional[int] = None,
@@ -184,6 +213,10 @@ def sample_requests(dataset_name: str,
         return load_chatbot(num_prompts, tokenizer, fixed_output_len)
     elif dataset_name == 'finance':
         return load_finance(num_prompts, tokenizer, fixed_output_len)
+    elif dataset_name == 'finance_a':
+        return load_finance_a(num_prompts, tokenizer, fixed_output_len)
+    elif dataset_name == 'finance_b':
+        return load_finance_b(num_prompts, tokenizer, fixed_output_len)
     elif dataset_name == 'dummy':
         return load_dummy(num_prompts, tokenizer, fixed_input_len, fixed_output_len)
     else:
@@ -254,71 +287,82 @@ def main():
         'facebook/opt-6.7b', trust_remote_code=True)
     fixed_output_len = None
 
-    # Test GSM8K dataset
-    print("Loading GSM8K dataset...")
-    gsm8k_data = load_gsm8k(num_prompts, tokenizer, fixed_output_len)
-    print("GSM8K Sample Data Length:", len(gsm8k_data))
+    # # Test GSM8K dataset
+    # print("Loading GSM8K dataset...")
+    # gsm8k_data = load_gsm8k(num_prompts, tokenizer, fixed_output_len)
+    # print("GSM8K Sample Data Length:", len(gsm8k_data))
 
-    # Test HumanEval dataset
-    print("Loading HumanEval dataset...")
-    humaneval_data = load_humaneval(num_prompts, tokenizer, fixed_output_len)
-    print("HumanEval Sample Data Length:", len(humaneval_data))
+    # # Test HumanEval dataset
+    # print("Loading HumanEval dataset...")
+    # humaneval_data = load_humaneval(num_prompts, tokenizer, fixed_output_len)
+    # print("HumanEval Sample Data Length:", len(humaneval_data))
 
-    # Test Alpaca dataset
-    print("Loading Alpaca dataset...")
-    alpaca_data = load_alpaca(num_prompts, tokenizer, fixed_output_len)
-    print("Alpaca Sample Data Length:", len(alpaca_data))
+    # # Test Alpaca dataset
+    # print("Loading Alpaca dataset...")
+    # alpaca_data = load_alpaca(num_prompts, tokenizer, fixed_output_len)
+    # print("Alpaca Sample Data Length:", len(alpaca_data))
 
-    # Test MT-Bench dataset
-    print("Loading MT-Bench dataset...")
-    mt_bench_data = load_mt_bench(num_prompts, tokenizer, fixed_output_len)
-    print("MT-Bench Sample Data Length:", len(mt_bench_data))
+    # # Test MT-Bench dataset
+    # print("Loading MT-Bench dataset...")
+    # mt_bench_data = load_mt_bench(num_prompts, tokenizer, fixed_output_len)
+    # print("MT-Bench Sample Data Length:", len(mt_bench_data))
 
-    # Test ShareGPT dataset
-    print("Loading ShareGPT dataset...")
-    sharegpt_data = load_sharegpt(num_prompts, tokenizer, fixed_output_len)
-    print("ShareGPT Sample Data Length:", len(sharegpt_data))
+    # # Test ShareGPT dataset
+    # print("Loading ShareGPT dataset...")
+    # sharegpt_data = load_sharegpt(num_prompts, tokenizer, fixed_output_len)
+    # print("ShareGPT Sample Data Length:", len(sharegpt_data))
 
-    # Test APPS dataset
-    print("Loading APPS dataset...")
-    apps_data = load_apps(num_prompts, tokenizer, fixed_output_len)
-    print("APPS Sample Data Length:", len(apps_data))
+    # # Test APPS dataset
+    # print("Loading APPS dataset...")
+    # apps_data = load_apps(num_prompts, tokenizer, fixed_output_len)
+    # print("APPS Sample Data Length:", len(apps_data))
+
+    # # Test Chatbot dataset
+    # print("Loading Chatbot dataset...")
+    # chatbot_data = load_chatbot(num_prompts, tokenizer, fixed_output_len)
+    # print("Chatbot Sample Data Length:", len(chatbot_data))
 
     # Test Dialogue dataset
-    print("Loading Dialogue dataset...")
-    dialogue_data = load_dialogue(num_prompts, tokenizer, fixed_output_len)
-    print("Dialogue Sample Data Length:", len(dialogue_data))
-
-    # Test Chatbot dataset
-    print("Loading Chatbot dataset...")
-    chatbot_data = load_chatbot(num_prompts, tokenizer, fixed_output_len)
-    print("Chatbot Sample Data Length:", len(chatbot_data))
+    # print("Loading Dialogue dataset...")
+    # dialogue_data = load_dialogue(num_prompts, tokenizer, fixed_output_len)
+    # print("Dialogue Sample Data Length:", len(dialogue_data))
 
     # Test Finance dataset
     print("Loading Finance dataset...")
     finance_data = load_finance(num_prompts, tokenizer, fixed_output_len)
     print("Finance Sample Data Length:", len(finance_data))
 
-    plot_length_distribution("gsm8k", gsm8k_data)
-    plot_length_distribution("humaneval", humaneval_data)
-    plot_length_distribution("alpaca", alpaca_data)
-    plot_length_distribution("mt_bench", mt_bench_data)
-    plot_length_distribution("sharegpt", sharegpt_data)
-    plot_length_distribution("apps", apps_data)
-    plot_length_distribution("dialogue", dialogue_data)
-    plot_length_distribution("chatbot", chatbot_data)
+    print("Loading Finance A dataset...")
+    finance_data_a = load_finance_a(num_prompts, tokenizer, fixed_output_len)
+    print("Finance A Sample Data Length:", len(finance_data_a))
+
+    print("Loading Finance B dataset...")
+    finance_data_b = load_finance_b(num_prompts, tokenizer, fixed_output_len)
+    print("Finance B Sample Data Length:", len(finance_data_b))
+
+    # plot_length_distribution("gsm8k", gsm8k_data)
+    # plot_length_distribution("humaneval", humaneval_data)
+    # plot_length_distribution("alpaca", alpaca_data)
+    # plot_length_distribution("mt_bench", mt_bench_data)
+    # plot_length_distribution("sharegpt", sharegpt_data)
+    # plot_length_distribution("apps", apps_data)
+    # plot_length_distribution("dialogue", dialogue_data)
+    # plot_length_distribution("chatbot", chatbot_data)
+    # plot_length_distribution("dialogue", dialogue_data)
     plot_length_distribution("finance", finance_data)
+    plot_length_distribution("finance_a", finance_data_a)
+    plot_length_distribution("finance_b", finance_data_b)
 
     datasets = {
-        "GSM8K": gsm8k_data,
-        "HumanEval": humaneval_data,
-        "Alpaca": alpaca_data,
-        "MT-Bench": mt_bench_data,
-        "ShareGPT": sharegpt_data,
-        "APPS": apps_data,
-        "Dialogue": dialogue_data,
-        "Chatbot": chatbot_data,
-        "Finance": finance_data
+        # "GSM8K": gsm8k_data,
+        # "HumanEval": humaneval_data,
+        # "Alpaca": alpaca_data,
+        # "MT-Bench": mt_bench_data,
+        # "ShareGPT": sharegpt_data,
+        # "APPS": apps_data,
+        # "Chatbot": chatbot_data,
+        # "Dialogue": dialogue_data,
+        "Finance": finance_data,
     }
 
     plot_all_distributions(datasets)

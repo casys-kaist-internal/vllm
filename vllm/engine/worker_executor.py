@@ -1,9 +1,6 @@
 import copy
 import torch.multiprocessing as mp
 from typing import Any
-import asyncio
-from functools import partial
-import torch
 
 from vllm.worker.spec_decode_worker import SpecDecodeWorker
 from vllm.utils import get_ip, get_open_port, nvtx_range
@@ -24,7 +21,8 @@ class WorkerExecutor:
         # If draft_size is not 0, we need to initialize both the draft and target workers.
         # We initialize the target worker in a separate process and
         # draft worker in the main process.
-        self.only_target = (spec_decode_config.draft_size == 0)
+        # self.only_target = (spec_decode_config.draft_size == 0)
+        self.only_target = False
 
         if self.only_target:
             self.target_worker = SpecDecodeWorker(
@@ -41,14 +39,14 @@ class WorkerExecutor:
             self.target_worker.load_model()
 
         else:
-            parent_conn, child_conn = mp.Pipe()
+            self.task_queue = mp.SimpleQueue()
+            self.result_queue = mp.SimpleQueue()
 
-            process = mp.Process(target=init_worker, args=(child_conn, target_model_config,
+            process = mp.Process(target=init_worker, args=(self.task_queue, self.result_queue, target_model_config,
                                                            parallel_config, scheduler_config, spec_decode_config))
             process.start()
 
             self.target_worker_process = process
-            self.target_worker_pipe = parent_conn
 
             self.draft_worker = SpecDecodeWorker(
                 copy.deepcopy(draft_model_config),
@@ -65,18 +63,18 @@ class WorkerExecutor:
             self.draft_worker.load_model()
 
     # For sync engine
-    @ nvtx_range("run_draft_worker_sync")
+    @nvtx_range("run_draft_worker_sync")
     def run_draft_worker_sync(self, method: str, *args, **kwargs) -> Any:
         assert self.only_target is False
         return getattr(self.draft_worker, method)(*args, **kwargs)
 
-    @ nvtx_range("run_target_worker_sync")
+    @nvtx_range("run_target_worker_sync")
     def run_target_worker_sync(self, method: str, *args, **kwargs) -> Any:
         if self.only_target:
             return getattr(self.target_worker, method)(*args, **kwargs)
         else:
-            self.target_worker_pipe.send((method, args, kwargs))
-            result = self.target_worker_pipe.recv()
+            self.task_queue.put((method, args, kwargs))
+            result = self.result_queue.get()
             return result
 
     def run_target_worker_async(self, method: str, *args, **kwargs) -> None:
@@ -84,25 +82,29 @@ class WorkerExecutor:
         Send task to target worker asynchronously.
         """
         assert self.only_target is False
-        self.target_worker_pipe.send((method, args, kwargs))
+        self.task_queue.put((method, args, kwargs))
+
+    def check_target_worker_async_done(self) -> bool:
+        """
+        Check if the target worker has finished the task.
+        """
+        assert self.only_target is False
+        return not self.result_queue.empty()
 
     def get_target_worker_async_output(self) -> Any:
         """
         Receive the output from the target worker.
         """
         assert self.only_target is False
-        return self.target_worker_pipe.recv()
+        return self.result_queue.get()
 
     def shutdown(self) -> None:
         if not self.only_target:
-            self.target_worker_pipe.send(("shutdown", [], {}))
+            self.task_queue.put(("shutdown", [], {}))
             self.target_worker_process.join()
 
 
-def init_worker(pipe, target_model_config, parallel_config, scheduler_config, spec_decode_config):
-    # target_stream = torch.cuda.Stream()
-
-    # with torch.cuda.stream(target_stream):
+def init_worker(task_queue, result_queue, target_model_config, parallel_config, scheduler_config, spec_decode_config):
     target_worker = SpecDecodeWorker(
         copy.deepcopy(target_model_config),
         copy.deepcopy(parallel_config),
@@ -117,10 +119,10 @@ def init_worker(pipe, target_model_config, parallel_config, scheduler_config, sp
     target_worker.load_model()
 
     while True:
-        method, args, kwargs = pipe.recv()
+        method, args, kwargs = task_queue.get()
 
         if method == "shutdown":
             break
 
         result = getattr(target_worker, method)(*args, **kwargs)
-        pipe.send(result)
+        result_queue.put(result)

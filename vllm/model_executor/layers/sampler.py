@@ -463,7 +463,7 @@ def _spec_decode_sample(
         _modify_greedy_probs_inplace(decode_probs,
                                      sampling_metadata.target_modify_greedy_indices,
                                      greedy_samples)
-        # del greedy_samples
+        del greedy_samples
 
     # Target lens includes one additional token just before draft tokens and draft tokens.
     target_lens = sampling_metadata.target_lens
@@ -504,9 +504,9 @@ def _spec_decode_sample(
     accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
 
     # emulate accept_prob
-    if sampling_metadata.emulate_accept_prob:
-        accept_prob = torch.full_like(
-            accept_prob, sampling_metadata.emulate_accept_prob)
+    # if sampling_metadata.emulate_accept_prob:
+    #     accept_prob = torch.full_like(
+    #         accept_prob, sampling_metadata.emulate_accept_prob)
 
     # print("accept_probs", accept_prob)
 
@@ -544,7 +544,6 @@ def _spec_decode_sample(
 
     # target_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
     # draft_prob_at_rejected_draft_idx: [seq_idx, vocab_size]
-    # indices = torch.arange(masked_accept_cnt.size(0), device='cuda')
     indices = torch.arange(target_probs.size(0), device='cuda')
     target_prob_at_reject_idx = target_probs[indices,
                                              masked_accept_cnt, :].squeeze(1)
@@ -559,7 +558,6 @@ def _spec_decode_sample(
     del target_prob_at_reject_idx, draft_prob_at_reject_idx
 
     # recover to original probability for all accepted sequences
-    # indices = torch.arange(all_accept_mask.size(0), device='cuda')
     modified_rejection_prob[all_accept_mask, :] = target_probs[indices,
                                                                target_lens_tensor, :][all_accept_mask].squeeze(1)
 
@@ -582,8 +580,6 @@ def _get_logprobs(
     logprobs: torch.Tensor,
     sampling_metadata: SamplingMetadata,
     sample_results: List[Tuple[List[int], List[int]]],
-
-
 ) -> Tuple[List[Optional[List[Optional[Dict[int, float]]]]], List[List[Dict[
         int, float]]]]:
     # Prepare query indices

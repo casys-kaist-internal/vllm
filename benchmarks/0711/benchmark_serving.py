@@ -18,7 +18,7 @@ from vllm.outputs import RequestOutput
 
 
 DOWNLOAD_DIR = '/mnt/sda/download'
-BENCHMARK_DURATION_IN_MINUTES = 1
+BENCHMARK_DURATION_IN_MINUTES = 5
 
 
 def get_requests_with_time(
@@ -210,7 +210,7 @@ def main(args: argparse.Namespace):
         latency = end_time - start_time
         return latency
 
-    warmup()
+    # warmup()
 
     # Sample the requests.
     tokenizer = AutoTokenizer.from_pretrained(

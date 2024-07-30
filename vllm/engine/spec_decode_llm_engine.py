@@ -97,7 +97,8 @@ class SpecDecodeLLMEngine:
         self.scheduler_config = scheduler_config
         self.spec_decode_config = spec_decode_config
         self.log_stats = log_stats
-        self.only_target = (spec_decode_config.draft_size == 0)
+        # self.only_target = (spec_decode_config.draft_size == 0)
+        self.only_target = False
         self._verify_args()
 
         self.tokenizer = get_tokenizer(
@@ -116,7 +117,7 @@ class SpecDecodeLLMEngine:
         # Draft_probs that should be sent to target worker when target decode
         self.draft_probs_dict = defaultdict(list)
         self.draft_probs_tensor = torch.zeros(
-            self.scheduler_config.max_num_seqs * 7,
+            self.scheduler_config.max_num_seqs * 16,
             target_model_config.get_vocab_size(), device='cuda').share_memory_()
 
         # Profile the memory usage and initialize the cache.
@@ -136,7 +137,8 @@ class SpecDecodeLLMEngine:
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
 
-        self.total_tokens = 0
+        self.total_prefill_tokens = 0
+        self.total_decode_tokens = 0
 
     def _verify_args(self) -> None:
         self.target_model_config.verify_with_parallel_config(
@@ -426,11 +428,10 @@ class SpecDecodeLLMEngine:
         elif spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
             global total_accept
             global total_draft
-
+            all_accept = (seq.get_draft_len() == sample.accept_cnt)
             total_accept += sample.accept_cnt
             total_draft += seq.get_draft_len()
-            free_block_cnt = seq.accept_draft_tokens(sample.accept_cnt)
-            self.scheduler.block_manager.free_blocks(seq, free_block_cnt)
+            seq.accept_draft_tokens(sample.accept_cnt)
             num_tokens_to_log_system_stats += sample.accept_cnt
             check_stop_cnt = sample.accept_cnt
 
@@ -451,11 +452,15 @@ class SpecDecodeLLMEngine:
 
                 # If all accept, the bonus token don't have draft kv cache yet.
                 # So only update num_computed_draft_tokens if not all accept
-                if seq.draft_size != sample.accept_cnt:
+                if not all_accept:
                     seq.update_num_computed_draft_tokens(1)
                 # else:
                 #     print(seq.seq_id, "all accept")
 
+            # Sync the logical blocks and physical blocks
+            # Since we overprovision the physical blocks when scheduling draft decode,
+            # we should free the physical blocks that are not used
+            self.scheduler.block_manager.sync_blocks(seq)
             self.draft_probs_dict[seq.seq_id].clear()
 
         else:
@@ -484,9 +489,10 @@ class SpecDecodeLLMEngine:
             ScheduledSequenceGroup] = scheduler_outputs.target_decode_scheduled_seq_groups
         draft_decode_scheduled_seq_groups: List[
             ScheduledSequenceGroup] = scheduler_outputs.draft_decode_scheduled_seq_groups
-
         scheduled_seq_groups = prefill_scheduled_seq_groups + \
             target_decode_scheduled_seq_groups + draft_decode_scheduled_seq_groups
+        target_decode_processed_seq_group_list: List[SequenceGroup] = []
+        draft_decode_processed_seq_group_list: List[SequenceGroup] = []
 
         num_prompt_tokens_to_log = 0
         num_generation_tokens_to_log = 0
@@ -494,6 +500,13 @@ class SpecDecodeLLMEngine:
         if output:
             assert len(scheduled_seq_groups) == len(output)
             for scheduled_seq_group, outputs in zip(scheduled_seq_groups, output):
+                if scheduled_seq_group.seq_group.spec_decode_stage == SpecDecodeStage.TARGET_DECODE:
+                    target_decode_processed_seq_group_list.append(
+                        scheduled_seq_group.seq_group)
+                elif scheduled_seq_group.seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
+                    draft_decode_processed_seq_group_list.append(
+                        scheduled_seq_group.seq_group)
+
                 num_tokens_to_log = self._process_sequence_group_outputs(
                     scheduled_seq_group, outputs)
 
@@ -510,13 +523,22 @@ class SpecDecodeLLMEngine:
                 scheduled_seq_group.seq_group)
             request_outputs.append(request_output)
 
-        self.total_tokens += (num_prompt_tokens_to_log +
-                              num_generation_tokens_to_log)
+        self.total_prefill_tokens += num_prompt_tokens_to_log
+        self.total_decode_tokens += num_generation_tokens_to_log
 
         if self.log_stats:
             # Log the system stats.
             self._log_system_stats(
                 num_prompt_tokens_to_log, num_generation_tokens_to_log)
+
+        if self.scheduler_config.demote_draft:
+            if target_decode_processed_seq_group_list:
+                self.scheduler.draft_size_optimizer.update_spec_decode_history(
+                    target_decode_processed_seq_group_list)
+
+            if draft_decode_processed_seq_group_list:
+                self.scheduler.draft_size_optimizer.predict_accept_probs(
+                    draft_decode_processed_seq_group_list)
 
         return request_outputs
 
@@ -556,7 +578,7 @@ class SpecDecodeLLMEngine:
             for seq_group in scheduler_outputs.preempted_seq_groups:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
-
+                seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
 
@@ -584,7 +606,6 @@ class SpecDecodeLLMEngine:
             )
 
             result = self._process_model_outputs(output, scheduler_outputs)
-
         else:
             if self.spec_decode_config.draft_size == 0:
                 result = self._process_model_outputs([], scheduler_outputs)
@@ -628,6 +649,7 @@ class SpecDecodeLLMEngine:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
 
+                seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
 
@@ -672,6 +694,9 @@ class SpecDecodeLLMEngine:
                 draft_result = self._process_model_outputs(
                     draft_output, draft_scheduler_outputs)
 
+                if not target_scheduler_outputs.is_empty() and self.worker_executor.check_target_worker_async_done():
+                    break
+
             self.scheduler.swap_and_balance_target_draft_queues(
                 draft_scheduler_outputs)
 
@@ -689,13 +714,17 @@ class SpecDecodeLLMEngine:
 
     @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
-        # if total_draft > 0:
-        #     print("accept_prob: ", total_accept / total_draft)
-
+        # start_time = time.perf_counter()
         if self.spec_decode_config.colocate:
-            return self.colocate_step()
+            result = self.colocate_step()
         else:
-            return self.default_step()
+            result = self.default_step()
+
+        # torch.cuda.synchronize()
+        # elapsed_time = time.perf_counter() - start_time
+        # print("Budget, elapsed_time, ", elapsed_time)
+
+        return result
 
     def _log_system_stats(
         self,
@@ -823,7 +852,8 @@ class SpecDecodeLLMEngine:
             return
 
     def reset_total_tokens(self) -> None:
-        self.total_tokens = 0
+        self.total_prefill_tokens = 0
+        self.total_decode_tokens = 0
 
     def get_total_tokens(self) -> int:
-        return self.total_tokens
+        return [self.total_prefill_tokens, self.total_decode_tokens]

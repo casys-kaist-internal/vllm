@@ -28,7 +28,7 @@ class EngineArgs:
     swap_space: int = 4  # GiB
     gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
-    max_num_seqs: int = 256
+    max_num_seqs: int = 512
     max_paddings: int = 256
     disable_log_stats: bool = False
     revision: Optional[str] = None
@@ -272,9 +272,9 @@ class SpecDecodeEngineArgs:
     draft_model: str
     draft_size: int = 7
     colocate: bool = False
-    enable_chunked_prefill: bool = False
+    prefill_schedule_mode: str = 'full_prefill'
     target_attention: bool = False
-    demote_spec_tokens: bool = False
+    drop_threshold: float = 0
     disable_bonus_token: bool = False
     emulate_accept_prob: float = None
     tokenizer: Optional[str] = None
@@ -528,11 +528,11 @@ class SpecDecodeEngineArgs:
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            target_model_config.max_model_len,
-                                           self.enable_chunked_prefill)
+                                           self.prefill_schedule_mode)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.colocate,
                                               self.target_attention,
-                                              self.demote_spec_tokens,
+                                              self.drop_threshold,
                                               self.disable_bonus_token,
                                               self.emulate_accept_prob)
 

@@ -20,7 +20,7 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 _PAD_SLOT_ID = -1
 # Capture graphs for batch size 1, 2, 4, 8, 16, 24, 32, 40, ..., 256.
 # NOTE: _get_graph_batch_size needs to be updated if this list is changed.
-_BATCH_SIZES_TO_CAPTURE = [1, 2, 4] + [8 * i for i in range(1, 33)]
+_BATCH_SIZES_TO_CAPTURE = [1, 2, 4] + [8 * i for i in range(1, 34)]
 
 
 class SpecDecodeModelRunner:
@@ -70,8 +70,8 @@ class SpecDecodeModelRunner:
 
         # Add draft size to max_context_len_to_capture because the end condition is checked
         # on the target decode stage so draft decode stage can over run the max_context_len_to_capture
-        max_num_blocks = (self.max_context_len_to_capture + self.spec_decode_config.draft_size + block_size -
-                          1) // block_size
+        max_num_blocks = (self.max_context_len_to_capture +
+                          self.spec_decode_config.draft_size + block_size) // block_size
         self.graph_block_tables = np.zeros(
             (max(_BATCH_SIZES_TO_CAPTURE), max_num_blocks), dtype=np.int32)
 
@@ -173,7 +173,7 @@ class SpecDecodeModelRunner:
             seq_data = seq_group_metadata.seq_data[seq_id]
             prompt_tokens = seq_data.get_token_ids()
 
-            if self.scheduler_config.chunk_prefill_enabled:
+            if self.scheduler_config.chunked_prefill:
                 prompt_tokens[:seq_group_metadata.token_chunk_size]
 
             prompt_len = len(prompt_tokens)
