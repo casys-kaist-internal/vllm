@@ -97,8 +97,8 @@ class SpecDecodeLLMEngine:
         self.scheduler_config = scheduler_config
         self.spec_decode_config = spec_decode_config
         self.log_stats = log_stats
-        # self.only_target = (spec_decode_config.draft_size == 0)
-        self.only_target = False
+        self.only_target = (spec_decode_config.draft_size == 0)
+        # self.only_target = False
         self._verify_args()
 
         self.tokenizer = get_tokenizer(
@@ -540,6 +540,12 @@ class SpecDecodeLLMEngine:
                 self.scheduler.draft_size_optimizer.predict_accept_probs(
                     draft_decode_processed_seq_group_list)
 
+        # global total_accept
+        # global total_draft
+
+        # if total_draft > 0:
+        #     print(total_accept / total_draft)
+
         return request_outputs
 
     @ nvtx_range("_fill_draft_probs_tensor")
@@ -556,8 +562,10 @@ class SpecDecodeLLMEngine:
             draft_len = seq_data.get_draft_len()
 
             if draft_len > 0:
+                draft_prob = torch.stack(draft_probs[:draft_len])
+                vocab_size_of_draft = draft_prob.size(1)
                 self.draft_probs_tensor[idx:idx +
-                                        draft_len, :] = torch.stack(draft_probs[:draft_len])
+                                        draft_len, :vocab_size_of_draft] = draft_prob
 
             idx += draft_len
 
@@ -714,15 +722,10 @@ class SpecDecodeLLMEngine:
 
     @ nvtx_range("step")
     def step(self) -> List[RequestOutput]:
-        # start_time = time.perf_counter()
         if self.spec_decode_config.colocate:
             result = self.colocate_step()
         else:
             result = self.default_step()
-
-        # torch.cuda.synchronize()
-        # elapsed_time = time.perf_counter() - start_time
-        # print("Budget, elapsed_time, ", elapsed_time)
 
         return result
 

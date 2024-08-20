@@ -1028,8 +1028,8 @@ class SpecDecodeScheduler:
         blocks_to_swap_out: Dict[int, int],
         preemption_mode: Optional[PreemptionMode] = None,
     ) -> None:
-        raise AssertionError(
-            "Preemption is not supported in the current version of the SpecDecodeScheduler.")
+        # raise AssertionError(
+        #     "Preemption is not supported in the current version of the SpecDecodeScheduler.")
         print("[WARNING] preempting")
         self.preempt_flag = True
 

@@ -147,7 +147,7 @@ class PagedAttention(nn.Module):
                     input_metadata.attn_bias = attn_bias
                 else:
                     input_metadata.attn_bias = _make_alibi_bias(
-                        self.alibi_slopes, self.num_kv_heads, query.dtype, num_prefill_tokens)
+                        self.alibi_slopes, self.num_kv_heads, query.dtype, input_metadata.prefill_lens)
 
             # TODO(woosuk): Too many view operations. Let's try to reduce them
             # in the future for code readability.

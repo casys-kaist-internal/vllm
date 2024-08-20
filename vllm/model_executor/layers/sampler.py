@@ -517,6 +517,8 @@ def _spec_decode_sample(
         random_prob < accept_prob,
         torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
 
+    # print(accepted)
+
     # cumulative sum
     accepted.cumsum_(dim=1)
 
@@ -526,10 +528,10 @@ def _spec_decode_sample(
     # accept_cnts: [seq_idx]
     accept_cnts = torch.sum(accepted, dim=1)
 
-    # sum accept_cnt
-    # accept_cnt_sum = accept_cnts.sum()
-    # accept_cnt_len = accept_cnts.size(0)
-    # print("result accept_cnt,", accept_cnt_sum / (accept_cnt_len * 4))
+    # avg of accept_cnts
+    accept_cnt_avg = accept_cnts.float().mean()
+    print("accept_cnt_avg", accept_cnt_avg)
+
     del accepted
 
     # Cap accept_cnts to not exceed target_lens_minus_one

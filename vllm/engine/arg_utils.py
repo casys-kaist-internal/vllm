@@ -536,6 +536,15 @@ class SpecDecodeEngineArgs:
                                               self.disable_bonus_token,
                                               self.emulate_accept_prob)
 
+        # If the model is Pythia, the target vocab and draft vocab is actually the same content
+        # with different length with 'None' token padded. So, we skip assertion
+        allowed_model = ['pythia']
+        # Check target_model_config.model and draft_model_config.model have substring allowed model
+        if not any(model in target_model_config.model for model in allowed_model) and not any(model in draft_model_config.model for model in allowed_model):
+            # Assertions for target model and draft model and print vocab size if fail
+            assert target_model_config.get_vocab_size() == draft_model_config.get_vocab_size(
+            ), f"target model vocab size: {target_model_config.get_vocab_size()}, draft model vocab size: {draft_model_config.get_vocab_size()}"
+
         return target_model_config, draft_model_config, cache_config, parallel_config, scheduler_config, spec_decode_config
 
 

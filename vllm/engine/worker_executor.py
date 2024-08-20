@@ -21,8 +21,8 @@ class WorkerExecutor:
         # If draft_size is not 0, we need to initialize both the draft and target workers.
         # We initialize the target worker in a separate process and
         # draft worker in the main process.
-        # self.only_target = (spec_decode_config.draft_size == 0)
-        self.only_target = False
+        self.only_target = (spec_decode_config.draft_size == 0)
+        # self.only_target = False
 
         if self.only_target:
             self.target_worker = SpecDecodeWorker(
