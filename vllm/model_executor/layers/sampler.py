@@ -76,6 +76,13 @@ class Sampler(nn.Module):
                                       sampling_tensors.presence_penalties,
                                       sampling_tensors.frequency_penalties,
                                       sampling_tensors.repetition_penalties)
+        pre_temp_probs = None
+        if not sampling_metadata.is_target:
+            # If draft sampler, we need the probability of the sampled draft token
+            # before applying the temperature
+            pre_temp_probs = torch.softmax(
+                logits, dim=-1, dtype=torch.float)
+
         # Apply temperature scaling.
         # Use in-place division to avoid creating a new tensor.
         logits.div_(sampling_tensors.temperatures.unsqueeze_(dim=1))
@@ -100,9 +107,10 @@ class Sampler(nn.Module):
                 all([l == 1 for l in sampling_metadata.target_lens])):
             sample_results = _sample(probs, logprobs, sampling_metadata)
             accept_cnts = None
+            accept_probs = None
 
         else:
-            sample_results, accept_cnts, logprobs = _spec_decode_sample(
+            sample_results, accept_cnts, accept_probs, logprobs = _spec_decode_sample(
                 probs, sampling_metadata)
 
         # Get the logprobs query results.
@@ -111,7 +119,8 @@ class Sampler(nn.Module):
 
         return _build_sampler_output(sample_results, sampling_metadata,
                                      prompt_logprobs, sample_logprobs,
-                                     probs, accept_cnts)
+                                     probs, pre_temp_probs,
+                                     accept_cnts, accept_probs)
 
 
 @nvtx_range("_get_logits")
@@ -496,28 +505,22 @@ def _spec_decode_sample(
     #       draft_prob_for_sampled_draft_token)
 
     # accept_probs: [seq_idx, target_lens_minus_one]
-    accept_prob = target_prob_for_sampled_draft_token.div_(
+    accept_probs = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
     del probs, target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
-    # change inf or nan to 0
-    accept_prob[torch.isinf(accept_prob) | torch.isnan(accept_prob)] = 0
+    # Replace inf and nan values with 0
+    accept_probs[torch.isinf(accept_probs) | torch.isnan(accept_probs)] = 0
 
-    # emulate accept_prob
-    # if sampling_metadata.emulate_accept_prob:
-    #     accept_prob = torch.full_like(
-    #         accept_prob, sampling_metadata.emulate_accept_prob)
+    # Clamp the values to the range [0, 1]
+    accept_probs = torch.clamp(accept_probs, max=1)
 
-    # print("accept_probs", accept_prob)
-
-    random_prob = torch.rand_like(accept_prob)
+    random_prob = torch.rand_like(accept_probs)
 
     # accept is 0 and reject is 1
     accepted = torch.where(
-        random_prob < accept_prob,
-        torch.zeros_like(accept_prob), torch.ones_like(accept_prob))
-
-    # print(accepted)
+        random_prob < accept_probs,
+        torch.zeros_like(accept_probs), torch.ones_like(accept_probs))
 
     # cumulative sum
     accepted.cumsum_(dim=1)
@@ -527,10 +530,6 @@ def _spec_decode_sample(
 
     # accept_cnts: [seq_idx]
     accept_cnts = torch.sum(accepted, dim=1)
-
-    # avg of accept_cnts
-    accept_cnt_avg = accept_cnts.float().mean()
-    print("accept_cnt_avg", accept_cnt_avg)
 
     del accepted
 
@@ -574,7 +573,7 @@ def _spec_decode_sample(
                              modified_rejection_logprobs,
                              sampling_metadata)
 
-    return sample_results, accept_cnts, modified_rejection_logprobs
+    return sample_results, accept_cnts, accept_probs, modified_rejection_logprobs
 
 
 @ nvtx_range("_get_logprobs")
@@ -699,12 +698,15 @@ def _build_sampler_output(
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
     draft_probs: Optional[torch.Tensor] = None,
+    pre_temp_draft_probs: Optional[torch.Tensor] = None,
     accept_cnts: Optional[torch.Tensor] = None,
+    accept_probs: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
 
     # GPU -> CPU sync
     accept_cnts = accept_cnts.tolist() if accept_cnts is not None else None
+    accept_probs = accept_probs.tolist() if accept_probs is not None else None
 
     for (idx, (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs)) in enumerate(zip(sampling_metadata.seq_groups,
@@ -723,14 +725,24 @@ def _build_sampler_output(
                 else:
                     decode_idx = idx - sampling_metadata.num_prompts
                     accept_cnt = accept_cnts[decode_idx] if accept_cnts is not None else 0
+                    accept_prob = accept_probs[decode_idx] if accept_probs is not None else 0
                     seq_outputs.append(
-                        SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, accept_cnt=accept_cnt))
+                        SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
+                                       accept_cnt=accept_cnt, accept_prob=accept_prob))
             else:
+                pre_temp_sampled_draft_prob = pre_temp_draft_probs[
+                    idx][next_token_id]
+                # pre_temp_sampled_draft_prob = draft_probs[idx][next_token_id]
                 seq_outputs.append(
-                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs, draft_probs=draft_probs[idx]))
+                    SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
+                                   draft_probs=draft_probs[idx],
+                                   pre_temp_sampled_draft_prob=pre_temp_sampled_draft_prob))
 
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
+
+    del pre_temp_draft_probs
+
     return sampler_output
 
 

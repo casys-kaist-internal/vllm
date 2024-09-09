@@ -6,7 +6,6 @@ import torch
 
 from vllm.config import CacheConfig, SchedulerConfig, SpecDecodeConfig
 from vllm.core.spec_decode_block_manager import SpecDecodeAllocStatus, SpecDecodeBlockSpaceManager
-from vllm.core.spec_decode_draft_optim import SpecDecodeDraftSizeOptimizer
 from vllm.core.policy import PolicyFactory
 from vllm.logger import init_logger
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
@@ -209,10 +208,6 @@ class SpecDecodeScheduler:
             num_cpu_blocks=self.cache_config.num_cpu_blocks,
             sliding_window=self.cache_config.sliding_window)
 
-        if self.spec_decode_config.draft_size != 0:
-            self.draft_size_optimizer = SpecDecodeDraftSizeOptimizer(
-                spec_decode_config)
-
         # TODO(zhuohan): Use deque instead of list for better performance.
         # Sequence groups in the WAITING state.
         self.waiting: List[SequenceGroup] = []
@@ -281,7 +276,7 @@ class SpecDecodeScheduler:
         return len(self.need_to_run_draft_decode) + len(self.need_to_run_target_decode)
 
     @ nvtx_range("swap_target_draft_queues")
-    def swap_target_draft_queues(self, scheduler_outputs) -> None:
+    def swap_target_draft_queues(self, scheduler_outputs: SpecDecodeSchedulerOutputs) -> None:
         scheduled_seq_groups = scheduler_outputs.prefill_scheduled_seq_groups + \
             scheduler_outputs.target_decode_scheduled_seq_groups + \
             scheduler_outputs.draft_decode_scheduled_seq_groups
@@ -317,9 +312,8 @@ class SpecDecodeScheduler:
                     self.free_seq(seq_group.get_seqs(
                         status=SequenceStatus.WAITING)[0])
                     self.waiting.insert(0, seq_group)
-                    # self.waiting.append(seq_group)
 
-    def swap_and_balance_target_draft_queues(self, scheduler_outputs) -> None:
+    def swap_and_balance_target_draft_queues(self, scheduler_outputs: SpecDecodeSchedulerOutputs) -> None:
         # Swap first with target and decode.
         decode_scheduled_seq_groups = scheduler_outputs.target_decode_scheduled_seq_groups + \
             scheduler_outputs.draft_decode_scheduled_seq_groups
@@ -348,78 +342,17 @@ class SpecDecodeScheduler:
             self.need_to_run_target_prefill.remove(seq_group)
 
             if do_sample:
-                self.need_to_run_draft_decode.append(seq_group)
-                # if len(self.need_to_run_draft_decode) < len(self.need_to_run_target_decode):
-                #     self.need_to_run_draft_decode.append(seq_group)
-                # else:
-                #     self.need_to_run_target_decode.append(seq_group)
+                if len(self.need_to_run_draft_decode) < len(self.need_to_run_target_decode):
+                    self.need_to_run_draft_decode.append(seq_group)
+                else:
+                    self.need_to_run_target_decode.append(seq_group)
             else:
+                # Move the sequence group to the waiting queue.
                 seq_group.get_seqs(status=SequenceStatus.RUNNING)[
                     0].status = SequenceStatus.WAITING
                 self.free_seq(seq_group.get_seqs(
                     status=SequenceStatus.WAITING)[0])
                 self.waiting.insert(0, seq_group)
-                # self.waiting.append(seq_group)
-
-    # def _balance_target_draft_queues(self) -> None:
-    #     # Need to balance the draft and target queues
-    #     # the balancing queue is used to balance the draft and target queues
-    #     # Steps:
-    #     # 1) If balancing queue is not empty, move sequence groups from balancing queue to draft or target queue
-    #     # 2) Access current load
-    #     # 3) Determine imbalance
-    #     # 4) Rebalance queues by moving sequence groups to balancing queue
-
-    #     # Move sequence groups from balancing queue back to appropriate queues after one step
-
-    #     rebalanced = (len(self.balancing_queue) != 0)
-
-    #     i = 0
-    #     while i < len(self.balancing_queue):
-    #         seq_group = self.balancing_queue[i]
-
-    #         if seq_group.spec_decode_stage == SpecDecodeStage.DRAFT_DECODE:
-    #             self.need_to_run_target_decode.append(seq_group)
-    #         else:
-    #             self.need_to_run_draft_decode.append(seq_group)
-
-    #         # Remove the processed sequence group from the balancing queue
-    #         del self.balancing_queue[i]
-
-    #     if rebalanced:
-    #         logger.info(
-    #             f"After Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
-
-    #     # Assess current load
-    #     draft_load = len(self.need_to_run_draft_decode)
-    #     target_load = len(self.need_to_run_target_decode)
-    #     total_load = draft_load + target_load
-    #     balance_point = total_load // 2
-
-    #     if total_load > 0:
-    #         imbalance_percentage = abs(
-    #             draft_load - target_load) / total_load * 100
-    #     else:
-    #         imbalance_percentage = 0
-
-    #     # Determine imbalance
-    #     if total_load < 32 or imbalance_percentage <= self.scheduler_config.balance_threshold:
-    #         return  # Queues are balanced within the acceptable range
-
-    #     logger.info(
-    #         f"Rebalancing queues: {len(self.need_to_run_draft_decode)} draft, {len(self.need_to_run_target_decode)} target, {len(self.balancing_queue)} in balancing queue")
-
-    #     # Rebalance queues
-    #     if draft_load > target_load:
-    #         # Move sequence groups from draft to balancing queue
-    #         while len(self.need_to_run_draft_decode) > balance_point:
-    #             seq_group = self.need_to_run_draft_decode.pop()
-    #             self.balancing_queue.append(seq_group)
-    #     else:
-    #         # Move sequence groups from target to balancing queue
-    #         while len(self.need_to_run_target_decode) > balance_point:
-    #             seq_group = self.need_to_run_target_decode.pop()
-    #             self.balancing_queue.append(seq_group)
 
     @ nvtx_range("schedule_prefill")
     def _schedule_prefill(self,

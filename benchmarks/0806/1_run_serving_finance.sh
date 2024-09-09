@@ -18,6 +18,25 @@
 
 export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
 
+declare -a models=(
+    # "facebook/opt-6.7b,facebook/opt-125m"
+    # "facebook/opt-6.7b,facebook/opt-350m"
+    # "facebook/opt-13b,facebook/opt-125m"
+    # "facebook/opt-13b,facebook/opt-350m"
+    # "daryl149/llama-2-7b-chat-hf,Felladrin/Llama-68M-Chat-v1"
+    # "bigscience/bloom-7b1,bigscience/bloomz-560m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-410m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-160m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-70m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-31m"
+    "EleutherAI/pythia-12b,EleutherAI/pythia-14m"
+    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-410m"
+    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
+    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-70m"
+    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-31m"
+    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-14m"
+)
+
 # Configurations
 datasets=("finance")
 temperatures=(0)

@@ -58,134 +58,6 @@ class SequenceStatus(enum.Enum):
         return finish_reason
 
 
-# class SequenceData:
-#     """Data associated with a sequence.
-
-
-#     Args:
-#         prompt_token_ids: The token IDs of the prompt.
-
-#     Attributes:
-#         prompt_token_ids: The token IDs of the prompt.
-#         output_token_ids: The token IDs of the output.
-#         cumulative_logprob: The cumulative log probability of the output.
-#     """
-
-#     def __init__(
-#         self,
-#         prompt_token_ids: List[int],
-#     ) -> None:
-#         self.prompt_token_ids = prompt_token_ids
-#         self.output_token_ids = deque()
-#         # self.output_token_ids: List[int] = []
-#         self.cumulative_logprob = 0.0
-
-#         # self.draft_token_ids: List[int] = []
-#         self.draft_token_ids = deque()
-#         # self.draft_logprobs: List[float] = []
-#         self.draft_logprobs = deque()
-
-#         self._num_computed_target_tokens = 0
-#         self._num_computed_draft_tokens = 0
-
-#     def append_token_id(self, token_id: int, logprob: float) -> None:
-#         self.output_token_ids.append(token_id)
-#         self.cumulative_logprob += logprob
-
-#     def get_len(self) -> int:
-#         return len(self.output_token_ids) + len(self.prompt_token_ids)
-
-#     def get_prompt_len(self) -> int:
-#         return len(self.prompt_token_ids)
-
-#     def get_output_len(self) -> int:
-#         return len(self.output_token_ids)
-
-#     def get_len_with_draft(self) -> int:
-#         return len(self.output_token_ids) + len(self.prompt_token_ids) + len(self.draft_token_ids)
-
-#     def get_token_ids(self) -> Deque[int]:
-#         return self.prompt_token_ids + self.output_token_ids
-
-#     def get_token_ids_with_draft(self) -> Deque[int]:
-#         return self.prompt_token_ids + self.output_token_ids + self.draft_token_ids
-
-#     def get_last_token_id(self) -> int:
-#         if not self.output_token_ids:
-#             return self.prompt_token_ids[-1]
-#         return self.output_token_ids[-1]
-
-#     def get_last_token_ids(self, count: int) -> List[int]:
-#         if not self.output_token_ids:
-#             return self.prompt_token_ids[-count:]
-#         return self.output_token_ids[-count:]
-
-#     # Spec Decode
-#     def append_draft_token_id(self, token_id: int, logprobs: float) -> None:
-#         self.draft_token_ids.append(token_id)
-#         self.draft_logprobs.append(logprobs)
-
-#     def accept_draft_tokens(self, accept_cnt: int) -> None:
-#         for i in range(accept_cnt):
-#             self.append_token_id(self.draft_token_ids[i],
-#                                  self.draft_logprobs[i])
-
-#         self.draft_token_ids.clear()
-#         self.draft_logprobs.clear()
-
-#         self._num_computed_draft_tokens = self.get_len() - 1
-#         self._num_computed_target_tokens = self.get_len() - 1
-
-#     def get_draft_len(self) -> int:
-#         return len(self.draft_token_ids)
-
-#     def get_draft_token_ids(self) -> List[int]:
-#         return self.draft_token_ids
-
-#     def drop_draft_tokens(self, drop_cnt: int) -> None:
-#         if drop_cnt == 0:
-#             return
-#         # Remove drop_cnt elements from the back of draft_token_ids
-#         # and draft_logprobs.
-#         self.draft_token_ids = self.draft_token_ids[:-drop_cnt]
-#         self.draft_logprobs = self.draft_logprobs[:-drop_cnt]
-#         self._num_computed_draft_tokens -= drop_cnt
-
-#     def get_num_uncomputed_target_tokens(self) -> int:
-#         """Return the number of prefill tokens that are not computed."""
-#         # we use `get_len()` which includes prompt_len + output_len instead
-#         # of prompt_len here. This is because during recompute we need to
-#         # prefill for both prompt and output.
-#         return self.get_len() - self._num_computed_target_tokens
-
-#     def get_num_uncomputed_draft_tokens(self) -> int:
-#         return self.get_len_with_draft() - self._num_computed_draft_tokens
-
-#     def get_num_computed_draft_tokens(self) -> int:
-#         return self._num_computed_draft_tokens
-
-#     def update_num_computed_target_tokens(self, num_computed_tokens):
-#         self._num_computed_target_tokens += num_computed_tokens
-
-#     def update_num_computed_draft_tokens(self, num_computed_tokens):
-#         self._num_computed_draft_tokens += num_computed_tokens
-
-#     def reset_state_for_recompute(self) -> None:
-#         self._num_computed_target_tokens = 0
-#         self._num_computed_draft_tokens = 0
-
-#         # We clear the draft tokens for reseting state.
-#         self.draft_token_ids.clear()
-#         self.draft_logprobs.clear()
-
-#     def __repr__(self) -> str:
-#         return (f"SequenceData("
-#                 f"prompt_token_ids={self.prompt_token_ids}, "
-#                 f"output_token_ids={self.output_token_ids}, "
-#                 f"cumulative_logprob={self.cumulative_logprob}, "
-#                 f"draft_token_ids={self.draft_token_ids})")
-
-
 class SequenceData:
     """Data associated with a sequence.
 
@@ -322,6 +194,8 @@ class Sequence:
             block size used by the block manager and cache engine.
     """
 
+    MOVING_AVG_WINDOW_SIZE = 10
+
     def __init__(
         self,
         seq_id: int,
@@ -353,10 +227,9 @@ class Sequence:
 
         # Spec Decode
         self.draft_size = draft_size
-        self.accept_cnts: List[int] = []
-        self.accept_logprobs: List[float] = []
-        self.reject_logprobs: List[float] = []
-        self.predicted_cumulated_accept_probs: List[float] = []
+        self.accept_probs: List[float] = []
+        self.sampled_draft_probs: List[float] = []
+        self.cumulative_predicted_accept_probs: List[float] = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -450,44 +323,32 @@ class Sequence:
 
     # Spec Decode
     @nvtx_range("append_draft_token_id")
-    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float]) -> None:
+    def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
+                              pre_temp_sampled_draft_prob: torch.Tensor) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id])
+        self.sampled_draft_probs.append(pre_temp_sampled_draft_prob.item())
+        assert len(self.sampled_draft_probs) == self.data.get_draft_len()
 
     @nvtx_range("accept_draft_tokens")
-    def accept_draft_tokens(self, accept_cnt: int):
+    def accept_draft_tokens(self, accept_cnt: int, accept_prob: List[float]):
         reject_cnt = self.data.get_draft_len() - accept_cnt
-
-        # if self.predicted_cumulated_accept_probs and len(self.accept_cnts) > 11:
-        #     for i in range(len(self.data.draft_logprobs)):
-        #         if i < accept_cnt:
-        #             label = "accept"
-        #         elif i == accept_cnt:
-        #             label = "reject"
-        #         else:
-        #             label = "discard"
-
-        #         print("prob", label,
-        #               self.predicted_cumulated_accept_probs[i], self.data.draft_logprobs[i])
-
-        self.predicted_cumulated_accept_probs.clear()
-
-        # For predicting dynamic draft size
-        self.accept_cnts.append(accept_cnt)
-        for i in range(accept_cnt):
-            self.accept_logprobs.append(
-                sum(self.data.draft_logprobs[:i+1]))
-
-        if accept_cnt < len(self.data.draft_logprobs):
-            for i in range(accept_cnt, len(self.data.draft_logprobs)):
-                self.reject_logprobs.append(
-                    sum(self.data.draft_logprobs[:i+1]))
-
         self.data.accept_draft_tokens(accept_cnt)
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
+
+        # if self.predicted_accept_probs:
+        # assert len(accept_prob) == len(self.predicted_accept_probs)
+        # for i in range(len(accept_prob)):
+        #     print(
+        #         f"result, {accept_prob[i]}, {self.predicted_accept_probs[i]}")
+        # self.predicted_accept_probs.clear()
+
+        self.cumulative_predicted_accept_probs.clear()
+        self.accept_probs.clear()
+        self.accept_probs.extend(accept_prob)
 
     def get_num_additional_blocks(self, size: int) -> int:
         last_block = self.logical_token_blocks[-1]
@@ -537,6 +398,9 @@ class Sequence:
 
     def reset_state_for_recompute(self) -> None:
         self.data.reset_state_for_recompute()
+        self.sampled_draft_probs.clear()
+        self.accept_probs.clear()
+        self.cumulative_predicted_accept_probs.clear()
 
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "
@@ -701,13 +565,17 @@ class SequenceOutput:
         output_token: int,
         logprobs: Dict[int, float],
         draft_probs: Optional[torch.Tensor] = None,
+        pre_temp_sampled_draft_prob: Optional[float] = 0.0,
         accept_cnt: Optional[int] = 0,
+        accept_prob: Optional[torch.Tensor] = 0.0,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
         self.draft_probs = draft_probs
+        self.pre_temp_sampled_draft_prob = pre_temp_sampled_draft_prob
         self.accept_cnt = accept_cnt
+        self.accept_prob = accept_prob
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "

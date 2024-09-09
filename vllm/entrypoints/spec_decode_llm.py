@@ -1,4 +1,5 @@
 from typing import List, Optional, Union, Any
+import time
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -205,7 +206,11 @@ class SpecDecodeLLM:
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
+            start_time = time.perf_counter()
             step_outputs = self.llm_engine.step()
+            end_time = time.perf_counter()
+            elasped_time = end_time - start_time
+            print(f"Budget, {elasped_time}")
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

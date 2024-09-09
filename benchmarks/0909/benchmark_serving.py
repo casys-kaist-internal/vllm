@@ -17,7 +17,7 @@ from vllm.outputs import RequestOutput
 
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
-BENCHMARK_DURATION_IN_MINUTES = 15
+BENCHMARK_DURATION_IN_MINUTES = 5
 
 # Disable garbage collection for performance
 gc.disable()
@@ -99,7 +99,7 @@ def run(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: 
                 outputs.append(output)
 
         throughput = len(outputs) / (time.perf_counter() - start_time)
-        # print(f"Throughput: {throughput:.3f} reqs/s")
+        print(f"Throughput: {throughput:.3f} reqs/s")
 
     # remove request_id from result if not exist in outputs
     for request_id in list(result.keys()):

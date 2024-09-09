@@ -376,10 +376,10 @@ class SchedulerConfig:
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
 
-        if prefill_mode not in ["prioritize_prefill", "full_prefill", "chunked_prefill", "chunked_prefill_demote_draft"]:
+        if prefill_mode not in ["full_prefill", "chunked_prefill", "chunked_prefill_demote_draft"]:
             raise ValueError(
                 f"Unknown prefill mode: {prefill_mode}. Must be one of "
-                "'prioritize_prefill', 'full_prefill', or 'chunked_prefill'.")
+                "'full_prefill', or 'chunked_prefill'.")
 
         if prefill_mode == "prioritize_prefill":
             assert max_num_batched_tokens is not None

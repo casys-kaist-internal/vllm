@@ -6,6 +6,7 @@ import torch
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
+from vllm.core.spec_decode_accept_prob_predictor import SpecDecodeAcceptProbPredictor
 from vllm.core.spec_decode_scheduler import SpecDecodeScheduler, SpecDecodeSchedulerOutputs, ScheduledSequenceGroup
 from vllm.engine.arg_utils import SpecDecodeEngineArgs
 from vllm.engine.metrics import record_metrics
@@ -129,6 +130,9 @@ class SpecDecodeLLMEngine:
         # Create the scheduler.
         self.scheduler = SpecDecodeScheduler(
             scheduler_config, cache_config, spec_decode_config)
+
+        # Create the accept probability predictor.
+        self.accept_prob_predictor = SpecDecodeAcceptProbPredictor()
 
         # Logging.
         self.last_logging_time = 0.0
@@ -415,7 +419,8 @@ class SpecDecodeLLMEngine:
             # is less than the max model length and max tokens
             if (len_with_draft < self.scheduler_config.max_model_len):
                 seq.append_draft_token_id(
-                    sample.output_token, sample.logprobs
+                    sample.output_token, sample.logprobs,
+                    sample.pre_temp_sampled_draft_prob
                 )
                 self.draft_probs_dict[seq.seq_id].append(
                     sample.draft_probs)
@@ -431,7 +436,9 @@ class SpecDecodeLLMEngine:
             all_accept = (seq.get_draft_len() == sample.accept_cnt)
             total_accept += sample.accept_cnt
             total_draft += seq.get_draft_len()
-            seq.accept_draft_tokens(sample.accept_cnt)
+            if self.accept_prob_predictor.is_trained():
+                print("result, ", seq_group.sampling_params.temperature)
+            seq.accept_draft_tokens(sample.accept_cnt, sample.accept_prob)
             num_tokens_to_log_system_stats += sample.accept_cnt
             check_stop_cnt = sample.accept_cnt
 
@@ -531,14 +538,14 @@ class SpecDecodeLLMEngine:
             self._log_system_stats(
                 num_prompt_tokens_to_log, num_generation_tokens_to_log)
 
-        if self.scheduler_config.demote_draft:
-            if target_decode_processed_seq_group_list:
-                self.scheduler.draft_size_optimizer.update_spec_decode_history(
-                    target_decode_processed_seq_group_list)
-
+        if self.accept_prob_predictor.is_trained() and draft_decode_processed_seq_group_list:
             if draft_decode_processed_seq_group_list:
-                self.scheduler.draft_size_optimizer.predict_accept_probs(
+                self.accept_prob_predictor.predict_accept_probs(
                     draft_decode_processed_seq_group_list)
+
+        if target_decode_processed_seq_group_list:
+            self.accept_prob_predictor.update_history(
+                target_decode_processed_seq_group_list)
 
         # global total_accept
         # global total_draft
@@ -586,7 +593,7 @@ class SpecDecodeLLMEngine:
             for seq_group in scheduler_outputs.preempted_seq_groups:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
-                seq.predicted_cumulated_accept_probs.clear()
+                # seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
 
@@ -657,7 +664,7 @@ class SpecDecodeLLMEngine:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
 
-                seq.predicted_cumulated_accept_probs.clear()
+                # seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
 

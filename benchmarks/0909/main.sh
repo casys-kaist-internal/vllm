@@ -1,8 +1,8 @@
 #!/bin/bash
-
 export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
 
 declare -a models=(
+    # "lmsys/vicuna-7b-v1.5,JackFram/llama-160m"
     "facebook/opt-6.7b,facebook/opt-125m"
     # "facebook/opt-6.7b,facebook/opt-350m"
     # "facebook/opt-13b,facebook/opt-125m"
@@ -23,20 +23,19 @@ declare -a models=(
 
 # Configurations
 datasets=("sharegpt")
-temperatures=(0 0.25 0.5 0.75 1)
+temperatures=(0 0.25 0.5 0.75)
 request_rates=(1 2 4 8 12)
-draft_sizes=(3)
-prefill_schedule_modes=("prioritize_prefill")
+draft_sizes=(7)
+prefill_schedule_modes=("full_prefill")
 budget_tokens=(2048)
 budget_seqs=(128)
 colocates=(false)
 target_attentions=(false)
 drop_thresholds=(0)
 
-
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/figure_1_0826.csv"
+output_csv="figures/main.csv"
 
 # make directory if not exists
 mkdir -p figures
@@ -106,7 +105,6 @@ run_benchmark() {
     
     extract_values "$output"
     echo "$target_model,$draft_model,$dataset,$temperature,$request_rate,$draft_size,$prefill_schedule_mode,$budget_token,$budget_seq,$colocate,$target_attention,$drop_threshold,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_token_latency,$p99_token_latency,$token_throughput,$request_throughput,$token_latency,$preempt_flag" >> "$output_csv"
-    ./slack "dataset: $dataset, temperature: $temperature, request_rate: $request_rate, draft_size: $draft_size, prefill_schedule_mode: $prefill_schedule_mode, colocate: $colocate, attention: $target_attention, budget_token: $budget_token, budget_seq: $budget_seq, drop_threshold: $drop_threshold, target_model: $target_model, draft_model: $draft_model, token_throughput: $token_throughput, request_throughput: $request_throughput, latency: $token_latency, preempted: $preempt_flag"
 }
 
 # Initialize
@@ -129,7 +127,6 @@ for model_pair in "${models[@]}"; do
                                     for target_attention in "${target_attentions[@]}"; do
                                         for drop_threshold in "${drop_thresholds[@]}"; do
                                             echo "[${current_run}/${total_runs}]"
-                                            ./slack "[${current_run}/${total_runs}]"
                                             run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$target_attention" "$drop_threshold" "$target_model" "$draft_model"
                                             ((current_run++))
                                         done
