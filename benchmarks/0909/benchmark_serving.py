@@ -17,7 +17,7 @@ from vllm.outputs import RequestOutput
 
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
-BENCHMARK_DURATION_IN_MINUTES = 5
+BENCHMARK_DURATION_IN_MINUTES = 2
 
 # Disable garbage collection for performance
 gc.disable()
@@ -52,6 +52,82 @@ def get_requests_with_time(input_requests: List[Tuple[str, int, int]],
     return requests_with_time
 
 
+def warmup(llm):
+    sampling_params = SamplingParams(
+        n=1,
+        temperature=0,
+        top_p=1.0,
+        use_beam_search=False,
+        ignore_eos=True,
+        max_tokens=128,
+    )
+    dummy_prompt_token_ids = [[0] * 32] * 8
+    start_time = time.perf_counter()
+    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                 sampling_params=sampling_params,
+                 use_tqdm=False)
+    end_time = time.perf_counter()
+    latency = end_time - start_time
+    return latency
+
+
+def train_predictor(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: float, temperature: float):
+    """Train the predictor."""
+    print("Training the predictor for selective validation ...")
+
+    # Change the scheduler_config to full_prefill for training predictor
+    original_chunked_prefill = llm.llm_engine.scheduler_config.chunked_prefill
+    orignal_max_num_batched_tokens = llm.llm_engine.scheduler_config.max_num_batched_tokens
+    llm.llm_engine.scheduler_config.chunked_prefill = False
+    llm.llm_engine.scheduler_config.max_num_batched_tokens = 2048
+
+    requests_with_time = get_requests_with_time(requests, request_rate)
+    result = {}
+    total_requests = len(requests_with_time)
+
+    start_time = time.perf_counter()
+    llm.llm_engine.reset_total_tokens()
+
+    request_index = 0
+    while True:
+        current_time = time.perf_counter() - start_time
+
+        if request_index >= total_requests:
+            request_index = 0
+
+        # Add requests to the engine if their scheduled time has passed
+        while requests_with_time[request_index][0] <= current_time:
+            request_start_time, (prompt, prompt_len,
+                                 output_len) = requests_with_time[request_index]
+            sampling_params = SamplingParams(
+                n=1,
+                temperature=random.choice(
+                    [0, 0.25, 0.5, 0.75]) if temperature == -1 else temperature,
+                top_p=1.0,
+                use_beam_search=False,
+                ignore_eos=True,
+                max_tokens=output_len,
+            )
+            request_id = llm._add_request(
+                prompt=prompt, prompt_token_ids=None, sampling_params=sampling_params)
+            result[request_id] = [request_start_time]
+            request_index += 1
+
+        llm.llm_engine.step()
+
+        if llm.llm_engine.scheduler.accept_prob_predictor.is_trained():
+            break
+
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+
+    print(f"Predictor training time: {elapsed_time:.3f} s")
+
+    llm.llm_engine.scheduler_config.chunked_prefill = original_chunked_prefill
+    llm.llm_engine.scheduler_config.max_num_batched_tokens = orignal_max_num_batched_tokens
+    llm.llm_engine.abort_all_requests()
+
+
 def run(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: float, temperature: float) -> Tuple[dict, int, bool]:
     """Runs the benchmark, processing requests with the given LLM."""
     requests_with_time = get_requests_with_time(requests, request_rate)
@@ -62,6 +138,7 @@ def run(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: 
     llm.llm_engine.reset_total_tokens()
     start_num_free_gpu_blocks = llm.llm_engine.scheduler.block_manager.gpu_allocator.get_num_free_blocks()
 
+    total_processed_tokens = 0
     request_index = 0
     while time.perf_counter() - start_time < BENCHMARK_DURATION_IN_MINUTES * 60:
         current_time = time.perf_counter() - start_time
@@ -97,9 +174,12 @@ def run(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: 
                 result[output.request_id].extend(
                     [e2e_latency, len(output.prompt_token_ids), len(output.outputs[0].token_ids)])
                 outputs.append(output)
+                total_processed_tokens += (len(output.prompt_token_ids) +
+                                           len(output.outputs[0].token_ids))
 
-        throughput = len(outputs) / (time.perf_counter() - start_time)
-        print(f"Throughput: {throughput:.3f} reqs/s")
+        throughput = total_processed_tokens / \
+            (time.perf_counter() - start_time)
+        print(f"Throughput: {throughput:.3f} tokens/s")
 
     # remove request_id from result if not exist in outputs
     for request_id in list(result.keys()):
@@ -144,8 +224,9 @@ def main(args: argparse.Namespace):
         ["Prefill Schedule Mode", args.prefill_schedule_mode],
         ["Budget Token", args.budget_token],
         ["Budget Seq", args.budget_seq],
+        ["Selective Validation", args.selective_validation],
         ["Drop Threshold", args.drop_threshold],
-        ["Target Attention", args.target_attention],
+        ["Gamma Mapping Attention", args.gamma_mapping_attention],
         ["Dataset", args.dataset],
         ["Request Rate", args.request_rate],
     ]
@@ -157,7 +238,8 @@ def main(args: argparse.Namespace):
         draft_size=args.draft_size,
         colocate=args.colocate,
         prefill_schedule_mode=args.prefill_schedule_mode,
-        target_attention=args.target_attention,
+        gamma_mapping_attention=args.gamma_mapping_attention,
+        selective_validation=args.selective_validation,
         drop_threshold=args.drop_threshold,
         max_num_batched_tokens=args.budget_token,
         max_num_seqs=args.budget_seq,
@@ -175,9 +257,16 @@ def main(args: argparse.Namespace):
     # Sample the requests
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
+
+    if args.selective_validation:
+        requests = sample_requests(args.dataset, 0, tokenizer)
+        # For training predictor, set request_rate high enough to train quickly
+        train_predictor(llm, requests, 16, args.temperature)
+    else:
+        warmup(llm)
+
     # 0 indicates all requests
     requests = sample_requests(args.dataset, 0, tokenizer)
-
     # Run the benchmark
     start_time = time.perf_counter()
     result, total_tokens, preempt_flag = run(
@@ -212,21 +301,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the throughput.")
     parser.add_argument("--dataset", type=str, default=None,
                         help="Path to the dataset.")
-    parser.add_argument("--input-len", type=int, default=None,
-                        help="Input prompt length for each request.")
-    parser.add_argument("--output-len", type=int, default=None,
-                        help="Output length for each request. Overrides the output length from the dataset.")
     parser.add_argument('--target-model', type=str,
                         default='facebook/opt-6.7b')
     parser.add_argument('--draft-model', type=str, default='facebook/opt-125m')
     parser.add_argument('--draft-size', type=int, default=0)
     parser.add_argument('--temperature', type=float, default=0.0,
-                        help="Temperature for sampling. -1 for random temperature.")
+                        help="Temperature for sampling. -1 for random temperature in [0, 0.25, 0.5, 0.75].")
     parser.add_argument('--colocate', '-c', action='store_true')
     parser.add_argument('--prefill-schedule-mode', '-psm', choices=[
-                        'prioritize_prefill', 'full_prefill', 'chunked_prefill', 'chunked_prefill_demote_draft'], default='full_prefill')
-    parser.add_argument("--target-attention",
-                        action="store_true", help="Use target attention.")
+                        'full_prefill', 'chunked_prefill'], default='full_prefill')
+    parser.add_argument("--gamma-mapping-attention",
+                        action="store_true", help="Use gamma mapping attention.")
+    parser.add_argument("--selective-validation", action="store_true")
     parser.add_argument("--drop-threshold", '-dt', type=float,
                         default=0, help="Threshold for dropping token.")
     parser.add_argument('--budget-token', type=int, default=2048,
@@ -260,12 +346,7 @@ if __name__ == "__main__":
 
     if args.tokenizer is None:
         args.tokenizer = args.target_model
-    if args.dataset is None or args.dataset == "dummy":
-        args.dataset = "dummy"
-        assert args.input_len is not None
-        assert args.output_len is not None
-        assert args.emulate_accept_prob is not None
-    else:
-        assert args.input_len is None
+
+    assert args.dataset is not None
 
     main(args)

@@ -142,6 +142,8 @@ class SequenceData:
     def drop_draft_tokens(self, drop_cnt: int) -> None:
         if drop_cnt == 0:
             return
+        assert drop_cnt > 0
+
         # Remove drop_cnt elements from the back of draft_token_ids
         # and draft_logprobs.
         self.draft_token_ids = self.draft_token_ids[:-drop_cnt]
@@ -229,7 +231,7 @@ class Sequence:
         self.draft_size = draft_size
         self.accept_probs: List[float] = []
         self.sampled_draft_probs: List[float] = []
-        self.cumulative_predicted_accept_probs: List[float] = []
+        self.predicted_cumulated_accept_probs: List[float] = []
 
     def _append_logical_block(self) -> None:
         block = LogicalTokenBlock(
@@ -329,8 +331,10 @@ class Sequence:
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id])
-        self.sampled_draft_probs.append(pre_temp_sampled_draft_prob.item())
-        assert len(self.sampled_draft_probs) == self.data.get_draft_len()
+
+        if pre_temp_sampled_draft_prob is not None:
+            self.sampled_draft_probs.append(pre_temp_sampled_draft_prob.item())
+            assert len(self.sampled_draft_probs) == self.data.get_draft_len()
 
     @nvtx_range("accept_draft_tokens")
     def accept_draft_tokens(self, accept_cnt: int, accept_prob: List[float]):
@@ -339,16 +343,16 @@ class Sequence:
         self.output_logprobs = self.output_logprobs[:-reject_cnt]
         self._remove_tokens_from_blocks(reject_cnt)
 
-        # if self.predicted_accept_probs:
-        # assert len(accept_prob) == len(self.predicted_accept_probs)
-        # for i in range(len(accept_prob)):
-        #     print(
-        #         f"result, {accept_prob[i]}, {self.predicted_accept_probs[i]}")
-        # self.predicted_accept_probs.clear()
+        # if self.predicted_cumulated_accept_probs:
+        #     for i in range(len(self.predicted_cumulated_accept_probs)):
+        #         accepted = i < accept_cnt
+        #         print(
+        #             f"result, {accepted}, {self.predicted_cumulated_accept_probs[i]}")
 
-        self.cumulative_predicted_accept_probs.clear()
+        self.predicted_cumulated_accept_probs.clear()
         self.accept_probs.clear()
-        self.accept_probs.extend(accept_prob)
+        if accept_prob != 0:
+            self.accept_probs.extend(accept_prob)
 
     def get_num_additional_blocks(self, size: int) -> int:
         last_block = self.logical_token_blocks[-1]
@@ -376,6 +380,12 @@ class Sequence:
         self.data.drop_draft_tokens(drop_cnt)
         self._remove_tokens_from_blocks(drop_cnt)
 
+        total_length = self.data.get_len_with_draft()
+        logical_token_blocks_len = len(self.logical_token_blocks)
+        logical_length = (logical_token_blocks_len - 1) * self.logical_token_blocks[0].block_size + self.logical_token_blocks[-1].num_tokens
+        assert total_length == logical_length
+
+
     def get_draft_len(self) -> int:
         return self.data.get_draft_len()
 
@@ -400,7 +410,7 @@ class Sequence:
         self.data.reset_state_for_recompute()
         self.sampled_draft_probs.clear()
         self.accept_probs.clear()
-        self.cumulative_predicted_accept_probs.clear()
+        self.predicted_cumulated_accept_probs.clear()
 
     def __repr__(self) -> str:
         return (f"Sequence(seq_id={self.seq_id}, "

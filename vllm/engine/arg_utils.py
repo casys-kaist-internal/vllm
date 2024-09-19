@@ -273,10 +273,10 @@ class SpecDecodeEngineArgs:
     draft_size: int = 7
     colocate: bool = False
     prefill_schedule_mode: str = 'full_prefill'
-    target_attention: bool = False
+    gamma_mapping_attention: bool = False
+    selective_validation: bool = False
     drop_threshold: float = 0
     disable_bonus_token: bool = False
-    emulate_accept_prob: float = None
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
@@ -337,9 +337,9 @@ class SpecDecodeEngineArgs:
                             '-cp',
                             action='store_true',
                             help='enable chunked prefill')
-        parser.add_argument('--target-attention',
+        parser.add_argument('--gamma-mapping-attention',
                             action='store_true',
-                            help='use target attention')
+                            help='use gamma mapping attention')
         parser.add_argument('--disable-bonus-token',
                             action='store_true',
                             help='disable bonus token')
@@ -531,14 +531,14 @@ class SpecDecodeEngineArgs:
                                            self.prefill_schedule_mode)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.colocate,
-                                              self.target_attention,
+                                              self.gamma_mapping_attention,
+                                              self.selective_validation,
                                               self.drop_threshold,
-                                              self.disable_bonus_token,
-                                              self.emulate_accept_prob)
+                                              self.disable_bonus_token)
 
         # If the model is Pythia, the target vocab and draft vocab is actually the same content
         # with different length with 'None' token padded. So, we skip assertion
-        allowed_model = ['pythia']
+        allowed_model = ['pythia', 'gpt-j-6b', 'gpt-neo-125m']
         # Check target_model_config.model and draft_model_config.model have substring allowed model
         if not any(model in target_model_config.model for model in allowed_model) and not any(model in draft_model_config.model for model in allowed_model):
             # Assertions for target model and draft model and print vocab size if fail

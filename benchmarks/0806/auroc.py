@@ -36,7 +36,7 @@ def plot_roc_curve_from_csv(file_path):
     unique_temps = np.unique(temperatures)
     lines = []  # Store line handles to create the legend
     labels = []  # Store labels for the legend
-    plt.figure(figsize=(5, 2.5))  # Adjusted for 2-column paper
+    plt.figure(figsize=(5, 2))  # Adjusted for 2-column paper
 
     for i, temp in reversed(list(enumerate(unique_temps))):
         mask = temperatures == temp

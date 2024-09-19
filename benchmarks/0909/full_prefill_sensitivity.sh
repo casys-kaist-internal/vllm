@@ -2,18 +2,16 @@
 export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
 
 declare -a models=(
-    # "facebook/opt-6.7b,facebook/opt-125m"
-    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
-    # "bigscience/bloom-7b1,bigscience/bloomz-560m"
-    # "facebook/opt-13b,facebook/opt-125m"
+    "facebook/opt-13b,facebook/opt-125m"
+    "facebook/opt-6.7b,facebook/opt-125m"
+    # "facebook/opt-6.7b,facebook/opt-350m"
     # "facebook/opt-13b,facebook/opt-350m"
-    # "daryl149/llama-2-7b-chat-hf,Felladrin/Llama-68M-Chat-v1"
     # "bigscience/bloom-7b1,bigscience/bloomz-560m"
     # "EleutherAI/pythia-12b,EleutherAI/pythia-410m"
     # "EleutherAI/pythia-12b,EleutherAI/pythia-160m"
     # "EleutherAI/pythia-12b,EleutherAI/pythia-70m"
-    # "EleutherAI/pythia-12b,EleutherAI/pythia-31m"
-    # "EleutherAI/pythia-12b,EleutherAI/pythia-14m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-410m"
+    # "EleutherAI/pythia-12b,EleutherAI/pythia-160m"
     # "EleutherAI/pythia-6.9b,EleutherAI/pythia-410m"
     # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
     # "EleutherAI/pythia-6.9b,EleutherAI/pythia-70m"
@@ -22,20 +20,20 @@ declare -a models=(
 )
 
 # Configurations
-datasets=("finance" "humaneval" "sharegpt")
+datasets=("finance")
 temperatures=(-1)
-request_rates=(1 8 16 24 32)
+request_rates=(24)
 draft_sizes=(7)
 prefill_schedule_modes=("full_prefill")
-budget_tokens=(2048)
-budget_seqs=(128)
-colocates=(false)
-target_attentions=(false)
-drop_thresholds=(0.3)
+budget_tokens=(4096)
+budget_seqs=(256)
+colocates=(true)
+gamma_mapping_attentions=(true)
+drop_thresholds=(0 0.1 0.2 0.3 0.4 0.5)
 
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/main.csv"
+output_csv="figures/full_prefill_sensitivity_.csv"
 
 # make directory if not exists
 mkdir -p figures
@@ -73,13 +71,13 @@ run_benchmark() {
     local budget_token="$6"
     local budget_seq="$7"
     local colocate="$8"
-    local target_attention="$9"
+    local gamma_mapping_attention="$9"
     local drop_threshold="${10}"
     local target_model="${11}"
     local draft_model="${12}"
 
     if [ "$draft_size" = "0" ]; then
-        target_attention="false"
+        gamma_mapping_attention="false"
         colocate="false"
         # skip if colocate = true and target_attention = true only when draft_size > 0
         # if [ "$colocate" = "true" ];then
@@ -91,20 +89,24 @@ run_benchmark() {
         fi
     fi
 
-    echo "Running benchmark for $dataset, temperature: $temperature, request_rate: $request_rate, draft_size: $draft_size, prefill_schedule_mode: $prefill_schedule_mode, budget_token: $budget_token, budget_seq: $budget_seq, colocate: $colocate, attention: $target_attention, drop_threshold: $drop_threshold, target_model: $target_model, draft_model: $draft_model"
+    echo "Running benchmark for $dataset, temperature: $temperature, request_rate: $request_rate, draft_size: $draft_size, prefill_schedule_mode: $prefill_schedule_mode, budget_token: $budget_token, budget_seq: $budget_seq, colocate: $colocate, attention: $gamma_mapping_attention, drop_threshold: $drop_threshold, target_model: $target_model, draft_model: $draft_model"
 
     colocate_flag=""
     [ "$colocate" = "true" ] && colocate_flag="--colocate"
-    target_attention_flag=""
-    [ "$target_attention" = "true" ] && target_attention_flag="--target-attention"
+    gamma_mapping_attention_flag=""
+    [ "$gamma_mapping_attention" = "true" ] && gamma_mapping_attention_flag="--gamma-mapping-attention"
+
+    selective_validation_flag=""
+    [ "$drop_threshold" != "0" ] && selective_validation_flag="--selective-validation"
 
     # save the last running python line in a file
-    echo "python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $target_attention_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model"" > last_run.sh
+    echo "python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $gamma_mapping_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model"" > last_run.sh
+    cat last_run.sh
 
-    local output=$(python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $target_attention_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model")
+    local output=$(python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $gamma_mapping_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model")
     
     extract_values "$output"
-    echo "$target_model,$draft_model,$dataset,$temperature,$request_rate,$draft_size,$prefill_schedule_mode,$budget_token,$budget_seq,$colocate,$target_attention,$drop_threshold,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_token_latency,$p99_token_latency,$token_throughput,$request_throughput,$token_latency,$preempt_flag" >> "$output_csv"
+    echo "$target_model,$draft_model,$dataset,$temperature,$request_rate,$draft_size,$prefill_schedule_mode,$budget_token,$budget_seq,$colocate,$gamma_mapping_attention,$drop_threshold,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_token_latency,$p99_token_latency,$token_throughput,$request_throughput,$token_latency,$preempt_flag" >> "$output_csv"
 }
 
 # Initialize
@@ -124,10 +126,10 @@ for model_pair in "${models[@]}"; do
                         for budget_token in "${budget_tokens[@]}"; do
                             for budget_seq in "${budget_seqs[@]}"; do
                                 for colocate in "${colocates[@]}"; do
-                                    for target_attention in "${target_attentions[@]}"; do
+                                    for gamma_mapping_attention in "${gamma_mapping_attentions[@]}"; do
                                         for drop_threshold in "${drop_thresholds[@]}"; do
                                             echo "[${current_run}/${total_runs}]"
-                                            run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$target_attention" "$drop_threshold" "$target_model" "$draft_model"
+                                            run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$gamma_mapping_attention" "$drop_threshold" "$target_model" "$draft_model"
                                             ((current_run++))
                                         done
                                     done

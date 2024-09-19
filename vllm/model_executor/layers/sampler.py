@@ -507,6 +507,7 @@ def _spec_decode_sample(
     # accept_probs: [seq_idx, target_lens_minus_one]
     accept_probs = target_prob_for_sampled_draft_token.div_(
         draft_prob_for_sampled_draft_token)
+
     del probs, target_prob_for_sampled_draft_token, draft_prob_for_sampled_draft_token
 
     # Replace inf and nan values with 0
@@ -730,9 +731,12 @@ def _build_sampler_output(
                         SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
                                        accept_cnt=accept_cnt, accept_prob=accept_prob))
             else:
-                pre_temp_sampled_draft_prob = pre_temp_draft_probs[
-                    idx][next_token_id]
-                # pre_temp_sampled_draft_prob = draft_probs[idx][next_token_id]
+                if sampling_metadata.selective_validation:
+                    pre_temp_sampled_draft_prob = pre_temp_draft_probs[
+                        idx][next_token_id]
+                else:
+                    pre_temp_sampled_draft_prob = None
+
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
                                    draft_probs=draft_probs[idx],
@@ -824,5 +828,6 @@ def _modify_greedy_probs_inplace(probs: torch.Tensor,
         accurate logprobs for the user, so this improvement is deferred to later.
         """
     # NOTE: logprobs are not modified so they can be returned to the user.
+    # print size of probs and sample_indices
     probs[sample_indices, :] = 0
     probs[sample_indices, greedy_samples] = 1.0

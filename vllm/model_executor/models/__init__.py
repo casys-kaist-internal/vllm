@@ -23,6 +23,7 @@ _MODELS = {
     "GPTBigCodeForCausalLM": ("gpt_bigcode", "GPTBigCodeForCausalLM"),
     "GPTJForCausalLM": ("gpt_j", "GPTJForCausalLM"),
     "GPTNeoXForCausalLM": ("gpt_neox", "GPTNeoXForCausalLM"),
+    "GPTNeoForCausalLM": ("gpt_neo", "GPTNeoXForCausalLM"),
     "InternLMForCausalLM": ("internlm", "InternLMForCausalLM"),
     "LlamaForCausalLM": ("llama", "LlamaForCausalLM"),
     # For decapoda-research/llama-*

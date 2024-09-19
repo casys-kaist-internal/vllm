@@ -20,7 +20,7 @@ class SpecDecodeAcceptProbPredictor:
     - `draft_prob` (intra-request variability)
     """
 
-    HISTORY_SIZE = 10000  # Constant for the history size
+    HISTORY_SIZE = 100000  # Constant for the history size
     PLOT = False  # Plot the ROC curve
     MIN_OUTPUT_CNT = 100
 
@@ -222,8 +222,8 @@ class SpecDecodeAcceptProbPredictor:
         for i, seq_group in enumerate(seq_group_list):
             seq = seq_group.get_seqs()[0]
             predicted_accept_prob = float(predictions[i])
-            last_predicted_accept_prob = seq.cumulative_predicted_accept_probs[-1] if len(
-                seq.cumulative_predicted_accept_probs) > 0 else 1
+            last_predicted_accept_prob = seq.predicted_cumulated_accept_probs[-1] if len(
+                seq.predicted_cumulated_accept_probs) > 0 else 1
             cumulative_predicted_accept_prob = last_predicted_accept_prob * predicted_accept_prob
-            seq.cumulative_predicted_accept_probs.append(
+            seq.predicted_cumulated_accept_probs.append(
                 cumulative_predicted_accept_prob)

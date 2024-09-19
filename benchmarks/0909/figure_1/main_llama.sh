@@ -2,9 +2,7 @@
 export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
 
 declare -a models=(
-    # "facebook/opt-6.7b,facebook/opt-125m"
-    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
-    # "bigscience/bloom-7b1,bigscience/bloomz-560m"
+    "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
     # "facebook/opt-13b,facebook/opt-125m"
     # "facebook/opt-13b,facebook/opt-350m"
     # "daryl149/llama-2-7b-chat-hf,Felladrin/Llama-68M-Chat-v1"
@@ -23,19 +21,19 @@ declare -a models=(
 
 # Configurations
 datasets=("finance" "humaneval" "sharegpt")
-temperatures=(-1)
-request_rates=(1 8 16 24 32)
+temperatures=(0 0.25 0.5 0.75)
+request_rates=(16)
 draft_sizes=(7)
 prefill_schedule_modes=("full_prefill")
 budget_tokens=(2048)
 budget_seqs=(128)
 colocates=(false)
 target_attentions=(false)
-drop_thresholds=(0.3)
+drop_thresholds=(0)
 
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/main.csv"
+output_csv="figures/figure_1.csv"
 
 # make directory if not exists
 mkdir -p figures

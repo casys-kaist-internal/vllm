@@ -75,9 +75,9 @@ class SpecDecodeLLM:
         draft_size: int,
         colocate: bool = False,
         prefill_schedule_mode: str = "full_prefill",
-        target_attention: bool = False,
+        gamma_mapping_attention: bool = False,
+        selective_validation: bool = False,
         drop_threshold: float = 0,
-        emulate_accept_prob: float = None,
         tokenizer: Optional[str] = None,
         tokenizer_mode: str = "auto",
         trust_remote_code: bool = False,
@@ -103,9 +103,9 @@ class SpecDecodeLLM:
             draft_size=draft_size,
             colocate=colocate,
             prefill_schedule_mode=prefill_schedule_mode,
-            target_attention=target_attention,
+            gamma_mapping_attention=gamma_mapping_attention,
+            selective_validation=selective_validation,
             drop_threshold=drop_threshold,
-            emulate_accept_prob=emulate_accept_prob,
             tokenizer=tokenizer,
             tokenizer_mode=tokenizer_mode,
             trust_remote_code=trust_remote_code,
@@ -210,7 +210,6 @@ class SpecDecodeLLM:
             step_outputs = self.llm_engine.step()
             end_time = time.perf_counter()
             elasped_time = end_time - start_time
-            print(f"Budget, {elasped_time}")
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)

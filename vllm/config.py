@@ -375,34 +375,16 @@ class SchedulerConfig:
         # change prefill_mode to enum PrefillScheduleMode
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
+        self.max_num_batched_tokens = max_num_batched_tokens
 
-        if prefill_mode not in ["full_prefill", "chunked_prefill", "chunked_prefill_demote_draft"]:
+        if prefill_mode == "full_prefill":
+            self.chunked_prefill = False
+        elif prefill_mode == "chunked_prefill":
+            self.chunked_prefill = True
+        else:
             raise ValueError(
                 f"Unknown prefill mode: {prefill_mode}. Must be one of "
                 "'full_prefill', or 'chunked_prefill'.")
-
-        if prefill_mode == "prioritize_prefill":
-            assert max_num_batched_tokens is not None
-            self.max_num_batched_tokens = max_num_batched_tokens
-            self.prioritize_prefill = True
-            self.chunked_prefill = False
-            self.demote_draft = False
-        elif prefill_mode == "full_prefill":
-            assert max_num_batched_tokens is not None
-            self.max_num_batched_tokens = max_num_batched_tokens
-            self.prioritize_prefill = False
-            self.chunked_prefill = False
-            self.demote_draft = False
-        elif prefill_mode == "chunked_prefill":
-            self.max_num_batched_tokens = 512
-            self.prioritize_prefill = False
-            self.chunked_prefill = True
-            self.demote_draft = False
-        elif prefill_mode == "chunked_prefill_demote_draft":
-            self.max_num_batched_tokens = 512
-            self.prioritize_prefill = False
-            self.chunked_prefill = True
-            self.demote_draft = True
 
         self._verify_args()
 
@@ -550,17 +532,19 @@ class SpecDecodeConfig:
     def __init__(self,
                  draft_size: int,
                  colocate: bool,
-                 target_attention: bool,
+                 gamma_mapping_attention: bool,
+                 selective_validation: bool,
                  drop_threshold: float,
-                 disable_bonus_token: bool,
-                 emulate_accept_prob: Optional[float]) -> None:
+                 disable_bonus_token: bool) -> None:
         self.draft_size = draft_size
-        self.target_attention = target_attention
         self.colocate = colocate
+        self.gamma_mapping_attention = gamma_mapping_attention
+        self.selective_validation = selective_validation
         self.drop_threshold = drop_threshold
         self.disable_bonus_token = disable_bonus_token
-        self.emulate_accept_prob = emulate_accept_prob
 
-        if self.emulate_accept_prob:
-            print(
-                f"Emulating accept probability with {self.emulate_accept_prob}")
+        # check that drop_threshold is in the range [0, 1]
+        if drop_threshold < 0 or drop_threshold > 1:
+            raise ValueError(
+                f"drop_threshold must be in the range [0, 1]. Got {drop_threshold}"
+            )

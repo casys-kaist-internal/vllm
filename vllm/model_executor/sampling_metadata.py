@@ -37,7 +37,7 @@ class SamplingMetadata:
         sampled_draft_token_ids: Optional[torch.Tensor] = None,
         draft_probs_tensor: Optional[torch.Tensor] = None,
         perform_sampling: bool = True,
-        emulate_accept_prob: Optional[float] = None
+        selective_validation: bool = False,
     ) -> None:
         self.seq_groups = seq_groups
         self.seq_data = seq_data
@@ -50,7 +50,7 @@ class SamplingMetadata:
         self.sampled_draft_token_ids = sampled_draft_token_ids
         self.draft_probs_tensor = draft_probs_tensor
         self.perform_sampling = perform_sampling
-        self.emulate_accept_prob = emulate_accept_prob
+        self.selective_validation = selective_validation
 
         self.num_prompts = len(prompt_lens) if prompt_lens is not None else 0
 

@@ -25,7 +25,7 @@ class InputMetadata:
         context_lens: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
         use_cuda_graph: bool,
-        use_target_attention: bool,
+        use_gamma_mapping_attention: bool,
     ) -> None:
         self.num_prefill_tokens = num_prefill_tokens
         self.num_decode_tokens = num_decode_tokens
@@ -36,7 +36,7 @@ class InputMetadata:
         self.context_lens = context_lens
         self.block_tables = block_tables
         self.use_cuda_graph = use_cuda_graph
-        self.use_target_attention = use_target_attention
+        self.use_gamma_mapping_attention = use_gamma_mapping_attention
 
         # Set during the execution of the first attention op.
         # FIXME(woosuk): This is a hack.

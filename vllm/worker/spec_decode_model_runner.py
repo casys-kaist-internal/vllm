@@ -150,7 +150,7 @@ class SpecDecodeModelRunner:
             context_lens=None,
             block_tables=None,
             use_cuda_graph=False,
-            use_target_attention=False,
+            use_gamma_mapping_attention=False,
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
@@ -382,7 +382,7 @@ class SpecDecodeModelRunner:
             context_lens=context_lens,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
-            use_target_attention=False,
+            use_gamma_mapping_attention=False,
         )
         return input_tokens, input_positions, input_metadata, draft_lens
 
@@ -466,7 +466,6 @@ class SpecDecodeModelRunner:
                 selected_token_start_idx += target_len
                 target_modify_greedy_start_idx += target_len
 
-                # categorized_sample_indices[sampling_params.sampling_type].extend(
                 categorized_sample_indices[sampling_params.sampling_type].extend(
                     range(categorized_sample_indices_start_idx,
                           categorized_sample_indices_start_idx + num_seqs))
@@ -527,7 +526,7 @@ class SpecDecodeModelRunner:
             target_modify_greedy_indices=target_modify_greedy_indices,
             sampled_draft_token_ids=sampled_draft_token_ids,
             draft_probs_tensor=draft_probs_tensor,
-            emulate_accept_prob=self.spec_decode_config.emulate_accept_prob,
+            selective_validation=self.spec_decode_config.selective_validation
         )
         return sampling_metadata
 
@@ -605,7 +604,7 @@ class SpecDecodeModelRunner:
                 block_tables=block_tables,
                 use_cuda_graph=False,
                 # Target decode can use target attention
-                use_target_attention=self.spec_decode_config.target_attention,
+                use_gamma_mapping_attention=self.spec_decode_config.gamma_mapping_attention,
             )
         else:
             input_metadata = InputMetadata(
@@ -618,7 +617,7 @@ class SpecDecodeModelRunner:
                 context_lens=None,
                 block_tables=None,
                 use_cuda_graph=False,
-                use_target_attention=False,  # Prefill does not use target attention
+                use_gamma_mapping_attention=False,  # Prefill does not use target attention
             )
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
@@ -773,7 +772,7 @@ class SpecDecodeModelRunner:
                 target_lens=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
-                use_target_attention=False,
+                use_gamma_mapping_attention=False,
             )
 
             graph_runner = CUDAGraphRunner(self.model)

@@ -6,7 +6,6 @@ import torch
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
-from vllm.core.spec_decode_accept_prob_predictor import SpecDecodeAcceptProbPredictor
 from vllm.core.spec_decode_scheduler import SpecDecodeScheduler, SpecDecodeSchedulerOutputs, ScheduledSequenceGroup
 from vllm.engine.arg_utils import SpecDecodeEngineArgs
 from vllm.engine.metrics import record_metrics
@@ -130,9 +129,6 @@ class SpecDecodeLLMEngine:
         # Create the scheduler.
         self.scheduler = SpecDecodeScheduler(
             scheduler_config, cache_config, spec_decode_config)
-
-        # Create the accept probability predictor.
-        self.accept_prob_predictor = SpecDecodeAcceptProbPredictor()
 
         # Logging.
         self.last_logging_time = 0.0
@@ -436,8 +432,6 @@ class SpecDecodeLLMEngine:
             all_accept = (seq.get_draft_len() == sample.accept_cnt)
             total_accept += sample.accept_cnt
             total_draft += seq.get_draft_len()
-            if self.accept_prob_predictor.is_trained():
-                print("result, ", seq_group.sampling_params.temperature)
             seq.accept_draft_tokens(sample.accept_cnt, sample.accept_prob)
             num_tokens_to_log_system_stats += sample.accept_cnt
             check_stop_cnt = sample.accept_cnt
@@ -524,10 +518,13 @@ class SpecDecodeLLMEngine:
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for scheduled_seq_group in (prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups +
-                                    scheduler_outputs.ignored_seq_groups):
+        for scheduled_seq_group in (prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups):
             request_output = RequestOutput.from_seq_group(
                 scheduled_seq_group.seq_group)
+            request_outputs.append(request_output)
+
+        for seq_group in scheduler_outputs.ignored_seq_groups:
+            request_output = RequestOutput.from_seq_group(seq_group)
             request_outputs.append(request_output)
 
         self.total_prefill_tokens += num_prompt_tokens_to_log
@@ -538,14 +535,15 @@ class SpecDecodeLLMEngine:
             self._log_system_stats(
                 num_prompt_tokens_to_log, num_generation_tokens_to_log)
 
-        if self.accept_prob_predictor.is_trained() and draft_decode_processed_seq_group_list:
-            if draft_decode_processed_seq_group_list:
-                self.accept_prob_predictor.predict_accept_probs(
-                    draft_decode_processed_seq_group_list)
+        if self.spec_decode_config.selective_validation:
+            if self.scheduler.accept_prob_predictor.is_trained():
+                if draft_decode_processed_seq_group_list:
+                    self.scheduler.accept_prob_predictor.predict_accept_probs(
+                        draft_decode_processed_seq_group_list)
 
-        if target_decode_processed_seq_group_list:
-            self.accept_prob_predictor.update_history(
-                target_decode_processed_seq_group_list)
+            if target_decode_processed_seq_group_list:
+                self.scheduler.accept_prob_predictor.update_history(
+                    target_decode_processed_seq_group_list)
 
         # global total_accept
         # global total_draft

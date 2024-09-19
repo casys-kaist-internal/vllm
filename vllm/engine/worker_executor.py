@@ -1,6 +1,7 @@
 import copy
 import torch.multiprocessing as mp
 from typing import Any
+import gc
 
 from vllm.worker.spec_decode_worker import SpecDecodeWorker
 from vllm.utils import get_ip, get_open_port, nvtx_range
@@ -74,6 +75,7 @@ class WorkerExecutor:
             return getattr(self.target_worker, method)(*args, **kwargs)
         else:
             self.task_queue.put((method, args, kwargs))
+            # gc.get_objects()
             result = self.result_queue.get()
             return result
 
@@ -96,6 +98,7 @@ class WorkerExecutor:
         Receive the output from the target worker.
         """
         assert self.only_target is False
+        # gc.get_objects()
         return self.result_queue.get()
 
     def shutdown(self) -> None:

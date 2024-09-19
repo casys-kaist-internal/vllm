@@ -146,7 +146,7 @@ class ModelRunner:
             target_lens=None,
             block_tables=None,
             use_cuda_graph=False,
-            use_target_attention=False
+            use_gamma_mapping_attention=False
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
@@ -251,7 +251,7 @@ class ModelRunner:
             target_lens=target_lens,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
-            use_target_attention=False
+            use_gamma_mapping_attention=False
         )
         return input_tokens, input_positions, input_metadata, target_lens
 
@@ -441,7 +441,7 @@ class ModelRunner:
                 context_lens=context_lens,
                 block_tables=block_tables,
                 use_cuda_graph=py_data["use_cuda_graph"],
-                use_target_attention=False
+                use_gamma_mapping_attention=False
             )
             sampling_metadata = SamplingMetadata(
                 seq_groups=None,
@@ -552,7 +552,7 @@ class ModelRunner:
                 target_lens=[],
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
-                use_target_attention=False
+                use_gamma_mapping_attention=False
             )
 
             graph_runner = CUDAGraphRunner(self.model)

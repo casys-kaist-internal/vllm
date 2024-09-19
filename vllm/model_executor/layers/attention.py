@@ -259,7 +259,7 @@ def _paged_attention(
     # For context len > 8192, use V2 kernel to avoid shared memory shortage.
     use_v1 = input_metadata.max_context_len <= 8192 and (
         max_num_partitions == 1 or num_seqs * num_heads > 512) and (
-            not input_metadata.use_target_attention
+            not input_metadata.use_gamma_mapping_attention
     )
     if use_v1:
         # Run PagedAttention V1.
@@ -290,7 +290,7 @@ def _paged_attention(
             device=output.device,
         )
         max_logits = torch.zeros_like(exp_sums)
-        if input_metadata.use_target_attention:
+        if input_metadata.use_gamma_mapping_attention:
             # Run PagedAttention V2.
             ops.paged_attention_v2_target(
                 output,
