@@ -769,9 +769,9 @@ def _reshape_and_pad(
 
 
 def _get_modified_rejection_prob(target_prob: torch.Tensor, draft_prob: torch.Tensor) -> torch.Tensor:
-    min_val = _smallest_positive_value(target_prob.dtype)
+    # min_val = _smallest_positive_value(target_prob.dtype)
     target_prob.sub_(draft_prob)
-    target_prob.clamp_(min=min_val)
+    target_prob.clamp_(min=0)
     x_max_sum = target_prob.sum(dim=-1, keepdim=True)
     target_prob.div_(x_max_sum)
     return target_prob

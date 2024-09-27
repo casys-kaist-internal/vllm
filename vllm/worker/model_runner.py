@@ -138,12 +138,17 @@ class ModelRunner:
 
         input_metadata = InputMetadata(
             num_prefill_tokens=sum(prompt_lens),
+            num_chunked_prefill_tokens=0,
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
             max_context_len=None,
             context_lens=None,
+            chunked_context_lens=None,
             prefill_lens=prompt_lens,
+            chunked_prefill_lens=[],
+            query_start_locs=[],
             target_lens=None,
+            chunked_block_tables=None,
             block_tables=None,
             use_cuda_graph=False,
             use_gamma_mapping_attention=False
@@ -242,13 +247,18 @@ class ModelRunner:
             )
 
         input_metadata = InputMetadata(
-            num_prefill_tokens=0,   # TODO(noppanat): fix this
-            num_decode_tokens=batch_size,  # TODO(noppanat): fix this
+            num_prefill_tokens=0, 
+            num_chunked_prefill_tokens=0,
+            num_decode_tokens=batch_size,  
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             context_lens=context_lens,
+            chunked_context_lens=None,
             prefill_lens=[],
+            chunked_prefill_lens=[],
+            query_start_locs=[],
             target_lens=target_lens,
+            chunked_block_tables=None,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
             use_gamma_mapping_attention=False
@@ -320,10 +330,9 @@ class ModelRunner:
         sampling_metadata = SamplingMetadata(
             seq_groups=seq_groups,
             seq_data=seq_data,
-            draft_lens=[],    # TODO(noppanat): fix this
-            # TODO(noppanat): fix this
-            target_lens=target_lens,
             prompt_lens=prompt_lens,
+            draft_lens=[], 
+            target_lens=target_lens,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices=categorized_sample_indices,
         )
@@ -365,6 +374,8 @@ class ModelRunner:
                 # input_metadata.is_prompt,
                 "num_prefill_tokens":
                 input_metadata.num_prefill_tokens,
+                "num_chunked_prefill_tokens":
+                input_metadata.num_chunked_prefill_tokens,
                 "num_decode_tokens":
                 input_metadata.num_decode_tokens,
                 "slot_mapping_size":
@@ -430,15 +441,17 @@ class ModelRunner:
                 device="cuda")
             broadcast(selected_token_indices, src=0)
             input_metadata = InputMetadata(
-                # TODO(noppanat): fix this
                 num_prefill_tokens=py_data["num_prefill_tokens"],
-                # TODO(noppanat): fix this
+                num_chunked_prefill_tokens=py_data["num_chunked_prefill_tokens"],
                 num_decode_tokens=py_data["num_decode_tokens"],
                 slot_mapping=slot_mapping,
                 max_context_len=py_data["max_context_len"],
                 prefill_len=py_data["prefill_len"],
+                chunked_prefill_len=py_data["chunked_prefill_len"],
+                query_start_locs=py_data["query_start_locs"],
                 target_lens=py_data["target_lens"],
                 context_lens=context_lens,
+                chunked_block_tables=py_data["chunked_block_tables"],
                 block_tables=block_tables,
                 use_cuda_graph=py_data["use_cuda_graph"],
                 use_gamma_mapping_attention=False
@@ -543,13 +556,18 @@ class ModelRunner:
         for batch_size in reversed(_BATCH_SIZES_TO_CAPTURE):
             # Create dummy input_metadata.
             input_metadata = InputMetadata(
-                num_prefill_tokens=0,   # TODO(noppanat): fix this
-                num_decode_tokens=batch_size,   # TODO(noppanat): fix this
+                num_prefill_tokens=0,   
+                num_chunked_prefill_tokens=0,
+                num_decode_tokens=batch_size,  
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
+                chunked_context_lens=None,
                 prefill_lens=[],
+                chunked_prefill_lens=[],
+                query_start_locs=[],
                 target_lens=[],
+                chunked_block_tables=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
                 use_gamma_mapping_attention=False

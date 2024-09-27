@@ -33,21 +33,67 @@ gc.disable()
 # Token Latency:
 # Average time to generate each output token, calculated by dividing total latency by the number of output tokens.
 
+# Global variable to decide the arrival pattern
+ARRIVAL_PATTERN = 'poisson'  # Options: 'poisson' or 'bursty'
 
 def get_requests_with_time(input_requests: List[Tuple[str, int, int]],
                            request_rate: float) -> List[Tuple[float, Tuple[str, int, int]]]:
-    """Generates requests with associated times based on a Poisson process."""
+    """
+    Generates requests with associated times based on the selected arrival pattern.
+    The arrival pattern is controlled by the global variable ARRIVAL_PATTERN.
+    """
     requests_with_time = []
     current_time = 0.0
+    total_duration = (BENCHMARK_DURATION_IN_MINUTES + 1) * 60  # Total benchmark duration in seconds
 
-    for request in cycle(input_requests):
-        requests_with_time.append((current_time, request))
-        interval = np.random.exponential(1.0 / request_rate)
-        current_time += interval
+    if ARRIVAL_PATTERN == 'poisson':
+        # Poisson arrival process
+        for request in cycle(input_requests):
+            requests_with_time.append((current_time, request))
+            interval = np.random.exponential(1.0 / request_rate)
+            current_time += interval
 
-        # Add 1 minute to the benchmark duration for safety
-        if current_time > (BENCHMARK_DURATION_IN_MINUTES + 1) * 60:
-            break
+            # Stop if we've reached the total duration
+            if current_time > total_duration:
+                break
+
+    elif ARRIVAL_PATTERN == 'bursty':
+        # Bursty arrival pattern
+        # Parameters for burstiness
+        burst_interval = 10  # Seconds between the start of each burst
+        burst_duration = 1  # Duration of each burst in seconds
+        high_rate_multiplier = 5  # Multiplier for the arrival rate during bursts
+
+        # Create an infinite cycle of input requests
+        input_requests_cycle = cycle(input_requests)
+
+        # Time when the next burst starts
+        next_burst_start = 0.0
+
+        while current_time < total_duration:
+            if next_burst_start <= current_time < next_burst_start + burst_duration:
+                # We are in a burst period
+                current_request_rate = request_rate * high_rate_multiplier
+            else:
+                # We are in a normal period
+                current_request_rate = request_rate
+
+                # If we've passed the burst period, schedule the next burst
+                if current_time >= next_burst_start + burst_duration:
+                    next_burst_start += burst_interval
+
+            # Generate the inter-arrival interval based on the current request rate
+            if current_request_rate > 0:
+                interval = np.random.exponential(1.0 / current_request_rate)
+            else:
+                # Avoid division by zero if the rate is zero
+                interval = float('inf')
+
+            requests_with_time.append((current_time, next(input_requests_cycle)))
+            current_time += interval
+
+    else:
+        raise ValueError(f"Invalid ARRIVAL_PATTERN: {ARRIVAL_PATTERN}. Must be 'poisson' or 'bursty'.")
 
     return requests_with_time
 

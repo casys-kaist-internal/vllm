@@ -2,10 +2,16 @@ import asyncio
 import time
 from itertools import cycle
 from typing import Any, Dict, List, Optional, Tuple, Union
+import os 
 
 import pytest
 import ray
 import torch
+import numpy as np
+from scipy.stats import chisquare
+import matplotlib.pyplot as plt
+from collections import Counter as CT
+from scipy.spatial.distance import jensenshannon
 
 from vllm.utils import is_hip
 
@@ -28,6 +34,12 @@ from ...conftest import cleanup
 # DOWNLOAD_DIR = "../models/" # NOTE(noppanat): Change this to the correct path
 # NOTE(noppanat): Change this to the correct path
 DOWNLOAD_DIR = "/mnt/sda/download"
+
+# Set env variable export CUBLAS_WORKSPACE_CONFIG=:4096:2 export CUBLAS_WORKSPACE_CONFIG=:16:8
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:2"
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+
+# torch.use_deterministic_algorithms(True)
 
 
 class AsyncLLM:
@@ -303,6 +315,10 @@ def create_llm_generator(baseline_or_test, request, common_llm_kwargs,
         set_random_seed(seed)
 
         yield llm
+
+        if baseline_or_test == "test":
+            llm.llm_engine.worker_executor.shutdown()
+
         del llm
         cleanup()
 
@@ -355,14 +371,23 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
     temperature = 0
 
     prompts = [
+        "Generate digital startup ideas based on the wish of the people. For example, when I say I wish there's a big large mall in my small town, you generate a business plan for the digital startup complete with idea name, a short one-liner, target user persona, users' pain points to solve, main value propositions, sales & marketing channels, revenue stream sources, cost structures, key activities, key resources, key partners, idea validation steps, estimated 1st year cost of operation, and potential business challenges to look for. Write the result in a markdown table.",
+        "The first President of India was Dr. Rajendra Prasad. He served as the President of India from 1950 to 1962, for two consecutive terms. Dr. Prasad was a prominent leader of the Indian Independence Movement and played an important role in shaping India's destiny after independence. He was also a scholar, a jurist, and a Gandhian who believed in the principles of non-violence and truth.",
+        "Barack Hussein Obama II was born on August 4, 1961, and is an American politician who served as the 44th president of the United States from 2009 to 2017.",
+        "After graduating from high school in 1979, Obama moved to Los Angeles to attend Occidental College on a full scholarship.",
+        "UNICEF USA's mission is to relentlessly pursue a more equitable world for every child. UNICEF USA advances the global mission of UNICEF by rallying the American public to support the world's most vulnerable children.",
         "The future of AI is",
         "The president of the United States is",
         "Hello, my name is",
         "The capital of France is",
-        "San Francisco is know for its",
+        "San Francisco is known for its",
         "Facebook was created in 2004 by",
         "Curious George is a",
         "Python 3.11 brings improvements to its",
+        "The best way to learn is to",
+        "The most important thing in life is",
+        "Alan Turing was a",
+        "Elon Musk is the CEO of Tesla and SpaceX. He was born in",
     ]
 
     prompts = [prompt for prompt, _ in zip(cycle(prompts), range(batch_size))]
@@ -377,12 +402,12 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
         temperature=temperature,
     )
 
-    spec_batch_tokens, spec_batch_token_ids = get_output_from_llm_generator(
-        test_llm_generator, prompts, sampling_params)
-
     (baseline_batch_tokens,
      baseline_batch_token_ids) = get_output_from_llm_generator(
          baseline_llm_generator, prompts, sampling_params)
+    
+    spec_batch_tokens, spec_batch_token_ids = get_output_from_llm_generator(
+        test_llm_generator, prompts, sampling_params)
 
     assert len(baseline_batch_token_ids) == len(prompts)
     assert len(spec_batch_token_ids) == len(prompts)
@@ -403,6 +428,160 @@ def run_greedy_equality_correctness_test(baseline_llm_generator,
                 baseline_token_ids)]
         else:
             assert baseline_token_ids == spec_token_ids
+
+
+def run_output_distribution_similarity_test(baseline_llm_generator,
+                                            test_llm_generator,
+                                            temperature,
+                                            batch_size,
+                                            max_output_len,
+                                            force_output_len: bool,
+                                            print_tokens: bool = True,
+                                            jsd_threshold: float = 0.2,
+                                            plot_filename: str = 'token_distribution.png'):
+    """Helper method that compares the distributions of output tokens from both
+    the baseline LLM and the test LLM using Jensen-Shannon Divergence.
+    
+    - Matches the output IDs up to the length of the shorter output for each sequence.
+    - Draws a PNG file of the two distributions and saves it.
+    """
+
+    # List of prompts
+    prompts = [
+        "Generate digital startup ideas based on the wish of the people. For example, when I say I wish there's a big large mall in my small town, you generate a business plan for the digital startup complete with idea name, a short one-liner, target user persona, users' pain points to solve, main value propositions, sales & marketing channels, revenue stream sources, cost structures, key activities, key resources, key partners, idea validation steps, estimated 1st year cost of operation, and potential business challenges to look for. Write the result in a markdown table.",
+        "The first President of India was Dr. Rajendra Prasad. He served as the President of India from 1950 to 1962, for two consecutive terms. Dr. Prasad was a prominent leader of the Indian Independence Movement and played an important role in shaping India's destiny after independence. He was also a scholar, a jurist, and a Gandhian who believed in the principles of non-violence and truth.",
+        "Barack Hussein Obama II was born on August 4, 1961, and is an American politician who served as the 44th president of the United States from 2009 to 2017.",
+        "After graduating from high school in 1979, Obama moved to Los Angeles to attend Occidental College on a full scholarship.",
+        "UNICEF USA's mission is to relentlessly pursue a more equitable world for every child. UNICEF USA advances the global mission of UNICEF by rallying the American public to support the world's most vulnerable children.",
+        "The future of AI is",
+        "The president of the United States is",
+        "Hello, my name is",
+        "The capital of France is",
+        "San Francisco is known for its",
+        "Facebook was created in 2004 by",
+        "Curious George is a",
+        "Python 3.11 brings improvements to its",
+        "The best way to learn is to",
+        "The most important thing in life is",
+        "Alan Turing was a",
+        "Elon Musk is the CEO of Tesla and SpaceX. He was born in",
+    ]
+
+    prompts = [prompt for prompt, _ in zip(cycle(prompts), range(batch_size))]
+
+    # If the test requires that we generate max_output_len tokens, set the
+    # sampling params to ignore eos token.
+    ignore_eos = force_output_len
+
+    sampling_params = SamplingParams(
+        max_tokens=max_output_len,
+        ignore_eos=ignore_eos,
+        temperature=temperature,
+    )
+
+    # Get outputs from both models
+    baseline_batch_tokens, baseline_batch_token_ids = get_output_from_llm_generator(
+        baseline_llm_generator, prompts, sampling_params
+    )
+
+    spec_batch_tokens, spec_batch_token_ids = get_output_from_llm_generator(
+        test_llm_generator, prompts, sampling_params
+    )
+
+    # Initialize lists for matched tokens
+    baseline_token_ids_matched = []
+    spec_token_ids_matched = []
+
+    # Match output IDs up to the length of the shorter output for each sequence
+    for seq_baseline, seq_spec in zip(baseline_batch_token_ids, spec_batch_token_ids):
+        min_len = min(len(seq_baseline), len(seq_spec))
+        baseline_token_ids_matched.extend(seq_baseline[:min_len])
+        spec_token_ids_matched.extend(seq_spec[:min_len])
+
+    # Build frequency distributions (histograms) of the token IDs
+    baseline_counter = CT(baseline_token_ids_matched)
+    spec_counter = CT(spec_token_ids_matched)
+
+    # Get the set of all unique token IDs from both models
+    all_tokens = set(baseline_counter.keys()).union(set(spec_counter.keys()))
+
+    # Build frequency arrays
+    baseline_freq = np.array([baseline_counter.get(token, 0) for token in all_tokens], dtype=np.float64)
+    spec_freq = np.array([spec_counter.get(token, 0) for token in all_tokens], dtype=np.float64)
+
+    # Normalize frequencies to get probability distributions
+    baseline_prob = baseline_freq / baseline_freq.sum()
+    spec_prob = spec_freq / spec_freq.sum()
+
+    # Calculate Jensen-Shannon Divergence
+    js_distance = jensenshannon(baseline_prob, spec_prob)
+    js_divergence = js_distance ** 2  # Jensen-Shannon Divergence is the square of the distance
+
+    # Print the JSD value
+    print(f"Jensen-Shannon Divergence: {js_divergence}")
+
+    # Determine if the distributions are similar based on the threshold
+    if js_divergence > jsd_threshold:
+        print("The distributions diverge significantly.")
+        test_result = False
+    else:
+        print("The distributions are similar.")
+        test_result = True
+
+    # Plot the distributions and save as a PNG file
+    # Get the top N tokens from both counters
+    N = 20  # Number of top tokens to display
+    baseline_top_tokens = set([token for token, _ in baseline_counter.most_common(N)])
+    spec_top_tokens = set([token for token, _ in spec_counter.most_common(N)])
+    tokens_for_plot = list(baseline_top_tokens.union(spec_top_tokens))
+    tokens_for_plot.sort()  # Sort tokens for consistent ordering
+
+    # Get counts for plotting
+    baseline_plot_counts = [baseline_counter.get(token, 0) for token in tokens_for_plot]
+    spec_plot_counts = [spec_counter.get(token, 0) for token in tokens_for_plot]
+
+    x = np.arange(len(tokens_for_plot))  # the label locations
+    width = 0.35  # the width of the bars
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    rects1 = ax.bar(x - width / 2, baseline_plot_counts, width, label='Baseline')
+    rects2 = ax.bar(x + width / 2, spec_plot_counts, width, label='Test')
+
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('Token Counts')
+    ax.set_title('Token Frequency Distribution')
+    ax.set_xticks(x)
+    ax.set_xticklabels(tokens_for_plot, rotation=90)
+    ax.legend()
+
+    # Write the JSD value on the plot
+    ax.text(0.5, 0.95, f"Jensen-Shannon Divergence: {js_divergence:.4f}",
+            horizontalalignment='center',
+            verticalalignment='center',
+            transform=ax.transAxes)
+    
+    # Write down pass or fail on the plot
+    ax.text(0.5, 0.90, "Pass" if test_result else "Fail",
+            horizontalalignment='center',
+            verticalalignment='center',
+            transform=ax.transAxes)
+
+    plot_dir = 'dist_plots'
+
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # Concat pass or fail at the front to the plot filename
+    plot_filename = f"{'pass' if test_result else 'fail'}_{plot_filename}"
+
+    plot_filename = os.path.join(plot_dir, plot_filename)
+
+    fig.tight_layout()
+    plt.savefig(plot_filename)
+    plt.close(fig)
+
+    # Assert the test result
+    assert test_result, f"Distributions diverge significantly (JSD={js_divergence})"
+
 
 
 def wait_for_gpu_memory_to_clear(devices: List[int],

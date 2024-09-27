@@ -175,6 +175,8 @@ class SpecDecodeWorker:
         self,
         prefill_seq_group_metadata_list:
         Optional[List[SequenceGroupMetadata]] = [],
+        chunked_prefill_seq_group_metadata_list:
+        Optional[List[SequenceGroupMetadata]] = [],
         target_decode_seq_group_metadata_list:
         Optional[List[SequenceGroupMetadata]] = [],
         draft_decode_seq_group_metadata_list:
@@ -185,9 +187,11 @@ class SpecDecodeWorker:
         draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
         assert prefill_seq_group_metadata_list is not None or \
+            chunked_prefill_seq_group_metadata_list is not None or \
             target_decode_seq_group_metadata_list is not None or \
             draft_decode_seq_group_metadata_list is not None
         num_seq_groups = len(prefill_seq_group_metadata_list) + \
+            len(chunked_prefill_seq_group_metadata_list) + \
             len(target_decode_seq_group_metadata_list) + \
             len(draft_decode_seq_group_metadata_list)
         assert blocks_to_swap_in is not None
@@ -203,6 +207,7 @@ class SpecDecodeWorker:
             return {}
 
         output = self.model_runner.execute_model(prefill_seq_group_metadata_list,
+                                                 chunked_prefill_seq_group_metadata_list,
                                                  target_decode_seq_group_metadata_list,
                                                  draft_decode_seq_group_metadata_list,
                                                  self.gpu_cache, draft_probs_tensor)

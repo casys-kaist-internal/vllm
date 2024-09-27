@@ -26,6 +26,7 @@ def _read_prompts(filename: str) -> str:
 
 
 def cleanup():
+    print("Cleaning up...")
     # TODO(noppanat): Implement vllm/distributed
     destroy_model_parallel()
     # destroy_distributed_environment()

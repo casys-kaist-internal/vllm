@@ -10,6 +10,7 @@ from xformers.ops.fmha.attn_bias import (BlockDiagonalCausalMask,
 from vllm._C import ops
 from vllm._C import cache_ops
 from vllm.model_executor.input_metadata import InputMetadata
+from vllm.model_executor.layers.prefix_prefill import context_attention_fwd
 from vllm.utils import is_hip, nvtx_range
 
 _SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
@@ -100,70 +101,53 @@ class PagedAttention(nn.Module):
             )
 
         num_prefill_tokens = input_metadata.num_prefill_tokens
+        num_chunked_prefill_tokens = input_metadata.num_chunked_prefill_tokens
+        num_total_prefill_tokens = num_prefill_tokens + num_chunked_prefill_tokens 
         num_decode_tokens = input_metadata.num_decode_tokens
 
-        assert key.shape[0] == num_prefill_tokens + num_decode_tokens
-        assert value.shape[0] == num_prefill_tokens + num_decode_tokens
+        assert key.shape[0] == num_total_prefill_tokens + num_decode_tokens
+        assert value.shape[0] == num_total_prefill_tokens + num_decode_tokens
 
         output = torch.empty_like(query)
         # Query for decode. KV is not needed because it is already cached.
-        decode_query = query[num_prefill_tokens:]
+        decode_query = query[num_total_prefill_tokens:]
         # QKV for prefill
-        query = query[:num_prefill_tokens]
-        key = key[:num_prefill_tokens]
-        value = value[:num_prefill_tokens]
+        prefill_query = query[:num_prefill_tokens]
+        prefill_key = key[:num_prefill_tokens]
+        prefill_value = value[:num_prefill_tokens]
 
-        assert query.shape[0] == num_prefill_tokens
+        # QKV for chunked prefill
+        chunked_prefill_query = query[num_prefill_tokens:num_total_prefill_tokens]
+        chunked_prefill_key = key[num_prefill_tokens:num_total_prefill_tokens]
+        chunked_prefill_value = value[num_prefill_tokens:num_total_prefill_tokens]
+
+        assert prefill_query.shape[0] == num_prefill_tokens
+        assert chunked_prefill_query.shape[0] == num_chunked_prefill_tokens
         assert decode_query.shape[0] == num_decode_tokens
 
         # Prompt run.
         if num_prefill_tokens > 0:
-            if self.num_kv_heads != self.num_heads:
-                # As of Nov 2023, xformers only supports MHA. For MQA/GQA,
-                # project the key and value tensors to the desired number of
-                # heads.
-                # TODO(woosuk): Use MQA/GQA kernels for higher performance.
-                query = query.view(query.shape[0], self.num_kv_heads,
-                                   self.num_queries_per_kv, query.shape[-1])
-                key = key[:, :,
-                          None, :].expand(key.shape[0], self.num_kv_heads,
-                                          self.num_queries_per_kv,
-                                          key.shape[-1])
-                value = value[:, :, None, :].expand(value.shape[0],
-                                                    self.num_kv_heads,
-                                                    self.num_queries_per_kv,
-                                                    value.shape[-1])
+            assert self.num_kv_heads == self.num_heads
 
             # Set attention bias if not provided. This typically happens at the
             # very attention layer of every iteration.
             # FIXME(woosuk): This is a hack.
             if input_metadata.attn_bias is None:
-                if self.alibi_slopes is None:
-                    attn_bias = BlockDiagonalCausalMask.from_seqlens(
-                        input_metadata.prefill_lens)
-                    if self.sliding_window is not None:
-                        attn_bias = attn_bias.make_local_attention(
-                            self.sliding_window)
-                    input_metadata.attn_bias = attn_bias
-                else:
-                    input_metadata.attn_bias = _make_alibi_bias(
-                        self.alibi_slopes, self.num_kv_heads, query.dtype, input_metadata.prefill_lens)
+                attn_bias = BlockDiagonalCausalMask.from_seqlens(
+                    input_metadata.prefill_lens)
+                if self.sliding_window is not None:
+                    attn_bias = attn_bias.make_local_attention(
+                        self.sliding_window)
+                input_metadata.attn_bias = attn_bias
 
-            # TODO(woosuk): Too many view operations. Let's try to reduce them
-            # in the future for code readability.
-            if self.alibi_slopes is None:
-                query = query.unsqueeze(0)
-                key = key.unsqueeze(0)
-                value = value.unsqueeze(0)
-            else:
-                query = query.unflatten(0, (1, num_prefill_tokens))
-                key = key.unflatten(0, (1, num_prefill_tokens))
-                value = value.unflatten(0, (1, num_prefill_tokens))
+            prefill_query = prefill_query.unsqueeze(0)
+            prefill_key = prefill_key.unsqueeze(0)
+            prefill_value = prefill_value.unsqueeze(0)
 
             out = xops.memory_efficient_attention_forward(
-                query,
-                key,
-                value,
+                prefill_query,
+                prefill_key,
+                prefill_value,
                 attn_bias=input_metadata.attn_bias,
                 p=0.0,
                 scale=self.scale,
@@ -173,11 +157,37 @@ class PagedAttention(nn.Module):
             out = out.view_as(output[:num_prefill_tokens])
             output[:num_prefill_tokens] = out
 
+        # Chunked prefill run.
+        if num_chunked_prefill_tokens > 0:
+            assert self.num_kv_heads == self.num_heads
+
+            max_query_len = max(input_metadata.chunked_prefill_lens)    
+
+            # seq_lens_tensor is addition of chunked_context_lens and chunked_prefill_lens
+            seq_lens_tensor = input_metadata.chunked_prefill_lens + input_metadata.chunked_context_lens
+
+            out = forward_prefix(
+                chunked_prefill_query,
+                chunked_prefill_key,
+                chunked_prefill_value,
+                key_cache,
+                value_cache,
+                input_metadata.chunked_block_tables,
+                input_metadata.query_start_locs,
+                seq_lens_tensor,
+                input_metadata.chunked_context_lens,
+                max_query_len,
+                None,
+                self.sliding_window,
+            )
+            out = out.view_as(output[num_prefill_tokens:num_total_prefill_tokens])
+            output[num_prefill_tokens:num_total_prefill_tokens] = out
+
         # Decoding run.
         if num_decode_tokens > 0:
             torch.cuda.nvtx.range_push("decode_attention")
             if key_cache is not None and value_cache is not None:
-                output[num_prefill_tokens:] = _paged_attention(
+                output[num_total_prefill_tokens:] = _paged_attention(
                     decode_query,
                     key_cache,
                     value_cache,
@@ -232,6 +242,37 @@ def _make_alibi_bias(
 
     return attn_biases
 
+def forward_prefix(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    seq_lens_tensor: torch.Tensor,
+    context_lens: torch.Tensor,
+    max_query_len: int,
+    alibi_slopes: Optional[torch.Tensor],
+    sliding_window: Optional[int],
+) -> torch.Tensor:
+    output = torch.empty_like(query)
+    context_attention_fwd(
+        query,
+        key,
+        value,
+        output,
+        key_cache,
+        value_cache,
+        block_tables,
+        query_start_loc[:-1],
+        seq_lens_tensor,
+        context_lens,
+        max_query_len,
+        alibi_slopes,
+        sliding_window,
+    )
+    return output
 
 @ nvtx_range("_paged_attention")
 def _paged_attention(

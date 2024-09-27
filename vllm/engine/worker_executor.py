@@ -1,5 +1,6 @@
 import copy
 import torch.multiprocessing as mp
+import torch
 from typing import Any
 import gc
 
@@ -108,6 +109,7 @@ class WorkerExecutor:
 
 
 def init_worker(task_queue, result_queue, target_model_config, parallel_config, scheduler_config, spec_decode_config):
+    # Run target worker in different stream
     target_worker = SpecDecodeWorker(
         copy.deepcopy(target_model_config),
         copy.deepcopy(parallel_config),

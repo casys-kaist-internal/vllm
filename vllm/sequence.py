@@ -159,6 +159,9 @@ class SequenceData:
 
     def get_num_uncomputed_draft_tokens(self) -> int:
         return self.get_len_with_draft() - self._num_computed_draft_tokens
+    
+    def get_num_computed_target_tokens(self) -> int:
+        return self._num_computed_target_tokens
 
     def get_num_computed_draft_tokens(self) -> int:
         return self._num_computed_draft_tokens
@@ -394,6 +397,9 @@ class Sequence:
 
     def get_num_uncomputed_draft_tokens(self) -> int:
         return self.data.get_num_uncomputed_draft_tokens()
+    
+    def get_num_computed_target_tokens(self) -> int:
+        return self.data.get_num_computed_target_tokens()
 
     def get_num_computed_draft_tokens(self) -> int:
         return self.data.get_num_computed_draft_tokens()

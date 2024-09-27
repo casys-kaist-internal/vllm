@@ -468,7 +468,7 @@ class SpecDecodeLLMEngine:
             raise ValueError(
                 f"Invalid SpecDecodeStage: {spec_decode_stage}")
 
-        if spec_decode_stage != SpecDecodeStage.DRAFT_DECODE:
+        if spec_decode_stage != SpecDecodeStage.DRAFT_DECODE and check_stop_cnt > 0:
             self._decode_sequence(seq, seq_group.sampling_params)
             self._check_stop(
                 seq, seq_group.sampling_params, check_stop_cnt)
@@ -486,11 +486,12 @@ class SpecDecodeLLMEngine:
             scheduler_outputs: SpecDecodeSchedulerOutputs) -> List[RequestOutput]:
         # Update the scheduled sequence groups with the model outputs.
         prefill_scheduled_seq_groups: List[ScheduledSequenceGroup] = scheduler_outputs.prefill_scheduled_seq_groups
+        chunked_prefill_scheduled_seq_groups: List[SequenceGroupMetadata] = scheduler_outputs.chunked_prefill_scheduled_seq_groups    
         target_decode_scheduled_seq_groups: List[
             ScheduledSequenceGroup] = scheduler_outputs.target_decode_scheduled_seq_groups
         draft_decode_scheduled_seq_groups: List[
             ScheduledSequenceGroup] = scheduler_outputs.draft_decode_scheduled_seq_groups
-        scheduled_seq_groups = prefill_scheduled_seq_groups + \
+        scheduled_seq_groups = prefill_scheduled_seq_groups + chunked_prefill_scheduled_seq_groups + \
             target_decode_scheduled_seq_groups + draft_decode_scheduled_seq_groups
         target_decode_processed_seq_group_list: List[SequenceGroup] = []
         draft_decode_processed_seq_group_list: List[SequenceGroup] = []
@@ -584,20 +585,16 @@ class SpecDecodeLLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
-         draft_decode_seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule()
+        (prefill_seq_group_metadata_list, chunked_prefill_seq_group_metadata_list,
+         target_decode_seq_group_metadata_list, draft_decode_seq_group_metadata_list, 
+         scheduler_outputs) = self.scheduler.schedule()
 
         if scheduler_outputs.preempted_seq_groups:
             for seq_group in scheduler_outputs.preempted_seq_groups:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
-                # seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
-
-        # print("prefill: ", len(prefill_seq_group_metadata_list))
-        # print("target: ", len(target_decode_seq_group_metadata_list))
-        # print("draft: ", len(draft_decode_seq_group_metadata_list))
 
         if scheduler_outputs.is_empty():
             return self._process_model_outputs([], scheduler_outputs)
@@ -611,6 +608,7 @@ class SpecDecodeLLMEngine:
             output = self.worker_executor.run_target_worker_sync(
                 "execute_model",
                 prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                chunked_prefill_seq_group_metadata_list=chunked_prefill_seq_group_metadata_list,
                 target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
@@ -653,16 +651,15 @@ class SpecDecodeLLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        (prefill_seq_group_metadata_list, target_decode_seq_group_metadata_list,
-         draft_decode_seq_group_metadata_list, target_scheduler_outputs,
-         draft_scheduler_outputs) = self.scheduler.colocate_schedule()
+        (prefill_seq_group_metadata_list, chunked_prefill_seq_group_metadata_list,
+         target_decode_seq_group_metadata_list, draft_decode_seq_group_metadata_list, 
+         target_scheduler_outputs, draft_scheduler_outputs) = self.scheduler.colocate_schedule()
 
         if target_scheduler_outputs.preempted_seq_groups:
             for seq_group in target_scheduler_outputs.preempted_seq_groups:
                 seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
                 seq_id = seq.seq_id
 
-                # seq.predicted_cumulated_accept_probs.clear()
                 if seq_id in self.draft_probs_dict:
                     del self.draft_probs_dict[seq_id]
 
@@ -680,6 +677,7 @@ class SpecDecodeLLMEngine:
             self.worker_executor.run_target_worker_async(
                 "execute_model",
                 prefill_seq_group_metadata_list=prefill_seq_group_metadata_list,
+                chunked_prefill_seq_group_metadata_list=chunked_prefill_seq_group_metadata_list,
                 target_decode_seq_group_metadata_list=target_decode_seq_group_metadata_list,
                 blocks_to_swap_in=target_scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=target_scheduler_outputs.blocks_to_swap_out,
@@ -710,7 +708,7 @@ class SpecDecodeLLMEngine:
                 if not target_scheduler_outputs.is_empty() and self.worker_executor.check_target_worker_async_done():
                     break
 
-            self.scheduler.swap_and_balance_target_draft_queues(
+            self.scheduler.swap_target_draft_queues(
                 draft_scheduler_outputs)
 
         if not target_scheduler_outputs.is_empty():
@@ -718,7 +716,7 @@ class SpecDecodeLLMEngine:
             target_output = self.worker_executor.get_target_worker_async_output()
             target_result = self._process_model_outputs(
                 target_output, target_scheduler_outputs)
-            self.scheduler.swap_and_balance_target_draft_queues(
+            self.scheduler.swap_target_draft_queues(
                 target_scheduler_outputs)
 
         self.scheduler.free_finished_seq_groups()

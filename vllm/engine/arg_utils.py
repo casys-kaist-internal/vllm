@@ -14,6 +14,7 @@ class EngineArgs:
     model: str
     tokenizer: Optional[str] = None
     tokenizer_mode: str = 'auto'
+    prefill_schedule_mode: str = 'full_prefill'
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
     load_format: str = 'auto'
@@ -234,7 +235,7 @@ class EngineArgs:
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,
                                            model_config.max_model_len,
-                                           self.max_paddings)
+                                           self.prefill_schedule_mode)
         return model_config, cache_config, parallel_config, scheduler_config
 
 

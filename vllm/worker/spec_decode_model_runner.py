@@ -142,12 +142,17 @@ class SpecDecodeModelRunner:
 
         input_metadata = InputMetadata(
             num_prefill_tokens=sum(prompt_lens),
+            num_chunked_prefill_tokens=0,
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
             prefill_lens=prompt_lens,
+            chunked_prefill_lens=None,
+            query_start_locs=None,
             target_lens=None,
             max_context_len=None,
             context_lens=None,
+            chunked_context_lens=None,
+            chunked_block_tables=None,
             block_tables=None,
             use_cuda_graph=False,
             use_gamma_mapping_attention=False,
@@ -158,11 +163,16 @@ class SpecDecodeModelRunner:
     def _prepare_prefill(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
+        chunked_prefill_seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> Tuple[List[int], List[int], List[int], List[int]]:
         input_tokens: List[int] = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
         prompt_lens: List[int] = []
+        chunked_prompt_lens: List[int] = []
+        seq_lens: List[int] = []
+        chunked_context_lens: List[int] = []
+        chunked_block_tables: List[List[int]] = []
 
         for seq_group_metadata in seq_group_metadata_list:
             assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.PREFILL
@@ -174,7 +184,9 @@ class SpecDecodeModelRunner:
             prompt_tokens = seq_data.get_token_ids()
 
             if self.scheduler_config.chunked_prefill:
-                prompt_tokens[:seq_group_metadata.token_chunk_size]
+                prompt_tokens = prompt_tokens[:seq_group_metadata.token_chunk_size]
+
+            assert len(prompt_tokens) == seq_group_metadata.token_chunk_size
 
             prompt_len = len(prompt_tokens)
             prompt_lens.append(prompt_len)
@@ -214,7 +226,51 @@ class SpecDecodeModelRunner:
 
             slot_mapping.extend(single_slot_mapping)
 
-        return input_tokens, input_positions, slot_mapping, prompt_lens
+        for seq_group_metadata in chunked_prefill_seq_group_metadata_list:
+            assert seq_group_metadata.spec_decode_stage == SpecDecodeStage.PREFILL
+            assert self.scheduler_config.chunked_prefill
+
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            assert len(seq_ids) == 1
+
+            seq_data = seq_group_metadata.seq_data[seq_ids[0]]
+            prompt_tokens = seq_data.get_token_ids()
+
+            num_computed_target_tokens = seq_data.get_num_computed_target_tokens()
+            end_token = seq_group_metadata.token_chunk_size + num_computed_target_tokens
+            chunked_prompt_tokens = prompt_tokens[num_computed_target_tokens:end_token]
+            assert len(chunked_prompt_tokens) == seq_group_metadata.token_chunk_size
+
+            prompt_len = len(chunked_prompt_tokens)
+            chunked_prompt_lens.append(prompt_len)
+            chunked_context_lens.append(num_computed_target_tokens)
+
+            input_tokens.extend(chunked_prompt_tokens)
+            # NOTE: In chunked prefill, the first token in the prompt is not
+            # the first token in the sequence. Already computed num_computed_target_tokens
+            # so adjust the position accordingly.
+            position_start = num_computed_target_tokens
+            for i in range(len(chunked_prompt_tokens)):
+                position = position_start + i
+                input_positions.append(position)
+
+            # block table should be always available for chunked prefill
+            assert seq_group_metadata.block_tables is not None
+            
+            # Compute the slot mapping.
+            single_slot_mapping = []
+            block_table = seq_group_metadata.block_tables[seq_ids[0]]
+            chunked_block_tables.append(block_table)
+
+            for i in range(prompt_len):
+                block_number = block_table[(position_start + i) // self.block_size]
+                block_offset = (position_start + i) % self.block_size
+                slot = block_number * self.block_size + block_offset
+                single_slot_mapping.append(slot)    
+
+            slot_mapping.extend(single_slot_mapping)
+
+        return input_tokens, input_positions, slot_mapping, prompt_lens, chunked_prompt_lens, chunked_context_lens, chunked_block_tables
 
     @nvtx_range("_prepare_target_decode")
     def _prepare_target_decode(
@@ -374,12 +430,17 @@ class SpecDecodeModelRunner:
 
         input_metadata = InputMetadata(
             num_prefill_tokens=0,
+            num_chunked_prefill_tokens=0,
             num_decode_tokens=sum(draft_lens),
             slot_mapping=slot_mapping,
             max_context_len=max_context_len,
             prefill_lens=None,
+            chunked_prefill_lens=None,
+            query_start_locs=None,
             target_lens=None,
+            chunked_context_lens=None,
             context_lens=context_lens,
+            chunked_block_tables=None,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
             use_gamma_mapping_attention=False,
@@ -404,7 +465,6 @@ class SpecDecodeModelRunner:
         target_modify_greedy_indices: List[int] = []
         target_modify_greedy_start_idx = 0
 
-        max_prompt_len = max(prompt_lens) if prompt_lens else 1
         prefill_idx = 0
         target_decode_idx = 0
         draft_decode_idx = 0
@@ -534,34 +594,28 @@ class SpecDecodeModelRunner:
     def _prepare_target_input_tensors(
         self,
         prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        chunked_prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         draft_probs_tensor: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata, SamplingMetadata]:
 
         # Prepare prefill input tensors
         (prefill_input_tokens, prefill_input_positions,
-         prefill_slot_mapping, prefill_lens) = self._prepare_prefill(
-            prefill_seq_group_metadata_list)
+         prefill_slot_mapping, prefill_lens, 
+         chunked_prefill_lens, chunked_context_lens, 
+         chunked_block_tables) = self._prepare_prefill(
+            prefill_seq_group_metadata_list, chunked_prefill_seq_group_metadata_list)
 
         # Prepare target decode input tensors
         (target_input_tokens, target_input_positions,
          target_slot_mapping, target_context_lens,
-         target_block_tables, target_lens) = self._prepare_target_decode(
+         block_tables, target_lens) = self._prepare_target_decode(
             target_decode_seq_group_metadata_list)
 
-        sampling_metadata = self._prepare_sample(prefill_seq_group_metadata_list + target_decode_seq_group_metadata_list,
-                                                 prefill_lens, [], target_lens, draft_probs_tensor)
-
-        # Combine prefill and target input tokens, input_positions, slot_mappings.
-        # input_tokens = _async_h2d(
-        #     prefill_input_tokens + target_input_tokens,
-        #     dtype=torch.long, pin_memory=True)
-        # input_positions = _async_h2d(
-        #     prefill_input_positions + target_input_positions,
-        #     dtype=torch.long, pin_memory=True)
-        # slot_mapping = _async_h2d(
-        #     prefill_slot_mapping + target_slot_mapping,
-        #     dtype=torch.long, pin_memory=True)
+        sampling_metadata = self._prepare_sample(prefill_seq_group_metadata_list + 
+                                                 chunked_prefill_seq_group_metadata_list +
+                                                 target_decode_seq_group_metadata_list,
+                                                 prefill_lens + chunked_prefill_lens, [], target_lens, draft_probs_tensor)
 
         input_tokens = torch.tensor(
             prefill_input_tokens + target_input_tokens, dtype=torch.long, device="cuda")
@@ -571,54 +625,61 @@ class SpecDecodeModelRunner:
             prefill_slot_mapping + target_slot_mapping, dtype=torch.long, device="cuda")
 
         num_prefill_tokens = sum(prefill_lens)
+        num_chunked_prefill_tokens = sum(chunked_prefill_lens)
         num_decode_tokens = sum(target_lens)
 
-        # target_lens = _async_h2d(
-        #     target_lens, dtype=torch.int, pin_memory=True)
         target_lens = torch.tensor(
             target_lens, dtype=torch.int, device="cuda")
+        context_lens = torch.tensor(
+                target_context_lens, dtype=torch.int, device="cuda")
 
-        if target_decode_seq_group_metadata_list:
-            # context_lens = _async_h2d(
-            #     target_context_lens, dtype=torch.int, pin_memory=True)
-            context_lens = torch.tensor(
-                target_context_lens, dtype=torch.int, device="cuda"
+        chunked_prefill_lens = torch.tensor(
+            chunked_prefill_lens, dtype=torch.int, device="cuda")
+        chunked_context_lens = torch.tensor(
+            chunked_context_lens, dtype=torch.int, device="cuda")
+        query_start_locs = torch.zeros(chunked_prefill_lens.shape[0] + 1,
+                                      dtype=torch.int32,
+                                      device="cuda")
+        
+        torch.cumsum(chunked_prefill_lens, dim=0, out=query_start_locs[1:])
+
+        if chunked_block_tables:
+            max_chunked_block_table_len = max([len(t) for t in chunked_block_tables])
+            chunked_block_tables = _make_tensor_with_pad(
+                chunked_block_tables,
+                max_len=max_chunked_block_table_len,
+                pad=0,
+                dtype=torch.int,
+                device="cuda",
             )
-            max_block_table_len = max([len(t) for t in target_block_tables])
+
+        if block_tables:
+            max_block_table_len = max([len(t) for t in block_tables])
             block_tables = _make_tensor_with_pad(
-                target_block_tables,
+                block_tables,
                 max_len=max_block_table_len,
                 pad=0,
                 dtype=torch.int,
                 device="cuda",
             )
 
-            input_metadata = InputMetadata(
-                num_prefill_tokens=num_prefill_tokens,
-                num_decode_tokens=num_decode_tokens,
-                slot_mapping=slot_mapping,
-                max_context_len=max(target_context_lens),
-                prefill_lens=prefill_lens,
-                target_lens=target_lens,
-                context_lens=context_lens,
-                block_tables=block_tables,
-                use_cuda_graph=False,
-                # Target decode can use target attention
-                use_gamma_mapping_attention=self.spec_decode_config.gamma_mapping_attention,
-            )
-        else:
-            input_metadata = InputMetadata(
-                num_prefill_tokens=num_prefill_tokens,
-                num_decode_tokens=num_decode_tokens,
-                slot_mapping=slot_mapping,
-                prefill_lens=prefill_lens,
-                target_lens=target_lens,
-                max_context_len=None,
-                context_lens=None,
-                block_tables=None,
-                use_cuda_graph=False,
-                use_gamma_mapping_attention=False,  # Prefill does not use target attention
-            )
+        input_metadata = InputMetadata(
+            num_prefill_tokens=num_prefill_tokens,
+            num_chunked_prefill_tokens=num_chunked_prefill_tokens,
+            num_decode_tokens=num_decode_tokens,
+            slot_mapping=slot_mapping,
+            max_context_len=max(target_context_lens) if target_context_lens else None,
+            prefill_lens=prefill_lens,
+            chunked_prefill_lens=chunked_prefill_lens,
+            query_start_locs=query_start_locs,
+            target_lens=target_lens,
+            chunked_context_lens=chunked_context_lens,
+            context_lens=context_lens,
+            chunked_block_tables=chunked_block_tables,
+            block_tables=block_tables,
+            use_cuda_graph=False, # Target model does not use CUDA graph
+            use_gamma_mapping_attention=self.spec_decode_config.gamma_mapping_attention,
+        )
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
 
@@ -642,6 +703,7 @@ class SpecDecodeModelRunner:
     def execute_model(
         self,
         prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        chunked_prefill_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         target_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         draft_decode_seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[Tuple[torch.Tensor, torch.Tensor]],
@@ -650,6 +712,7 @@ class SpecDecodeModelRunner:
         if self.is_target:
             input_tokens, input_positions, input_metadata, sampling_metadata = (
                 self._prepare_target_input_tensors(prefill_seq_group_metadata_list,
+                                                   chunked_prefill_seq_group_metadata_list,
                                                    target_decode_seq_group_metadata_list,
                                                    draft_probs_tensor))
         else:
@@ -764,12 +827,17 @@ class SpecDecodeModelRunner:
             # Create dummy input_metadata.
             input_metadata = InputMetadata(
                 num_prefill_tokens=0,
+                num_chunked_prefill_tokens=0,   
                 num_decode_tokens=batch_size,
                 slot_mapping=slot_mapping[:batch_size],
                 max_context_len=self.max_context_len_to_capture,
                 context_lens=context_lens[:batch_size],
                 prefill_lens=None,
+                chunked_prefill_lens=None,
+                query_start_locs=None,
                 target_lens=None,
+                chunked_context_lens=None,
+                chunked_block_tables=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
                 use_gamma_mapping_attention=False,
