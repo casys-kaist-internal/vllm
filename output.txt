@@ -9234,7 +9234,7 @@ Cleaning up...
 gpu memory used (GB): 0=1.89; 
 Done waiting for free GPU memory on devices devices=[0] (threshold_bytes/2**30=2.0) dur_s=0.00
 use_async=False
-Creating baseline_or_test='test' LLM for test_name='test_spec_decode_chunked_prefill[1-256-1-test_llm_kwargs0-baseline_llm_kwargs0-per_test_common_llm_kwargs0-common_llm_kwargs0]'. (baseline_kwargs if baseline_or_test == "baseline" else test_kwargs)={'enforce_eager': False, 'download_dir': '/mnt/sda/download', 'target_model': 'facebook/opt-6.7b', 'draft_model': 'facebook/opt-125m', 'draft_size': 7, 'gamma_mapping_attention': False, 'max_num_seqs': 3, 'max_num_batched_tokens': 10, 'colocate': False, 'prefill_schedule_mode': 'chunked_prefill'}
+Creating baseline_or_test='test' LLM for test_name='test_spec_decode_chunked_prefill[1-256-1-test_llm_kwargs0-baseline_llm_kwargs0-per_test_common_llm_kwargs0-common_llm_kwargs0]'. (baseline_kwargs if baseline_or_test == "baseline" else test_kwargs)={'enforce_eager': False, 'download_dir': '/mnt/sda/download', 'target_model': 'facebook/opt-6.7b', 'draft_model': 'facebook/opt-125m', 'draft_size': 7, 'consolidated_attention': False, 'max_num_seqs': 3, 'max_num_batched_tokens': 10, 'colocate': False, 'prefill_schedule_mode': 'chunked_prefill'}
 INFO 09-26 09:31:22 spec_decode_llm_engine.py:75] Initializing an LLM engine with config: model='facebook/opt-6.7b', tokenizer='facebook/opt-6.7b', tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=2048, download_dir='/mnt/sda/download', load_format=auto, tensor_parallel_size=1, quantization=None, enforce_eager=True, seed=0)
 num_prefill_tokens 10
 num_chunked_prefill_tokens 0
@@ -20183,7 +20183,7 @@ batch_size = 1, output_len = 256
                                  "target_model": "facebook/opt-6.7b",
                                  "draft_model": "facebook/opt-125m",
                                  "draft_size": 7,
-                                 "gamma_mapping_attention": False,
+                                 "consolidated_attention": False,
                                  "max_num_seqs": 3,
                                  "max_num_batched_tokens": 10,
                                  "colocate": False,

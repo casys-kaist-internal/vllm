@@ -155,7 +155,7 @@ class SpecDecodeModelRunner:
             chunked_block_tables=None,
             block_tables=None,
             use_cuda_graph=False,
-            use_gamma_mapping_attention=False,
+            use_consolidated_attention=False,
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
@@ -443,7 +443,7 @@ class SpecDecodeModelRunner:
             chunked_block_tables=None,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
-            use_gamma_mapping_attention=False,
+            use_consolidated_attention=False,
         )
         return input_tokens, input_positions, input_metadata, draft_lens
 
@@ -678,7 +678,7 @@ class SpecDecodeModelRunner:
             chunked_block_tables=chunked_block_tables,
             block_tables=block_tables,
             use_cuda_graph=False, # Target model does not use CUDA graph
-            use_gamma_mapping_attention=self.spec_decode_config.gamma_mapping_attention,
+            use_consolidated_attention=self.spec_decode_config.consolidated_attention,
         )
 
         return input_tokens, input_positions, input_metadata, sampling_metadata
@@ -840,7 +840,7 @@ class SpecDecodeModelRunner:
                 chunked_block_tables=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
-                use_gamma_mapping_attention=False,
+                use_consolidated_attention=False,
             )
 
             graph_runner = CUDAGraphRunner(self.model)

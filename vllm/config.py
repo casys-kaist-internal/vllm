@@ -532,13 +532,13 @@ class SpecDecodeConfig:
     def __init__(self,
                  draft_size: int,
                  colocate: bool,
-                 gamma_mapping_attention: bool,
+                 consolidated_attention: bool,
                  selective_validation: bool,
                  drop_threshold: float,
                  disable_bonus_token: bool) -> None:
         self.draft_size = draft_size
         self.colocate = colocate
-        self.gamma_mapping_attention = gamma_mapping_attention
+        self.consolidated_attention = consolidated_attention
         self.selective_validation = selective_validation
         self.drop_threshold = drop_threshold
         self.disable_bonus_token = disable_bonus_token

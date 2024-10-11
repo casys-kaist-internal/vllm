@@ -274,7 +274,7 @@ class SpecDecodeEngineArgs:
     draft_size: int = 7
     colocate: bool = False
     prefill_schedule_mode: str = 'full_prefill'
-    gamma_mapping_attention: bool = False
+    consolidated_attention: bool = False
     selective_validation: bool = False
     drop_threshold: float = 0
     disable_bonus_token: bool = False
@@ -532,7 +532,7 @@ class SpecDecodeEngineArgs:
                                            self.prefill_schedule_mode)
         spec_decode_config = SpecDecodeConfig(self.draft_size,
                                               self.colocate,
-                                              self.gamma_mapping_attention,
+                                              self.consolidated_attention,
                                               self.selective_validation,
                                               self.drop_threshold,
                                               self.disable_bonus_token)

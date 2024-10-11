@@ -3,6 +3,7 @@ import time
 from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple,
                     Union)
 import torch
+import math 
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpecDecodeConfig)
@@ -414,9 +415,20 @@ class SpecDecodeLLMEngine:
             # We only append the draft token if the length with draft token
             # is less than the max model length and max tokens
             if (len_with_draft < self.scheduler_config.max_model_len):
+
+                # if seq_group.sampling_params.temperature == 0:
+                #     # reverse the sampled_draft_probs from logprobs 
+                #     sampled_draft_probs = math.exp(sample.logprobs[sample.output_token])
+                # else:
+                #     sampled_draft_probs = sample.draft_probs[sample.output_token].item()
+                sampled_draft_probs = None
+                if self.spec_decode_config.selective_validation:
+                    sampled_draft_probs = sample.pre_temp_sampled_draft_prob
+                # sampled_draft_probs = sample.draft_probs[sample.output_token].item()
+
                 seq.append_draft_token_id(
-                    sample.output_token, sample.logprobs,
-                    sample.pre_temp_sampled_draft_prob
+                    sample.output_token, sample.logprobs, 
+                    sampled_draft_probs
                 )
                 self.draft_probs_dict[seq.seq_id].append(
                     sample.draft_probs)
@@ -432,6 +444,8 @@ class SpecDecodeLLMEngine:
             all_accept = (seq.get_draft_len() == sample.accept_cnt)
             total_accept += sample.accept_cnt
             total_draft += seq.get_draft_len()
+            # if seq.predicted_cumulated_accept_probs:
+            #     print(f"accept_prob, {seq_group.sampling_params.temperature}")
             seq.accept_draft_tokens(sample.accept_cnt, sample.accept_prob)
             num_tokens_to_log_system_stats += sample.accept_cnt
             check_stop_cnt = sample.accept_cnt
@@ -519,7 +533,7 @@ class SpecDecodeLLMEngine:
 
         # Create the outputs.
         request_outputs: List[RequestOutput] = []
-        for scheduled_seq_group in (prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups):
+        for scheduled_seq_group in (prefill_scheduled_seq_groups + chunked_prefill_scheduled_seq_groups + target_decode_scheduled_seq_groups):
             request_output = RequestOutput.from_seq_group(
                 scheduled_seq_group.seq_group)
             request_outputs.append(request_output)

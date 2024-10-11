@@ -119,8 +119,8 @@ class Sampler(nn.Module):
 
         return _build_sampler_output(sample_results, sampling_metadata,
                                      prompt_logprobs, sample_logprobs,
-                                     probs, pre_temp_probs,
-                                     accept_cnts, accept_probs)
+                                     probs, accept_cnts, accept_probs,
+                                     pre_temp_probs)
 
 
 @nvtx_range("_get_logits")
@@ -454,7 +454,6 @@ def _sample(
     ]
     return sample_results
 
-
 @nvtx_range("_spec_decode_sample")
 def _spec_decode_sample(
     probs: torch.Tensor,
@@ -699,9 +698,9 @@ def _build_sampler_output(
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
     draft_probs: Optional[torch.Tensor] = None,
-    pre_temp_draft_probs: Optional[torch.Tensor] = None,
     accept_cnts: Optional[torch.Tensor] = None,
     accept_probs: Optional[torch.Tensor] = None,
+    pre_temp_probs: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
 
@@ -731,21 +730,13 @@ def _build_sampler_output(
                         SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
                                        accept_cnt=accept_cnt, accept_prob=accept_prob))
             else:
-                if sampling_metadata.selective_validation:
-                    pre_temp_sampled_draft_prob = pre_temp_draft_probs[
-                        idx][next_token_id]
-                else:
-                    pre_temp_sampled_draft_prob = None
-
+                pre_temp_sampled_draft_prob = pre_temp_probs[idx, next_token_id].item()
                 seq_outputs.append(
                     SequenceOutput(seq_ids[parent_id], next_token_id, logprobs,
-                                   draft_probs=draft_probs[idx],
-                                   pre_temp_sampled_draft_prob=pre_temp_sampled_draft_prob))
+                                   draft_probs=draft_probs[idx], pre_temp_sampled_draft_prob=pre_temp_sampled_draft_prob))
 
         sampler_output.append(
             SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
-
-    del pre_temp_draft_probs
 
     return sampler_output
 

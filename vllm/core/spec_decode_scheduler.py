@@ -287,6 +287,11 @@ class SpecDecodeScheduler:
                 len(self.need_to_run_target_decode) + 
                 len(self.need_to_run_target_prefill) +
                 len(self.swapped))
+    
+    def get_num_running_seq_groups(self) -> int:
+        return (len(self.need_to_run_draft_decode) + 
+                len(self.need_to_run_target_decode) + 
+                len(self.need_to_run_target_prefill))
 
     def get_num_running_seq_groups(self) -> int:
         return (len(self.need_to_run_draft_decode) + 
@@ -351,8 +356,9 @@ class SpecDecodeScheduler:
             seq = waiting_seqs[0]
             num_new_tokens = seq.get_num_uncomputed_target_tokens()
 
-            # Since this is a new request num new tokens should always equal the prompt length
-            assert num_new_tokens == seq.get_prompt_len()
+            # Since this is a new request num new tokens should always equal the prompt length 
+            # we use get_len() for preemption case where we have already computed some tokens
+            assert num_new_tokens == seq.get_len()
 
             do_sample = True
             if num_new_tokens > budget.remaining_token_budget():
@@ -362,7 +368,7 @@ class SpecDecodeScheduler:
                 else:
                     print("[WARNING] Increase max_num_batched_tokens")
 
-            if num_new_tokens > self.prompt_limit:
+            if num_new_tokens > self.prompt_limit and not self.scheduler_config.chunked_prefill:
                 logger.warning(
                     f"Input prompt ({num_new_tokens} tokens) is too long"
                     f" and exceeds limit of {self.prompt_limit}")
@@ -397,21 +403,21 @@ class SpecDecodeScheduler:
             # Decide whether to schedule based on the imbalance ratio.
             # Do not check imbalance ratio when do_sample is False because this does not 
             # add new request to target or draft queue.
-            skip_imbalance_check = not do_sample and self.spec_decode_config.colocate
+            skip_imbalance_check = (not do_sample) and self.spec_decode_config.colocate
 
-            # if not skip_imbalance_check:
-            #     if min(target_decode_size, draft_decode_size) == 0:
-            #         imbalance_ratio = 0
-            #     else:
-            #         imbalance_ratio = (
-            #             max(target_decode_size, draft_decode_size) /
-            #             min(target_decode_size, draft_decode_size)
-            #         )
-            #     if imbalance_ratio > MAX_IMBALANCE_RATIO and target_decode_size > draft_decode_size:
-            #         # Scheduling this prefill request would worsen the imbalance.
-            #         print(f"[WARNING] Imbalance ratio too high, imbalance_ratio: {imbalance_ratio}")
-            #         print(f"target_decode_size: {target_decode_size}, draft_decode_size: {draft_decode_size}")
-            #         return
+            if not skip_imbalance_check:
+                if min(target_decode_size, draft_decode_size) == 0:
+                    imbalance_ratio = 0
+                else:
+                    imbalance_ratio = (
+                        max(target_decode_size, draft_decode_size) /
+                        min(target_decode_size, draft_decode_size)
+                    )
+                if imbalance_ratio > MAX_IMBALANCE_RATIO and target_decode_size > draft_decode_size:
+                    # Scheduling this prefill request would worsen the imbalance.
+                    print(f"[WARNING] Imbalance ratio too high, imbalance_ratio: {imbalance_ratio}")
+                    print(f"target_decode_size: {target_decode_size}, draft_decode_size: {draft_decode_size}")
+                    return
 
             # Can schedule this request
             seq_group = self.waiting.pop(0)
@@ -450,7 +456,7 @@ class SpecDecodeScheduler:
             num_new_tokens = seq.get_num_uncomputed_target_tokens()
 
             # This is a chunked prefill request so there should be already some tokens computed 
-            assert num_new_tokens < seq.get_prompt_len()
+            assert num_new_tokens < seq.get_len()
 
             do_sample = True
             if num_new_tokens > budget.remaining_token_budget():
@@ -476,17 +482,20 @@ class SpecDecodeScheduler:
             # Calculate current sub-batch sizes.
             target_decode_size = len(self.need_to_run_target_decode)
             draft_decode_size = len(self.need_to_run_draft_decode)
-            imbalance_ratio = (
-                max(target_decode_size, draft_decode_size) /
-                max(1, min(target_decode_size, draft_decode_size))
-            )
 
-            skip_imbalance_check = not do_sample or self.spec_decode_config.colocate    
+            skip_imbalance_check = (not do_sample) or self.spec_decode_config.colocate    
 
-            # if not skip_imbalance_check:
-            #     if imbalance_ratio > MAX_IMBALANCE_RATIO and target_decode_size > draft_decode_size:
-            #         # Scheduling this prefill request would worsen the imbalance.
-            #         return
+            if not skip_imbalance_check:
+                if min(target_decode_size, draft_decode_size) == 0:
+                    imbalance_ratio = 0
+                else:
+                    imbalance_ratio = (
+                        max(target_decode_size, draft_decode_size) /
+                        min(target_decode_size, draft_decode_size)
+                    )
+                if imbalance_ratio > MAX_IMBALANCE_RATIO and target_decode_size > draft_decode_size:
+                    # Scheduling this prefill request would worsen the imbalance.
+                    return
 
             # Can schedule this request
             seq_group = self.chunked_waiting.pop(0)

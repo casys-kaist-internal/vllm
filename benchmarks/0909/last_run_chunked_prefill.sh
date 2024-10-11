@@ -1,1 +1,1 @@
-python benchmark_serving.py --dataset sharegpt --temperature -1 --request-rate 16 --draft-size 7 --prefill-schedule-mode chunked_prefill --budget-token 2048 --budget-seq 128 --colocate --gamma-mapping-attention --drop-threshold 0.25 --target-model facebook/opt-6.7b --draft-model facebook/opt-125m
+python benchmark_serving.py --request-rate 10 --dataset sharegpt --temperature 0 --draft-size 0 --prefill-schedule-mode chunked_prefill --budget-token 512 --budget-seq 256 --target-model EleutherAI/pythia-6.9b --draft-model EleutherAI/pythia-160m

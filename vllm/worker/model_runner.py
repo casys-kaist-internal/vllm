@@ -151,7 +151,7 @@ class ModelRunner:
             chunked_block_tables=None,
             block_tables=None,
             use_cuda_graph=False,
-            use_gamma_mapping_attention=False
+            use_consolidated_attention=False
         )
         return input_tokens, input_positions, input_metadata, prompt_lens
 
@@ -261,7 +261,7 @@ class ModelRunner:
             chunked_block_tables=None,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
-            use_gamma_mapping_attention=False
+            use_consolidated_attention=False
         )
         return input_tokens, input_positions, input_metadata, target_lens
 
@@ -454,7 +454,7 @@ class ModelRunner:
                 chunked_block_tables=py_data["chunked_block_tables"],
                 block_tables=block_tables,
                 use_cuda_graph=py_data["use_cuda_graph"],
-                use_gamma_mapping_attention=False
+                use_consolidated_attention=False
             )
             sampling_metadata = SamplingMetadata(
                 seq_groups=None,
@@ -570,7 +570,7 @@ class ModelRunner:
                 chunked_block_tables=None,
                 block_tables=block_tables[:batch_size],
                 use_cuda_graph=True,
-                use_gamma_mapping_attention=False
+                use_consolidated_attention=False
             )
 
             graph_runner = CUDAGraphRunner(self.model)

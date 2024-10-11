@@ -513,54 +513,77 @@ def plot_length_distribution(name, data):
     plt.savefig(f'length_distribution_{name}.png')
 
 
+import numpy as np
+
+def filter_outliers(data, factor=1.5):
+    """Filters outliers using the IQR method and returns the filtered data."""
+
+    lower_bound = 0
+    upper_bound = 500
+    filtered_data = [x for x in data if lower_bound <= x <= upper_bound]
+    return filtered_data, lower_bound, upper_bound
+
 def plot_all_distributions(datasets):
-    # Calculate the number of datasets
-    num_datasets = len(datasets)
+    # Desired order: Finance, ShareGPT, GSM8K
+    ordered_datasets = ['Finance', 'GSM8K', 'ShareGPT']
 
-    # Create a figure with subplots arranged in a 3x3 grid (to accommodate up to 9 datasets)
-    fig, axes = plt.subplots(1, num_datasets, figsize=(
-        3*num_datasets, 3), constrained_layout=True)
+    # Create a figure with subplots arranged in 1 row and 3 columns (for Finance, ShareGPT, GSM8K)
+    fig, axes = plt.subplots(1, len(ordered_datasets), figsize=(3 * len(ordered_datasets), 3), constrained_layout=True)
 
-    # Flatten the grid of axes for easier iteration
-    axes = axes.flatten()
+    colors = ['skyblue', '#3864B9']
 
-    colors = ['skyblue', 'salmon']
+    for i, name in enumerate(ordered_datasets):
+        data = datasets.get(name)
+        if data:
+            prompt_lengths = [prompt_len for _, prompt_len, _ in data]
+            output_lengths = [output_len for _, _, output_len in data]
 
-    for i, (name, data) in enumerate(datasets.items()):
-        prompt_lengths = [prompt_len for _, prompt_len, _ in data]
-        output_lengths = [output_len for _, _, output_len in data]
+            # Apply outlier filtering for Finance dataset, only for plotting
+            if name == 'Finance':
+                filtered_prompt_lengths, lower_bound_prompt, upper_bound_prompt = filter_outliers(prompt_lengths)
+                filtered_output_lengths, lower_bound_output, upper_bound_output = filter_outliers(output_lengths)
+            else:
+                filtered_prompt_lengths = prompt_lengths
+                filtered_output_lengths = output_lengths
 
-        # Compute average lengths
-        avg_prompt_len = sum(prompt_lengths) / len(prompt_lengths)
-        avg_output_len = sum(output_lengths) / len(output_lengths)
+            # Compute average lengths, considering all data points
+            avg_prompt_len = np.mean(prompt_lengths)
+            avg_output_len = np.mean(output_lengths)
 
-        # Plot prompt lengths
-        axes[i].hist(prompt_lengths, bins=30, color=colors[0], alpha=0.6,
-                     label=f'Input (avg = {avg_prompt_len:.2f})', density=True)
+            # Plot prompt lengths
+            axes[i].hist(filtered_prompt_lengths, bins=30, color=colors[0], alpha=0.8,
+                         label=f'Input (avg = {avg_prompt_len:.2f})', density=True)
 
-        # Plot output lengths
-        axes[i].hist(output_lengths, bins=30, color=colors[1], alpha=0.6,
-                     label=f'Output (avg = {avg_output_len:.2f})', density=True)
+            # Plot output lengths
+            axes[i].hist(filtered_output_lengths, bins=30, color=colors[1], alpha=0.5,
+                         label=f'Output (avg = {avg_output_len:.2f})', density=True)
 
-        # Set titles and labels for each dataset's subplot
-        axes[i].set_title(f'{name}')
-        axes[i].set_xlabel('# Tokens')
-        axes[i].set_ylabel('Density')
+            # Set titles and labels for each dataset's subplot
+            axes[i].set_title(f'{name}', fontsize=14)
+            axes[i].set_xlabel('# Tokens', fontsize=14)
+            if i == 0:
+                axes[i].set_ylabel('Density', fontsize=14)
 
-        # Use scientific notation for Y-axis
-        axes[i].yaxis.set_major_formatter(
-            mticker.ScalarFormatter(useMathText=True))
-        axes[i].yaxis.get_offset_text().set_fontsize(8)
-        axes[i].ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+            # Use scientific notation for Y-axis
+            axes[i].yaxis.set_major_formatter(mticker.ScalarFormatter(useMathText=True))
+            axes[i].yaxis.get_offset_text().set_fontsize(10)
+            axes[i].ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
 
-        # Add legend
-        axes[i].legend(loc='upper right')
+            # Add legend
+            axes[i].legend(loc='upper right')
+
+            # # Show the number of outliers in the title (Finance only)
+            # if name == 'Finance':
+            #     num_prompt_outliers = len(prompt_lengths) - len(filtered_prompt_lengths)
+            #     num_output_outliers = len(output_lengths) - len(filtered_output_lengths)
+            #     axes[i].set_title(f'{name} (Prompt Outliers: {num_prompt_outliers}, Output Outliers: {num_output_outliers})')
 
     # Save the plot
-    plt.savefig("length_distributions_3x3_scientific.png", bbox_inches='tight')
+    plt.savefig("length_distributions_3x3_scientific.pdf", bbox_inches='tight', format='pdf')
     plt.show()
 
 
+
 def main():
     num_prompts = 0
     tokenizer = AutoTokenizer.from_pretrained(
@@ -643,97 +666,6 @@ def main():
         # "APPS": apps_data,
         # "Chatbot": chatbot_data,
         # "Dialogue": dialogue_data,
-    }
-
-    plot_all_distributions(datasets)
-
-
-if __name__ == '__main__':
-    main()
-
-
-def main():
-    num_prompts = 0
-    tokenizer = AutoTokenizer.from_pretrained(
-        'facebook/opt-6.7b', trust_remote_code=True)
-    fixed_output_len = None
-
-    # Test GSM8K dataset
-    print("Loading GSM8K dataset...")
-    gsm8k_data = load_gsm8k(num_prompts, tokenizer, fixed_output_len)
-    print("GSM8K Sample Data Length:", len(gsm8k_data))
-
-    # # Test HumanEval dataset
-    # print("Loading HumanEval dataset...")
-    # humaneval_data = load_humaneval(num_prompts, tokenizer, fixed_output_len)
-    # print("HumanEval Sample Data Length:", len(humaneval_data))
-
-    # # Test Alpaca dataset
-    # print("Loading Alpaca dataset...")
-    # alpaca_data = load_alpaca(num_prompts, tokenizer, fixed_output_len)
-    # print("Alpaca Sample Data Length:", len(alpaca_data))
-
-    # # Test MT-Bench dataset
-    # print("Loading MT-Bench dataset...")
-    # mt_bench_data = load_mt_bench(num_prompts, tokenizer, fixed_output_len)
-    # print("MT-Bench Sample Data Length:", len(mt_bench_data))
-
-    # Test ShareGPT dataset
-    print("Loading ShareGPT dataset...")
-    sharegpt_data = load_sharegpt(num_prompts, tokenizer, fixed_output_len)
-    print("ShareGPT Sample Data Length:", len(sharegpt_data))
-
-    # # Test APPS dataset
-    # print("Loading APPS dataset...")
-    # apps_data = load_apps(num_prompts, tokenizer, fixed_output_len)
-    # print("APPS Sample Data Length:", len(apps_data))
-
-    # # Test Chatbot dataset
-    # print("Loading Chatbot dataset...")
-    # chatbot_data = load_chatbot(num_prompts, tokenizer, fixed_output_len)
-    # print("Chatbot Sample Data Length:", len(chatbot_data))
-
-    # Test Dialogue dataset
-    # print("Loading Dialogue dataset...")
-    # dialogue_data = load_dialogue(num_prompts, tokenizer, fixed_output_len)
-    # print("Dialogue Sample Data Length:", len(dialogue_data))
-
-    # Test Finance dataset
-    print("Loading Finance dataset...")
-    finance_data = load_finance(num_prompts, tokenizer, fixed_output_len)
-    print("Finance Sample Data Length:", len(finance_data))
-
-    # print("Loading Finance A dataset...")
-    # finance_data_a = load_finance_a(num_prompts, tokenizer, fixed_output_len)
-    # print("Finance A Sample Data Length:", len(finance_data_a))
-
-    # print("Loading Finance B dataset...")
-    # finance_data_b = load_finance_b(num_prompts, tokenizer, fixed_output_len)
-    # print("Finance B Sample Data Length:", len(finance_data_b))
-
-    # plot_length_distribution("gsm8k", gsm8k_data)
-    # plot_length_distribution("humaneval", humaneval_data)
-    # plot_length_distribution("alpaca", alpaca_data)
-    # plot_length_distribution("mt_bench", mt_bench_data)
-    # plot_length_distribution("sharegpt", sharegpt_data)
-    # plot_length_distribution("apps", apps_data)
-    # plot_length_distribution("dialogue", dialogue_data)
-    # plot_length_distribution("chatbot", chatbot_data)
-    # plot_length_distribution("dialogue", dialogue_data)
-    # plot_length_distribution("finance", finance_data)
-    # plot_length_distribution("finance_a", finance_data_a)
-    # plot_length_distribution("finance_b", finance_data_b)
-
-    datasets = {
-        "GSM8K": gsm8k_data,
-        # "HumanEval": humaneval_data,
-        # "Alpaca": alpaca_data,
-        # "MT-Bench": mt_bench_data,
-        "ShareGPT": sharegpt_data,
-        # "APPS": apps_data,
-        # "Chatbot": chatbot_data,
-        # "Dialogue": dialogue_data,
-        "Finance": finance_data,
     }
 
     plot_all_distributions(datasets)

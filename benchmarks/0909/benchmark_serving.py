@@ -17,7 +17,7 @@ from vllm.outputs import RequestOutput
 
 # Constants
 DOWNLOAD_DIR = '/mnt/sda/download'
-BENCHMARK_DURATION_IN_MINUTES = 2
+BENCHMARK_DURATION_IN_MINUTES = 5
 
 # Disable garbage collection for performance
 gc.disable()
@@ -116,7 +116,6 @@ def warmup(llm):
     latency = end_time - start_time
     return latency
 
-
 def train_predictor(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: float, temperature: float):
     """Train the predictor."""
     print("Training the predictor for selective validation ...")
@@ -135,14 +134,12 @@ def train_predictor(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], re
     llm.llm_engine.reset_total_tokens()
 
     request_index = 0
+    overall_start_time = start_time  # Keep track of the overall start time
     while True:
         current_time = time.perf_counter() - start_time
 
-        if request_index >= total_requests:
-            request_index = 0
-
         # Add requests to the engine if their scheduled time has passed
-        while requests_with_time[request_index][0] <= current_time:
+        while request_index < total_requests and requests_with_time[request_index][0] <= current_time:
             request_start_time, (prompt, prompt_len,
                                  output_len) = requests_with_time[request_index]
             sampling_params = SamplingParams(
@@ -159,20 +156,24 @@ def train_predictor(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], re
             result[request_id] = [request_start_time]
             request_index += 1
 
+        # Reset request_index if all requests have been processed to continue
+        if request_index >= total_requests:
+            request_index = 0
+            start_time = time.perf_counter()  # Update start_time for the next cycle
+
         llm.llm_engine.step()
 
         if llm.llm_engine.scheduler.accept_prob_predictor.is_trained():
             break
 
     end_time = time.perf_counter()
-    elapsed_time = end_time - start_time
+    elapsed_time = end_time - overall_start_time  # Calculate elapsed time from the overall start time
 
     print(f"Predictor training time: {elapsed_time:.3f} s")
 
     llm.llm_engine.scheduler_config.chunked_prefill = original_chunked_prefill
     llm.llm_engine.scheduler_config.max_num_batched_tokens = orignal_max_num_batched_tokens
     llm.llm_engine.abort_all_requests()
-
 
 def run(llm: SpecDecodeLLM, requests: List[Tuple[str, int, int]], request_rate: float, temperature: float) -> Tuple[dict, int, bool]:
     """Runs the benchmark, processing requests with the given LLM."""
@@ -272,7 +273,7 @@ def main(args: argparse.Namespace):
         ["Budget Seq", args.budget_seq],
         ["Selective Validation", args.selective_validation],
         ["Drop Threshold", args.drop_threshold],
-        ["Gamma Mapping Attention", args.gamma_mapping_attention],
+        ["Consolidated Attention", args.consolidated_attention],
         ["Dataset", args.dataset],
         ["Request Rate", args.request_rate],
     ]
@@ -284,7 +285,7 @@ def main(args: argparse.Namespace):
         draft_size=args.draft_size,
         colocate=args.colocate,
         prefill_schedule_mode=args.prefill_schedule_mode,
-        gamma_mapping_attention=args.gamma_mapping_attention,
+        consolidated_attention=args.consolidated_attention,
         selective_validation=args.selective_validation,
         drop_threshold=args.drop_threshold,
         max_num_batched_tokens=args.budget_token,
@@ -298,6 +299,7 @@ def main(args: argparse.Namespace):
         max_model_len=args.max_model_len,
         enforce_eager=args.enforce_eager,
         download_dir=DOWNLOAD_DIR,
+        gpu_memory_utilization=0.85
     )
 
     # Sample the requests
@@ -356,8 +358,8 @@ if __name__ == "__main__":
     parser.add_argument('--colocate', '-c', action='store_true')
     parser.add_argument('--prefill-schedule-mode', '-psm', choices=[
                         'full_prefill', 'chunked_prefill'], default='full_prefill')
-    parser.add_argument("--gamma-mapping-attention",
-                        action="store_true", help="Use gamma mapping attention.")
+    parser.add_argument("--consolidated-attention",
+                        action="store_true", help="Use consolidated attention.")
     parser.add_argument("--selective-validation", action="store_true")
     parser.add_argument("--drop-threshold", '-dt', type=float,
                         default=0, help="Threshold for dropping token.")

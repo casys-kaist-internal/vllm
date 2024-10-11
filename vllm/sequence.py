@@ -329,14 +329,14 @@ class Sequence:
     # Spec Decode
     @nvtx_range("append_draft_token_id")
     def append_draft_token_id(self, token_id: int, logprobs: Dict[int, float],
-                              pre_temp_sampled_draft_prob: torch.Tensor) -> None:
+                              sampled_draft_prob: float) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_draft_token_id(token_id, logprobs[token_id])
 
-        if pre_temp_sampled_draft_prob is not None:
-            self.sampled_draft_probs.append(pre_temp_sampled_draft_prob.item())
+        if sampled_draft_prob is not None:
+            self.sampled_draft_probs.append(sampled_draft_prob)
             assert len(self.sampled_draft_probs) == self.data.get_draft_len()
 
     @nvtx_range("accept_draft_tokens")
@@ -350,7 +350,7 @@ class Sequence:
         #     for i in range(len(self.predicted_cumulated_accept_probs)):
         #         accepted = i < accept_cnt
         #         print(
-        #             f"result, {accepted}, {self.predicted_cumulated_accept_probs[i]}")
+        #             f"accept_prob, {accepted}, {self.predicted_cumulated_accept_probs[i]}")
 
         self.predicted_cumulated_accept_probs.clear()
         self.accept_probs.clear()
@@ -386,6 +386,7 @@ class Sequence:
         total_length = self.data.get_len_with_draft()
         logical_token_blocks_len = len(self.logical_token_blocks)
         logical_length = (logical_token_blocks_len - 1) * self.logical_token_blocks[0].block_size + self.logical_token_blocks[-1].num_tokens
+        
         assert total_length == logical_length
 
 
@@ -413,6 +414,9 @@ class Sequence:
         self.data.update_num_computed_draft_tokens(num_computed_tokens)
 
     def reset_state_for_recompute(self) -> None:
+        # num dangling draft tokens 
+        remaining_draft_len = self.get_draft_len()
+        self.drop_draft_tokens(remaining_draft_len)
         self.data.reset_state_for_recompute()
         self.sampled_draft_probs.clear()
         self.accept_probs.clear()

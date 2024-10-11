@@ -22,7 +22,7 @@ batch_sizes_per_temperature = {
 }
 
 # Gamma mapping attention options
-gamma_mapping_attentions = [False, True]
+consolidated_attentions = [False, True]
 
 # Colocate options
 colocates = [False, True]
@@ -41,10 +41,10 @@ output_len = 256
 # ---------------------------------------------------------------------------
 
 # Helper function to generate test IDs for readability
-def generate_test_id(draft_size, batch_size, prefill_mode, gamma_mapping_attention, colocate, temperature):
+def generate_test_id(draft_size, batch_size, prefill_mode, consolidated_attention, colocate, temperature):
     return (
         f"draft{draft_size}_batch{batch_size}_"
-        f"{prefill_mode}_gamma{'True' if gamma_mapping_attention else 'False'}_"
+        f"{prefill_mode}_gamma{'True' if consolidated_attention else 'False'}_"
         f"colocate{'True' if colocate else 'False'}_temp{temperature}"
     )
 
@@ -54,7 +54,7 @@ for temperature in temperatures:
     for batch_size in batch_sizes:
         for draft_size in draft_sizes:
             for prefill_mode in prefill_modes:
-                for gamma_mapping_attention in gamma_mapping_attentions:
+                for consolidated_attention in consolidated_attentions:
                     for colocate in colocates:
                         # Capture the current values of variables in the loop
                         def make_test_function(
@@ -62,13 +62,13 @@ for temperature in temperatures:
                             batch_size=batch_size,
                             draft_size=draft_size,
                             prefill_mode=prefill_mode,
-                            gamma_mapping_attention=gamma_mapping_attention,
+                            consolidated_attention=consolidated_attention,
                             colocate=colocate,
                         ):
                             # Generate a unique test function name
                             test_name = (
                                 f"test_draft{draft_size}_batch{batch_size}_{prefill_mode}_"
-                                f"gamma{'True' if gamma_mapping_attention else 'False'}_"
+                                f"gamma{'True' if consolidated_attention else 'False'}_"
                                 f"colocate{'True' if colocate else 'False'}_temp{temperature}"
                             )
 
@@ -83,7 +83,7 @@ for temperature in temperatures:
                                 "target_model": "facebook/opt-6.7b",
                                 "draft_model": "facebook/opt-125m",
                                 "draft_size": draft_size,
-                                "gamma_mapping_attention": gamma_mapping_attention,
+                                "consolidated_attention": consolidated_attention,
                                 "max_num_batched_tokens": 2048 if prefill_mode == "full_prefill" else 10,
                                 "max_num_seqs": 10 if prefill_mode == "chunked_prefill" else 128,
                                 "colocate": colocate,
@@ -98,7 +98,7 @@ for temperature in temperatures:
                             ):
                                 """Generated test function."""
                                 plot_filename = generate_test_id(
-                                    draft_size, batch_size, prefill_mode, gamma_mapping_attention, colocate, temperature
+                                    draft_size, batch_size, prefill_mode, consolidated_attention, colocate, temperature
                                 ) + ".png"
                                 run_output_distribution_similarity_test(
                                     baseline_llm_generator,

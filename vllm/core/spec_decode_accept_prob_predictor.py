@@ -20,7 +20,7 @@ class SpecDecodeAcceptProbPredictor:
     - `draft_prob` (intra-request variability)
     """
 
-    HISTORY_SIZE = 100000  # Constant for the history size
+    HISTORY_SIZE = 10000  # Constant for the history size
     PLOT = False  # Plot the ROC curve
     MIN_OUTPUT_CNT = 100
 
@@ -195,22 +195,64 @@ class SpecDecodeAcceptProbPredictor:
         plt.savefig('auroc.png', dpi=300)
         plt.close()
 
-    def get_seq_features(self, seq_group: SequenceGroup) -> List[float]:
-        # If the sequence has less than MIN_ACCEPT_CNT_LENGTH accept counts,
-        # return the default draft size and 0 logprob and temperature
-        seq = seq_group.get_seqs()[0]
-        draft_prob = seq.sampled_draft_probs[-1]
+    def get_seq_features(self, seq_group: SequenceGroup) -> float:
+        """
+        Extracts the last draft probability from the first sequence in the sequence group.
 
-        return [draft_prob]
+        Args:
+            seq_group (SequenceGroup): The sequence group containing sequences.
+
+        Returns:
+            float: The last draft probability.
+        """
+        # Directly access the first sequence and the last draft probability
+        seq = seq_group.get_seqs()[0]
+        return seq.sampled_draft_probs[-1]
+
+    # def predict_accept_probs(self, seq_group_list: List[SequenceGroup]):
+    #     # Check if the regression model is trained
+    #     if not hasattr(self, 'regression_model'):
+    #         raise ValueError("Regression model is not trained yet.")
+
+    #     # Collect features for all sequence groups
+    #     draft_probs = np.array([self.get_seq_features(seq_group)
+    #                             for seq_group in seq_group_list])
+
+    #     # Predict using the trained regression model
+    #     predictions = self.regression_model.predict(draft_probs)
+
+    #     # Clip the predictions to ensure they are within [0, 1]
+    #     predictions = np.clip(predictions, 0, 1)
+
+    #     # Update each sequence group with the predicted acceptance probabilities
+    #     for i, seq_group in enumerate(seq_group_list):
+    #         seq = seq_group.get_seqs()[0]
+    #         predicted_accept_prob = float(predictions[i])
+    #         last_predicted_accept_prob = seq.predicted_cumulated_accept_probs[-1] if len(
+    #             seq.predicted_cumulated_accept_probs) > 0 else 1
+    #         # last_predicted_accept_prob = 1 # debug
+    #         cumulative_predicted_accept_prob = last_predicted_accept_prob * predicted_accept_prob
+    #         seq.predicted_cumulated_accept_probs.append(
+    #             cumulative_predicted_accept_prob)
 
     def predict_accept_probs(self, seq_group_list: List[SequenceGroup]):
-        # Check if the regression model is trained
+        """
+        Predicts acceptance probabilities for a list of sequence groups and updates each sequence.
+
+        Args:
+            seq_group_list (List[SequenceGroup]): List of sequence groups to process.
+        """
         if not hasattr(self, 'regression_model'):
             raise ValueError("Regression model is not trained yet.")
 
-        # Collect features for all sequence groups
-        draft_probs = np.array([self.get_seq_features(seq_group)
-                                for seq_group in seq_group_list])
+        # Extract sequences from sequence groups
+        seqs = [seq_group.get_seqs()[0] for seq_group in seq_group_list]
+
+        # Collect draft probabilities using a list comprehension
+        draft_probs = np.array([seq.sampled_draft_probs[-1] for seq in seqs], dtype=np.float32)
+
+        # Reshape draft_probs to match the expected input shape for the regression model
+        draft_probs = draft_probs.reshape(-1, 1)
 
         # Predict using the trained regression model
         predictions = self.regression_model.predict(draft_probs)
@@ -218,12 +260,15 @@ class SpecDecodeAcceptProbPredictor:
         # Clip the predictions to ensure they are within [0, 1]
         predictions = np.clip(predictions, 0, 1)
 
-        # Update each sequence group with the predicted acceptance probabilities
-        for i, seq_group in enumerate(seq_group_list):
-            seq = seq_group.get_seqs()[0]
-            predicted_accept_prob = float(predictions[i])
-            last_predicted_accept_prob = seq.predicted_cumulated_accept_probs[-1] if len(
-                seq.predicted_cumulated_accept_probs) > 0 else 1
-            cumulative_predicted_accept_prob = last_predicted_accept_prob * predicted_accept_prob
-            seq.predicted_cumulated_accept_probs.append(
-                cumulative_predicted_accept_prob)
+        # Collect last predicted acceptance probabilities
+        last_predicted_accept_probs = np.array([
+            seq.predicted_cumulated_accept_probs[-1] if seq.predicted_cumulated_accept_probs else 1.0
+            for seq in seqs
+        ], dtype=np.float32)
+
+        # Compute cumulative predicted acceptance probabilities
+        cumulative_predicted_accept_probs = last_predicted_accept_probs * predictions
+
+        # Update each sequence with the new cumulative predicted acceptance probability
+        for seq, cumulative_prob in zip(seqs, cumulative_predicted_accept_probs):
+            seq.predicted_cumulated_accept_probs.append(float(cumulative_prob))

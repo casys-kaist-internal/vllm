@@ -73,7 +73,7 @@ reduced_grouped_df = grouped_df.iloc[1::2, :]
 # Plotting the original data (blue line)
 ax1.plot(reduced_grouped_df['Total Tokens'],
          reduced_grouped_df['Mean Step Time'], marker='o', label='Single Batch',
-         markersize=4, color=colors[2], linewidth=0,
+         markersize=4, color=colors[2], linewidth=1,
          markeredgecolor='black', markeredgewidth=0.5)
 
 # Adding vertical lines at every 64 tokens
@@ -107,13 +107,13 @@ for x in grouped_df['Total Tokens']:
 
 # Plotting the new function (green line)
 ax1.plot(grouped_df['Total Tokens'], new_y_values, marker='D', markersize=4,
-         linestyle='--', color=colors[3], label='Two Sub-Batches', linewidth=0.001,
+         linestyle='-', color=colors[3], label='Two Sub-Batches', linewidth=1,
          markeredgecolor='black', markeredgewidth=0.5)
 
 # Set labels and grid for the first subplot
 # ax1.set_title('Mean Step Time vs Total Tokens')
 ax1.set_ylabel('Latency (s)')
-ax1.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5), ncol=2)
+ax1.legend(loc='upper center', bbox_to_anchor=(0.5, 1.5), ncol=2, frameon=False)
 # ax1.grid(True)
 ax1.set_yticks([0.0, 0.1, 0.2])
 ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
@@ -124,7 +124,7 @@ ax1.set_xlim(xmin=0, xmax=1024)
 
 # Plot the slowdown ratios on the second subplot
 ax2.plot(grouped_df['Total Tokens'], slowdown_ratios, marker='o', markersize=4,
-         linestyle='-', color=colors[0], label='Slowdown Ratio', linewidth=0.1,
+         linestyle='-', color=colors[0], label='Slowdown Ratio', linewidth=0,
          markeredgecolor='black', markeredgewidth=0.5)
 
 # Set the second y-axis label
@@ -150,5 +150,5 @@ plt.tight_layout(rect=[0, 0, 1, 0.9])
 # Adjust the spacing between subplots and the top of the figure to fit the legend
 fig.subplots_adjust(top=0.85)
 # Save the plot as an image file
-plt.savefig('tokens_latency_with_slowdown.png', dpi=300)
+plt.savefig('tokens_latency_with_slowdown.pdf', format='pdf')
 plt.show()

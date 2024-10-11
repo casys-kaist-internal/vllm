@@ -30,7 +30,7 @@ class InputMetadata:
         chunked_block_tables: Optional[torch.Tensor],
         block_tables: Optional[torch.Tensor],
         use_cuda_graph: bool,
-        use_gamma_mapping_attention: bool,
+        use_consolidated_attention: bool,
     ) -> None:
         self.num_prefill_tokens = num_prefill_tokens
         self.num_chunked_prefill_tokens = num_chunked_prefill_tokens
@@ -46,7 +46,7 @@ class InputMetadata:
         self.chunked_block_tables = chunked_block_tables
         self.block_tables = block_tables
         self.use_cuda_graph = use_cuda_graph
-        self.use_gamma_mapping_attention = use_gamma_mapping_attention
+        self.use_consolidated_attention = use_consolidated_attention
 
         # Set during the execution of the first attention op.
         # FIXME(woosuk): This is a hack.

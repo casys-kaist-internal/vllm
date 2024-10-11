@@ -1,0 +1,1 @@
+python benchmark_adaptive_request_serving.py --dataset gsm8k --temperature 0.5  --draft-size 7 --prefill-schedule-mode full_prefill --budget-token 4096 --budget-seq 256 --target-model facebook/opt-6.7b --draft-model facebook/opt-125m --consolidated-attention --selective-validation --drop-threshold 0.3 --colocate

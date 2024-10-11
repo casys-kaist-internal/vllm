@@ -30,7 +30,7 @@ prefill_schedule_modes=("chunked_prefill")
 budget_tokens=(256)
 budget_seqs=(256)
 colocates=(true)
-gamma_mapping_attentions=(true)
+consolidated_attentions=(true)
 drop_thresholds=(0 0.25)
 
 # Paths
@@ -73,13 +73,13 @@ run_benchmark() {
     local budget_token="$6"
     local budget_seq="$7"
     local colocate="$8"
-    local gamma_mapping_attention="$9"
+    local consolidated_attention="$9"
     local drop_threshold="${10}"
     local target_model="${11}"
     local draft_model="${12}"
 
     if [ "$draft_size" = "0" ]; then
-        gamma_mapping_attention="false"
+        consolidated_attention="false"
         colocate="false"
         # skip if colocate = true and target_attention = true only when draft_size > 0
         # if [ "$colocate" = "true" ];then
@@ -91,24 +91,24 @@ run_benchmark() {
         fi
     fi
 
-    echo "Running benchmark for $dataset, temperature: $temperature, request_rate: $request_rate, draft_size: $draft_size, prefill_schedule_mode: $prefill_schedule_mode, budget_token: $budget_token, budget_seq: $budget_seq, colocate: $colocate, attention: $gamma_mapping_attention, drop_threshold: $drop_threshold, target_model: $target_model, draft_model: $draft_model"
+    echo "Running benchmark for $dataset, temperature: $temperature, request_rate: $request_rate, draft_size: $draft_size, prefill_schedule_mode: $prefill_schedule_mode, budget_token: $budget_token, budget_seq: $budget_seq, colocate: $colocate, attention: $consolidated_attention, drop_threshold: $drop_threshold, target_model: $target_model, draft_model: $draft_model"
 
     colocate_flag=""
     [ "$colocate" = "true" ] && colocate_flag="--colocate"
-    gamma_mapping_attention_flag=""
-    [ "$gamma_mapping_attention" = "true" ] && gamma_mapping_attention_flag="--gamma-mapping-attention"
+    consolidated_attention_flag=""
+    [ "$consolidated_attention" = "true" ] && consolidated_attention_flag="--gamma-mapping-attention"
 
     selective_validation_flag=""
     [ "$drop_threshold" != "0" ] && selective_validation_flag="--selective-validation"
 
     # save the last running python line in a file
-    echo "python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $gamma_mapping_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model"" > last_run.sh
+    echo "python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $consolidated_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model"" > last_run.sh
     cat last_run.sh
 
-    local output=$(python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $gamma_mapping_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model")
+    local output=$(python "$python_script" --dataset "$dataset" --temperature "$temperature" --request-rate "$request_rate" --draft-size "$draft_size" --prefill-schedule-mode "$prefill_schedule_mode" --budget-token $budget_token --budget-seq $budget_seq $colocate_flag $consolidated_attention_flag $selective_validation_flag --drop-threshold $drop_threshold --target-model "$target_model" --draft-model "$draft_model")
     
     extract_values "$output"
-    echo "$target_model,$draft_model,$dataset,$temperature,$request_rate,$draft_size,$prefill_schedule_mode,$budget_token,$budget_seq,$colocate,$gamma_mapping_attention,$drop_threshold,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_token_latency,$p99_token_latency,$token_throughput,$request_throughput,$token_latency,$preempt_flag" >> "$output_csv"
+    echo "$target_model,$draft_model,$dataset,$temperature,$request_rate,$draft_size,$prefill_schedule_mode,$budget_token,$budget_seq,$colocate,$consolidated_attention,$drop_threshold,$p50_ttft,$p99_ttft,$p50_tpot,$p99_tpot,$p50_token_latency,$p99_token_latency,$token_throughput,$request_throughput,$token_latency,$preempt_flag" >> "$output_csv"
 }
 
 # Initialize
@@ -128,10 +128,10 @@ for model_pair in "${models[@]}"; do
                         for budget_token in "${budget_tokens[@]}"; do
                             for budget_seq in "${budget_seqs[@]}"; do
                                 for colocate in "${colocates[@]}"; do
-                                    for gamma_mapping_attention in "${gamma_mapping_attentions[@]}"; do
+                                    for consolidated_attention in "${consolidated_attentions[@]}"; do
                                         for drop_threshold in "${drop_thresholds[@]}"; do
                                             echo "[${current_run}/${total_runs}]"
-                                            run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$gamma_mapping_attention" "$drop_threshold" "$target_model" "$draft_model"
+                                            run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$consolidated_attention" "$drop_threshold" "$target_model" "$draft_model"
                                             ((current_run++))
                                         done
                                     done
