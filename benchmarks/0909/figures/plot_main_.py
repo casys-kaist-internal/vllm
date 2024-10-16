@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 
 # Read the CSV data into pandas DataFrames
 baseline_file_name = "baseline_10_06_NVIDIARTXA6000.csv"
-baseline_file_name = "baseline_10_06_NVIDIARTXA6000.csv"
 
 ours_file_name = "ours.csv"
 

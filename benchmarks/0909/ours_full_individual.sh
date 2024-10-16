@@ -9,28 +9,26 @@ export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
 declare -a models=(
     # Uncomment the models you want to benchmark
     # "facebook/opt-13b,facebook/opt-125m"
-    # "facebook/opt-6.7b,facebook/opt-125m"
+    "facebook/opt-6.7b,facebook/opt-125m"
     # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
-    "huggyllama/llama-7b,JackFram/llama-68m"
     # Add more model pairs as needed
 )
 
 # Configurations
-datasets=("finance")
-temperatures=(0 0.25 0.5 0.75 -1)
-# request_rates=(1 2 4 8 16 32)
-request_rates=(4 8 16)
+datasets=("sharegpt")
+temperatures=(0 0.5 -1)
+request_rates=(4 6 8)
 draft_sizes=(7)
 prefill_schedule_modes=("full_prefill")
 budget_tokens=(4096)
-budget_seqs=(128)
-colocates=(true)
-consolidated_attentions=(true)
-drop_thresholds=(0.3)
+budget_seqs=(256)
+colocates=(false true)
+consolidated_attentions=(false true)
+drop_thresholds=(0 0.3)
 
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/ours_A100_llama_finance.csv"
+output_csv="figures/ours_individual.csv"
 
 # Create directory if it doesn't exist
 mkdir -p figures
@@ -59,7 +57,7 @@ initialize_csv() {
 # Function to extract values from the benchmark output
 extract_values() {
     local log_file="$1"
-    local result_line=$(grep 'Result' "$log_file")
+    local result_line=$(grep 'result' "$log_file")
     if [ -z "$result_line" ]; then
         echo "Error: No 'result' line found in output."
         return 1

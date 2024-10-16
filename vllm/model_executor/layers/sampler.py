@@ -490,6 +490,10 @@ def _spec_decode_sample(
         target_lens_minus_one, target_probs.size(-1)
     )
 
+    # print("target lens", target_lens)
+    # print("target_probs shape", target_probs.shape)
+    # print("draft_probs shape", draft_probs.shape)
+
     # target_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     target_prob_for_sampled_draft_token = torch.gather(
         target_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
@@ -497,6 +501,9 @@ def _spec_decode_sample(
     # draft_probs_for_sampled_draft_token: [seq_idx, target_lens_minus_one]
     draft_prob_for_sampled_draft_token = torch.gather(
         draft_probs, 2, sampled_draft_token_ids.unsqueeze(-1)).squeeze(-1)
+    
+    # print("target_probs_for_sampled_draft_token shape", target_prob_for_sampled_draft_token.shape)
+    # print("draft_probs_for_sampled_draft_token shape", draft_prob_for_sampled_draft_token.shape)
 
     # print("target_probs_for_sampled_draft_token",
     #       target_prob_for_sampled_draft_token)
@@ -521,7 +528,7 @@ def _spec_decode_sample(
     accepted = torch.where(
         random_prob < accept_probs,
         torch.zeros_like(accept_probs), torch.ones_like(accept_probs))
-
+    
     # cumulative sum
     accepted.cumsum_(dim=1)
 
@@ -704,7 +711,7 @@ def _build_sampler_output(
 ) -> SamplerOutput:
     sampler_output = []
 
-    # GPU -> CPU sync
+    # GPU <-> CPU sync
     accept_cnts = accept_cnts.tolist() if accept_cnts is not None else None
     accept_probs = accept_probs.tolist() if accept_probs is not None else None
 

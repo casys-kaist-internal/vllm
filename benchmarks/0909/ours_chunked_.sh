@@ -10,27 +10,25 @@ declare -a models=(
     # Uncomment the models you want to benchmark
     # "facebook/opt-13b,facebook/opt-125m"
     # "facebook/opt-6.7b,facebook/opt-125m"
-    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
-    "huggyllama/llama-7b,JackFram/llama-68m"
+    "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
     # Add more model pairs as needed
 )
 
 # Configurations
-datasets=("finance")
+datasets=("sharegpt")
 temperatures=(0 0.25 0.5 0.75 -1)
-# request_rates=(1 2 4 8 16 32)
-request_rates=(4 8 16)
-draft_sizes=(7)
-prefill_schedule_modes=("full_prefill")
-budget_tokens=(4096)
-budget_seqs=(128)
-colocates=(true)
-consolidated_attentions=(true)
-drop_thresholds=(0.3)
+request_rates=(8 10 12)
+draft_sizes=(1 3 5 7)
+prefill_schedule_modes=("chunked_prefill")
+budget_tokens=(512)
+budget_seqs=(256)
+colocates=(false)
+consolidated_attentions=(false)
+drop_thresholds=(0)
 
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/ours_A100_llama_finance.csv"
+output_csv="figures/chunked_prefill_A6000_ours.csv"
 
 # Create directory if it doesn't exist
 mkdir -p figures
@@ -59,7 +57,7 @@ initialize_csv() {
 # Function to extract values from the benchmark output
 extract_values() {
     local log_file="$1"
-    local result_line=$(grep 'Result' "$log_file")
+    local result_line=$(grep 'result' "$log_file")
     if [ -z "$result_line" ]; then
         echo "Error: No 'result' line found in output."
         return 1
@@ -95,8 +93,14 @@ run_benchmark() {
     if [ "$draft_size" = "0" ]; then
         consolidated_attention="false"
         colocate="false"
+
         # Skip if drop_threshold > 0
         if [ "$drop_threshold" != "0" ]; then
+            return
+        fi
+
+        # Skip if temperature is not 0
+        if [ "$temperature" != "0" ]; then
             return
         fi
     fi
@@ -211,6 +215,58 @@ get_gpu_name
 total_runs=$(( ${#datasets[@]} * ${#temperatures[@]} * ${#request_rates[@]} * ${#draft_sizes[@]} * ${#prefill_schedule_modes[@]} * ${#budget_tokens[@]} * ${#budget_seqs[@]} * ${#colocates[@]} * ${#consolidated_attentions[@]} * ${#drop_thresholds[@]} * ${#models[@]} ))
 current_run=1
 
+# Baseline run
+# Main loop over all parameter combinations
+# for model_pair in "${models[@]}"; do
+#     IFS=',' read -r target_model draft_model <<< "$model_pair"
+#     for dataset in "${datasets[@]}"; do
+#         for temperature in "${temperatures[@]}"; do
+#             for request_rate in "${request_rates[@]}"; do
+#                 for draft_size in "${draft_sizes[@]}"; do
+#                     for prefill_schedule_mode in "${prefill_schedule_modes[@]}"; do
+#                         for budget_token in "${budget_tokens[@]}"; do
+#                             for budget_seq in "${budget_seqs[@]}"; do
+#                                 for colocate in "${colocates[@]}"; do
+#                                     for consolidated_attention in "${consolidated_attentions[@]}"; do
+#                                         for drop_threshold in "${drop_thresholds[@]}"; do
+#                                             echo "Progress: [$current_run/$total_runs]"
+#                                             if run_benchmark "$dataset" "$temperature" "$request_rate" "$draft_size" "$prefill_schedule_mode" "$budget_token" "$budget_seq" "$colocate" "$consolidated_attention" "$drop_threshold" "$target_model" "$draft_model"; then
+#                                                 echo "Benchmark completed successfully."
+#                                                 ./slack "Progress: [$current_run/$total_runs] Success"
+#                                             else
+#                                                 echo "Benchmark failed."
+#                                                 ./slack "Progress: [$current_run/$total_runs] Fail"
+#                                             fi
+#                                             ((current_run++))
+#                                         done
+#                                     done
+#                                 done
+#                             done
+#                         done
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# Ours
+# Calculate total runs for progress tracking
+total_runs=$(( ${#datasets[@]} * ${#temperatures[@]} * ${#request_rates[@]} * ${#draft_sizes[@]} * ${#prefill_schedule_modes[@]} * ${#budget_tokens[@]} * ${#budget_seqs[@]} * ${#colocates[@]} * ${#consolidated_attentions[@]} * ${#drop_thresholds[@]} * ${#models[@]} ))
+current_run=1
+
+# Configurations
+datasets=("sharegpt")
+temperatures=(0 0.25 0.5 0.75 -1)
+request_rates=(8 10 12)
+draft_sizes=(7)
+prefill_schedule_modes=("chunked_prefill")
+budget_tokens=(512)
+budget_seqs=(256)
+colocates=(true)
+consolidated_attentions=(true)
+drop_thresholds=(0.3)
+
 # Main loop over all parameter combinations
 for model_pair in "${models[@]}"; do
     IFS=',' read -r target_model draft_model <<< "$model_pair"
@@ -244,3 +300,4 @@ for model_pair in "${models[@]}"; do
         done
     done
 done
+

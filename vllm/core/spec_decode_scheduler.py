@@ -714,85 +714,155 @@ class SpecDecodeScheduler:
 
         return preempted
 
+    # @nvtx_range("schedule_target_spec_decode")
+    # def _schedule_target_spec_decode(self,
+    #                                  scheduled_seq_groups: List[ScheduledSequenceGroup],
+    #                                  budget: SchedulingBudget):
+    #     # This approach is used in chunked prefill with limited budget
+    #     # We need to cut speculative tokens to fit the budget
+    #     # For selective validation, we sort the draft tokens by predicted cumulative accept probs
+    #     # and only retain tokens within the budget
+    #     # For non-selective validation, we simply append the draft tokens in the order of their indices
+    #     # until the budget is met
+
+    #     # Remaining budget
+    #     remaining_budget = budget.remaining_token_budget()
+
+    #     draft_tokens = []
+
+    #     if self.spec_decode_config.selective_validation and self.accept_prob_predictor.is_trained():
+    #         # In the selective validation case, we collect draft tokens along with their predicted
+    #         # cumulative acceptance probabilities for each sequence. We then sort these tokens
+    #         # in descending order based on their acceptance probabilities, ensuring that the most
+    #         # likely tokens are validated first to maximize efficiency.
+    #         for seq_group in self.need_to_run_target_decode:
+    #             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+    #             predicted_cumulated_accept_probs = seq.predicted_cumulated_accept_probs
+    #             assert len(
+    #                 predicted_cumulated_accept_probs) == seq.get_draft_len()
+
+    #             print("predicted_cumulated_accept_probs: ",
+    #                   predicted_cumulated_accept_probs)
+    #             for i, prob in enumerate(predicted_cumulated_accept_probs):
+    #                 draft_tokens.append((seq_group, i, prob))
+
+    #         # Sort all draft tokens by predicted cumulative accept probs in descending order
+    #         draft_tokens.sort(key=lambda x: x[2], reverse=True)
+    #     else:
+    #         # In the non-selective validation case, we simply append the draft tokens in the order
+    #         # of their indices. We first append all the 1st draft tokens from each sequence, then
+    #         # all the 2nd draft tokens, and so on. This ensures that tokens are processed in
+    #         # a round-robin fashion, without any prioritization based on predicted probabilities.
+
+    #         # Get the maximum draft length across all sequences
+    #         max_draft_len = max(seq_group.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()
+    #                             for seq_group in self.need_to_run_target_decode)
+
+    #         # Append draft tokens by index
+    #         for draft_idx in range(max_draft_len):
+    #             for seq_group in self.need_to_run_target_decode:
+    #                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+    #                 if draft_idx < seq.get_draft_len():
+    #                     draft_tokens.append((seq_group, draft_idx, 1))
+
+    #     # Track how many tokens have been scheduled for each sequence group
+    #     scheduled_tokens_count = {}
+    #     total_scheduled_tokens = 0
+
+    #     # Initialize all seq_groups to 0
+    #     for seq_group in self.need_to_run_target_decode:
+    #         scheduled_tokens_count[seq_group] = 0
+
+    #     # Schedule tokens for each sequence group, but only fill up to the remaining budget.
+    #     # We iterate through the sorted draft tokens and keep scheduling them until we reach
+    #     # the budget limit (remaining_token_budget). Once the budget is met, no further tokens
+    #     # will be scheduled for the remaining sequence groups.
+    #     for seq_group, i, _ in draft_tokens:
+    #         if total_scheduled_tokens < remaining_budget:
+    #             scheduled_tokens_count[seq_group] += 1
+    #             total_scheduled_tokens += 1
+
+    #     # Process and schedule the sequence groups
+    #     for seq_group, scheduled_tokens in scheduled_tokens_count.items():
+    #         # Drop tokens that are not within the scheduled indices
+    #         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+    #         drop_cnt = seq.get_draft_len() - scheduled_tokens
+    #         seq.drop_draft_tokens(drop_cnt)
+
+    #         budget.add_num_batched_tokens(
+    #             seq_group.request_id, seq.get_draft_len(), TokenType.SPEC)
+
+    #         scheduled_seq_groups.append(
+    #             ScheduledSequenceGroup(seq_group,  (seq.get_draft_len() + 1)))
+
     @nvtx_range("schedule_target_spec_decode")
     def _schedule_target_spec_decode(self,
-                                     scheduled_seq_groups: List[ScheduledSequenceGroup],
-                                     budget: SchedulingBudget):
-        # This approach is used in chunked prefill with limited budget
-        # We need to cut speculative tokens to fit the budget
-        # For selective validation, we sort the draft tokens by predicted cumulative accept probs
-        # and only retain tokens within the budget
-        # For non-selective validation, we simply append the draft tokens in the order of their indices
-        # until the budget is met
-
-        # Remaining budget
+                                 scheduled_seq_groups: List[ScheduledSequenceGroup],
+                                 budget: SchedulingBudget):
+        # Get remaining budget
         remaining_budget = budget.remaining_token_budget()
+        
+        # Exit early if no budget is available
+        if remaining_budget == 0:
+            return
 
         draft_tokens = []
+
         if self.spec_decode_config.selective_validation and self.accept_prob_predictor.is_trained():
-            # In the selective validation case, we collect draft tokens along with their predicted
-            # cumulative acceptance probabilities for each sequence. We then sort these tokens
-            # in descending order based on their acceptance probabilities, ensuring that the most
-            # likely tokens are validated first to maximize efficiency.
+            # Selective validation: Schedule tokens with acceptance probability > drop_threshold
             for seq_group in self.need_to_run_target_decode:
                 seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
                 predicted_cumulated_accept_probs = seq.predicted_cumulated_accept_probs
-                assert len(
-                    predicted_cumulated_accept_probs) == seq.get_draft_len()
 
-                # print("predicted_cumulated_accept_probs: ",
-                #       predicted_cumulated_accept_probs)
-                for i, prob in enumerate(predicted_cumulated_accept_probs):
-                    draft_tokens.append((seq_group, i, prob))
-
-            # Sort all draft tokens by predicted cumulative accept probs in descending order
+                assert len(predicted_cumulated_accept_probs) == seq.get_draft_len()
+                
+                # Append only tokens with accept prob greater than drop threshold
+                draft_tokens.extend(
+                    (seq_group, i, prob) for i, prob in enumerate(predicted_cumulated_accept_probs)
+                    if prob >= self.spec_decode_config.drop_threshold
+                )
+            
+            # Sort tokens by acceptance probability (descending)
             draft_tokens.sort(key=lambda x: x[2], reverse=True)
+        
         else:
-            # In the non-selective validation case, we simply append the draft tokens in the order
-            # of their indices. We first append all the 1st draft tokens from each sequence, then
-            # all the 2nd draft tokens, and so on. This ensures that tokens are processed in
-            # a round-robin fashion, without any prioritization based on predicted probabilities.
-
-            # Get the maximum draft length across all sequences
-            max_draft_len = max(seq_group.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()
-                                for seq_group in self.need_to_run_target_decode)
-
-            # Append draft tokens by index
+            # Non-selective validation: Round-robin scheduling
+            # Get maximum draft length across all sequences
+            max_draft_len = max(
+                seq_group.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()
+                for seq_group in self.need_to_run_target_decode
+            )
+            
+            # Append draft tokens round-robin by index
             for draft_idx in range(max_draft_len):
-                for seq_group in self.need_to_run_target_decode:
-                    seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-                    if draft_idx < seq.get_draft_len():
-                        draft_tokens.append((seq_group, draft_idx, 0))
+                draft_tokens.extend(
+                    (seq_group, draft_idx, 1)  # Use '1' as dummy accept probability
+                    for seq_group in self.need_to_run_target_decode
+                    if draft_idx < seq_group.get_seqs(status=SequenceStatus.RUNNING)[0].get_draft_len()
+                )
 
-        # Track how many tokens have been scheduled for each sequence group
-        scheduled_tokens_count = {}
+        # Track scheduled tokens for each sequence group
+        scheduled_tokens_count = {seq_group: 0 for seq_group in self.need_to_run_target_decode}
         total_scheduled_tokens = 0
 
-        # Initialize all seq_groups to 0
-        for seq_group in self.need_to_run_target_decode:
-            scheduled_tokens_count[seq_group] = 0
-
-        # Schedule tokens for each sequence group, but only fill up to the remaining budget.
-        # We iterate through the sorted draft tokens and keep scheduling them until we reach
-        # the budget limit (remaining_token_budget). Once the budget is met, no further tokens
-        # will be scheduled for the remaining sequence groups.
+        # Schedule tokens, stop when budget is met
         for seq_group, i, _ in draft_tokens:
-            if total_scheduled_tokens < remaining_budget:
-                scheduled_tokens_count[seq_group] += 1
-                total_scheduled_tokens += 1
+            if total_scheduled_tokens >= remaining_budget:
+                break
+            scheduled_tokens_count[seq_group] += 1
+            total_scheduled_tokens += 1
 
-        # Process and schedule the sequence groups
+        # Process scheduled tokens for each sequence group
         for seq_group, scheduled_tokens in scheduled_tokens_count.items():
-            # Drop tokens that are not within the scheduled indices
             seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
             drop_cnt = seq.get_draft_len() - scheduled_tokens
             seq.drop_draft_tokens(drop_cnt)
 
-            budget.add_num_batched_tokens(
-                seq_group.request_id, seq.get_draft_len(), TokenType.SPEC)
+            # Update budget tracking
+            budget.add_num_batched_tokens(seq_group.request_id, seq.get_draft_len(), TokenType.SPEC)
 
-            scheduled_seq_groups.append(
-                ScheduledSequenceGroup(seq_group,  (seq.get_draft_len() + 1)))
+            # Add to scheduled sequence groups
+            scheduled_seq_groups.append(ScheduledSequenceGroup(seq_group, seq.get_draft_len() + 1))
 
     def _schedule(self) -> SpecDecodeSchedulerOutputs:
         # Blocks that need to be swaped or copied before model execution.
@@ -829,12 +899,13 @@ class SpecDecodeScheduler:
             if self.scheduler_config.chunked_prefill:
                 if self.spec_decode_config.selective_validation:
                     # Chunked Prefill + Selective Validation
-                    # Priority: Decode -> Prefill -> Spec
                     if self.need_to_run_target_decode:
                         preempted = self._schedule_target_base_decode(
                             target_decode_scheduled_seq_groups, target_budget,
                             blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
                         preempted_seq_groups.extend(preempted)
+                        self._schedule_target_spec_decode(
+                            target_decode_scheduled_seq_groups, target_budget)
 
                     # Schedule already chunked prefill first and then schedule new prefill requests
                     if self.chunked_waiting:
@@ -845,12 +916,11 @@ class SpecDecodeScheduler:
                         self._schedule_prefill(
                             prefill_scheduled_seq_groups, ignored_seq_groups, target_budget)
 
-                    if self.need_to_run_target_decode:
-                        self._schedule_target_spec_decode(
-                            target_decode_scheduled_seq_groups, target_budget)
+                    # if self.need_to_run_target_decode:
+                    #     self._schedule_target_spec_decode(
+                    #         target_decode_scheduled_seq_groups, target_budget)
                 else:
                     # Chunked Prefill without Selective Validation
-                    # Priority: Decode -> Spec -> Prefill
                     if self.need_to_run_target_decode:
                         preempted = self._schedule_target_base_decode(
                             target_decode_scheduled_seq_groups, target_budget,
@@ -928,6 +998,8 @@ class SpecDecodeScheduler:
                         target_decode_scheduled_seq_groups, target_budget,
                         blocks_to_swap_in, blocks_to_swap_out, blocks_to_copy)
                     preempted_seq_groups.extend(preempted)
+                    self._schedule_target_spec_decode(
+                        target_decode_scheduled_seq_groups, target_budget)
 
                 # Schedule already chunked prefill first and then schedule new prefill requests
                 if self.chunked_waiting:
@@ -938,9 +1010,9 @@ class SpecDecodeScheduler:
                     self._schedule_prefill(prefill_scheduled_seq_groups, ignored_seq_groups,
                                         target_budget)
 
-                if self.need_to_run_target_decode:
-                    self._schedule_target_spec_decode(
-                        target_decode_scheduled_seq_groups, target_budget)
+                # if self.need_to_run_target_decode:
+                #     self._schedule_target_spec_decode(
+                #         target_decode_scheduled_seq_groups, target_budget)
 
             else:
                 # Chunked Prefill without Selective Validation

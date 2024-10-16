@@ -1,1 +1,1 @@
-python benchmark_serving.py --request-rate 10 --dataset sharegpt --temperature 0 --draft-size 0 --prefill-schedule-mode chunked_prefill --budget-token 512 --budget-seq 256 --target-model EleutherAI/pythia-6.9b --draft-model EleutherAI/pythia-160m
+python benchmark_serving.py --request-rate 10 --dataset sharegpt --temperature 0.75 --draft-size 7 --prefill-schedule-mode chunked_prefill --budget-token 512 --budget-seq 256 --target-model EleutherAI/pythia-6.9b --draft-model EleutherAI/pythia-160m --selective-validation --colocate --selective-validation --drop-threshold 0.3

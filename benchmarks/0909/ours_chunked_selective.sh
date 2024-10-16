@@ -10,27 +10,25 @@ declare -a models=(
     # Uncomment the models you want to benchmark
     # "facebook/opt-13b,facebook/opt-125m"
     # "facebook/opt-6.7b,facebook/opt-125m"
-    # "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
-    "huggyllama/llama-7b,JackFram/llama-68m"
+    "EleutherAI/pythia-6.9b,EleutherAI/pythia-160m"
     # Add more model pairs as needed
 )
 
 # Configurations
-datasets=("finance")
+datasets=("sharegpt")
 temperatures=(0 0.25 0.5 0.75 -1)
-# request_rates=(1 2 4 8 16 32)
-request_rates=(4 8 16)
+request_rates=(6 8 10)
 draft_sizes=(7)
-prefill_schedule_modes=("full_prefill")
-budget_tokens=(4096)
-budget_seqs=(128)
+prefill_schedule_modes=("chunked_prefill")
+budget_tokens=(512)
+budget_seqs=(256)
 colocates=(true)
 consolidated_attentions=(true)
-drop_thresholds=(0.3)
+drop_thresholds=(0 0.1 0.2 0.3 0.4 0.5)
 
 # Paths
 python_script="benchmark_serving.py"
-output_csv="figures/ours_A100_llama_finance.csv"
+output_csv="figures/ours_chunked_prefill_sensitivity.csv"
 
 # Create directory if it doesn't exist
 mkdir -p figures
@@ -59,7 +57,7 @@ initialize_csv() {
 # Function to extract values from the benchmark output
 extract_values() {
     local log_file="$1"
-    local result_line=$(grep 'Result' "$log_file")
+    local result_line=$(grep 'result' "$log_file")
     if [ -z "$result_line" ]; then
         echo "Error: No 'result' line found in output."
         return 1

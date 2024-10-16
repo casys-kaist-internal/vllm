@@ -342,7 +342,7 @@ def main(args: argparse.Namespace):
     print("Request Throughput (reqs/s),Token Throughput (tokens/s),Token Latency (s/token),"
           "P50 TTFT (s),P99 TTFT (s),P50 TPOT (s/token),P99 TPOT (s/token),P50 Token Latency (s/token),P99 Token Latency (s/token),"
           "Preempt Flag")
-    print(f"result, {request_throughput:.3f}, {token_throughput:.3f}, {token_latency:.6f}, {p50_ttft:.6f}, {p99_ttft:.6f}, {p50_tpot:.6f}, {p99_tpot:.6f}, {p50_token_latency:.6f}, {p99_token_latency:.6f}, {preempt_flag}")
+    print(f"Result, {request_throughput:.3f}, {token_throughput:.3f}, {token_latency:.6f}, {p50_ttft:.6f}, {p99_ttft:.6f}, {p50_tpot:.6f}, {p99_tpot:.6f}, {p50_token_latency:.6f}, {p99_token_latency:.6f}, {preempt_flag}")
 
 
 if __name__ == "__main__":
