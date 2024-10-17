@@ -1,0 +1,1 @@
+python baseline_adaptive.py --dataset gsm8k --temperature 0.5  --prefill-schedule-mode full_prefill --budget-token 4096 --budget-seq 256 --target-model facebook/opt-6.7b --draft-model facebook/opt-125m 
